@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.bak
+*.spec
+CLAUDE.md
+CODEX_CHANGELOG.md
+.env
+*.exe
+SunoJump_Output/

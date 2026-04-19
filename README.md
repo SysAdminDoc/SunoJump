@@ -1,0 +1,150 @@
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+
+# SunoJump
+
+Audio fingerprint masking tool. Transforms audio files through a multi-pass processing pipeline to alter their acoustic fingerprint while preserving audible quality. Designed for creators who need to re-upload their own Suno-generated music as templates when detection systems produce false positives.
+
+## How It Works
+
+SunoJump applies a 10-pass processing pipeline with **non-uniform segment-based transforms** — each segment of the audio gets slightly different processing parameters, breaking the constellation patterns that fingerprinting systems rely on.
+
+### Processing Pipeline
+
+| # | Pass | What It Does |
+|---|------|-------------|
+| 1 | **Metadata Strip** | Removes all embedded tags, IDs, and hidden metadata |
+| 2 | **Spectral Perturbation** | Perturbs frequency magnitudes, targets common watermark bands (sub-bass, ultrasonic) |
+| 3 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
+| 4 | **Tempo Micro-Variation** | Non-uniform time warping across random segments |
+| 5 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
+| 6 | **Stereo Manipulation** | Mid-side processing to alter stereo field |
+| 7 | **Noise Injection** | Adds shaped pink noise to mask watermark energy |
+| 8 | **Dynamics Modification** | Per-frame random gain variation to break statistical patterns |
+| 9 | **Humanization** | Wow/flutter, dynamic breathing, micro noise floor |
+| 10 | **Lossy Re-encode** | MP3 encode/decode cycle to degrade fine watermark detail (requires ffmpeg) |
+
+### Key Differentiator: Non-Uniform Processing
+
+Unlike tools that apply flat transforms across the entire track, SunoJump splits audio into variable-length segments and applies **different transform parameters to each segment**. This breaks the relative timing and frequency relationships between spectral peaks — the exact features that constellation-based fingerprinting depends on.
+
+## Installation
+
+```bash
+# Clone
+git clone https://github.com/SysAdminDoc/SunoJump.git
+cd SunoJump
+
+# Run (auto-installs dependencies)
+python sunojump.py
+```
+
+### Requirements
+- Python 3.9+
+- ffmpeg (optional, for Lossy Re-encode pass)
+- PyQt6 Multimedia (optional, for in-app preview playback; usually bundled)
+
+All Python dependencies install automatically on first run.
+
+## Features
+
+- **10-pass audio processing pipeline** — metadata strip, spectral perturbation, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
+- **Non-uniform segment processing** — breaks constellation fingerprint patterns
+- **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
+- **Per-pass toggles and strength sliders** — fine-grained control
+- **In-app preview** — A/B compare original vs processed without leaving the app
+- **Batch processing** — drag/drop multiple files, reorder them, process in parallel
+- **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
+- **Chunked long-audio processing** — bounded memory for songs > 1 minute
+- **Open Output** — one-click to output folder in your file manager
+- **Modification strength metric** — know how much you've changed before uploading
+
+## Usage
+
+### GUI Mode
+```bash
+python sunojump.py
+```
+
+1. Drop audio files into the file list (or click Browse)
+2. Select a preset or customize individual parameters
+3. Click **Process All**
+4. Output files appear in the output directory with `_sj` suffix
+
+### CLI Mode
+```bash
+# Basic usage with preset
+python sunojump.py -i song.wav -p aggressive
+
+# Custom parameters
+python sunojump.py -i song.wav --pitch 1.5 --phase 0.5 --spectral 0.4
+
+# Batch process a directory
+python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
+
+# With lossy re-encode
+python sunojump.py -i song.wav -p aggressive --reencode 128
+```
+
+#### CLI Options
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-i, --input` | Input file or directory | (required) |
+| `-o, --output` | Output directory | `~/Desktop/SunoJump_Output` |
+| `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
+| `-f, --format` | wav, flac, ogg | wav |
+| `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
+| `--spectral` | Spectral perturbation (0.0-1.0) | preset |
+| `--pitch` | Pitch micro-shift in semitones (0.0-5.0) | preset |
+| `--tempo` | Tempo variation (0.0-0.15) | preset |
+| `--phase` | Phase scrambling (0.0-1.0) | preset |
+| `--stereo` | Stereo manipulation (0.0-0.5) | preset |
+| `--noise` | Noise level in dB (-70 to -30) | preset |
+| `--dynamics` | Dynamics amount (0.0-1.0) | preset |
+| `--humanize` | Humanization amount (0.0-1.0) | preset |
+| `--reencode` | Lossy re-encode bitrate (96-320) | disabled |
+
+Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs.
+
+## Presets
+
+| Preset | Pitch | Spectral | Phase | Noise | Use Case |
+|--------|-------|----------|-------|-------|----------|
+| **Gentle** | 0.3 st | 0.10 | 0.10 | -60 dB | Minimal change, preserve quality |
+| **Moderate** | 0.8 st | 0.30 | 0.30 | -50 dB | Good balance of masking vs quality |
+| **Aggressive** | 1.5 st | 0.50 | 0.50 | -45 dB | Strong masking, slight quality trade-off |
+| **Extreme** | 3.0 st | 0.70 | 0.70 | -40 dB | Maximum masking, verify quality after |
+
+## Modification Strength
+
+After processing, SunoJump reports a **modification strength** percentage:
+
+- **0-25%** — Light: may not be sufficient for detection bypass
+- **25-50%** — Moderate: likely effective
+- **50-75%** — Strong: highly likely effective
+- **75-100%** — Extreme: verify audio quality hasn't degraded too much
+
+Start with **Moderate** preset and increase if detection persists.
+
+## Supported Formats
+
+**Input:** WAV, MP3, FLAC, OGG, AIFF, Opus
+
+**Output:** WAV (24-bit), FLAC, OGG Vorbis
+
+## Logo Prompts
+
+1. **Minimal icon** — A clean, flat single-color glyph of an audio waveform passing through a geometric portal/gateway, dark background (#1e1e2e), no text, high contrast cyan (#89b4fa) on dark, SVG-friendly simple shapes. SunoJump: audio fingerprint masking tool.
+
+2. **App icon** — Rounded square app icon with gradient from deep purple to electric blue, showing a stylized soundwave morphing/transforming mid-stream with a subtle shield overlay, dark background, no text, recognizable at 128px. SunoJump: audio fingerprint masking tool.
+
+3. **Wordmark** — Stylized "SunoJump" typography with the letters constructed from audio waveform segments, dark background (#11111b), electric blue (#89b4fa) text with subtle purple (#cba6f7) accent on the "J", modern sans-serif base. SunoJump: audio fingerprint masking tool.
+
+4. **Emblem** — Detailed shield/badge with a central audio waveform splitting and reforming into a different pattern, surrounded by circuit-like borders, dark background, blue/purple/teal color palette from Catppuccin Mocha, no text. SunoJump: audio fingerprint masking tool.
+
+5. **Abstract** — Conceptual representation of audio transformation: parallel sound waves entering a prism-like geometric shape and emerging as a different waveform pattern on the other side, dark background (#1e1e2e), gradient from blue (#89b4fa) to teal (#94e2d5), no text, SVG-friendly. SunoJump: audio fingerprint masking tool.
+
+## License
+
+MIT

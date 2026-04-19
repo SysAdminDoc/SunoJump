@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.0 (2026-04-19)
+- **Phase vocoder pitch shifting** -- replaced time-warp-based pitch micro-shift with a proper phase vocoder implementation (pure scipy, no librosa dependency). Eliminates the audible warble at Extreme preset's ±3-semitone shifts while preserving the non-uniform per-segment randomization that breaks fingerprints. Tempo no longer shifts as a side-effect of pitch.
+- **Non-uniform spectral perturbation** -- spectral perturbation now processes in 3-second segments with per-segment random seeds, breaking detectors that look for consistent spectral signatures across a whole track. Short files (<3s) still get a single pass to avoid STFT edge issues.
+- **Compare Presets** -- new button renders a 20-second sample with each built-in preset (Gentle, Moderate, Aggressive, Extreme). A compare panel appears below the preview row with per-preset play/stop toggles and an "Apply Currently Playing" button that sets the selected preset as active. Swapping the file selection hides the stale panel automatically.
+- **Detection-signature heuristic** -- audio is now scored on a 0-100 scale using four features common AI-music detectors exploit: spectral frame variance, high-frequency rolloff, phase evolution, and short-term dynamic variance. Pre- and post-processing scores are logged (e.g. `Detection signature: 61% -> 37% (down 24%)`) so users get a directional indicator beyond the existing SNR-based modification strength.
+- **Reproducibility seed** -- `AudioProcessor(seed=N)` and CLI `--seed N` produce bit-identical output across runs. Verified: same seed -> max sample diff 0.0; different seeds -> significant divergence.
+- **UI polish** -- larger default/minimum window (760x980 min 720x900) accommodates the new compare panel. Compare + Render Preview + Process All are mutually exclusive at the UI level (each disables the others while running). Playback state cleanly resets on player stop for both regular and compare modes.
+
 ## v1.3.0 (2026-04-19)
 - **Render Preview** -- new button in the Preview panel processes the first 30 seconds of the selected file with current settings, saves to a session temp directory, and auto-plays; lets you audition presets before committing compute to full-file processing
 - `AudioProcessor.process()` gained an optional `preview_seconds` parameter that trims the input to the first N seconds before the pipeline runs

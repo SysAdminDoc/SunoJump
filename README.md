@@ -1,10 +1,8 @@
-
-
 <img width="1536" height="448" alt="banner" src="https://github.com/user-attachments/assets/aa8bac03-9f24-46eb-8d0d-4607e73d6146" />
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.3.0-blue)
+![Version](https://img.shields.io/badge/version-1.4.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -62,8 +60,11 @@ All Python dependencies install automatically on first run.
 - **Non-uniform segment processing** — breaks constellation fingerprint patterns
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
 - **Per-pass toggles and strength sliders** — fine-grained control
-- **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing; tweak presets, re-render, compare
+- **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing
+- **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, then apply your favorite
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
+- **Detection-signature score** — logs how AI-detectable the audio looked before vs after processing (heuristic)
+- **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)
 - **Batch processing** — drag/drop multiple files, reorder them, process in parallel
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
 - **Chunked long-audio processing** — bounded memory for songs > 1 minute
@@ -114,6 +115,7 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `--dynamics` | Dynamics amount (0.0-1.0) | preset |
 | `--humanize` | Humanization amount (0.0-1.0) | preset |
 | `--reencode` | Lossy re-encode bitrate (96-320) | disabled |
+| `--seed` | Integer for deterministic random generator (same seed = same output) | random |
 
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs.
 

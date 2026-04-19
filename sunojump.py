@@ -742,12 +742,20 @@ class AudioProcessor:
         return stretched
 
     def _pv_time_stretch(self, signal_1d, rate, nperseg=2048):
-        """Phase-vocoder time stretch of 1D signal by `rate` (>1 = longer).
+        """Phase-vocoder time stretch of a 1D signal.
+
+        `rate` is the stretch factor relative to the input:
+          rate > 1  -> output is rate x LONGER
+          rate < 1  -> output is rate x SHORTER
+          rate = 1  -> unchanged length (frame-exact reconstruction)
 
         Reads each STFT frame at fractional positions, blends magnitudes
         linearly, and integrates phase from measured instantaneous
-        frequency. Good quality for rates 0.5-2.0; we only use ~0.9-1.1.
+        frequency. Good quality for rates 0.5-2.0; we only use ~0.9-1.1
+        in the per-segment pitch shifter.
         """
+        if rate <= 0:
+            return signal_1d.copy()
         if len(signal_1d) < nperseg:
             nperseg = max(64, 1 << (len(signal_1d).bit_length() - 1))
             if nperseg < 64:
@@ -761,7 +769,8 @@ class AudioProcessor:
         if n_frames < 2:
             return signal_1d.copy()
 
-        n_out_frames = int(np.ceil(n_frames / rate))
+        # Output frame count scales directly with stretch factor.
+        n_out_frames = max(1, int(np.ceil(n_frames * rate)))
         # Bin-frequency phase advance per hop (rad)
         phi_advance = np.arange(n_bins) * 2.0 * np.pi * hop / nperseg
 
@@ -769,7 +778,10 @@ class AudioProcessor:
         phase_acc = np.angle(Z[:, 0])
 
         for i in range(n_out_frames):
-            step = i * rate
+            # Read fractional source frame so `rate` hops of output equal 1
+            # hop of input movement. rate=2 -> each output frame advances
+            # source by 0.5 -> stretching.
+            step = i / rate
             idx = int(step)
             if idx >= n_frames - 1:
                 break
@@ -2001,6 +2013,9 @@ class MainWindow(QMainWindow):
             return
         if self.preview_worker and self.preview_worker.isRunning():
             return  # Already rendering
+        if self.compare_worker and self.compare_worker.isRunning():
+            self._log("Cannot render preview while comparing presets.")
+            return
 
         item = self._current_selected_item()
         if item is None:

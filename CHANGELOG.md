@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.0 (2026-04-19)
+- **Render Preview** -- new button in the Preview panel processes the first 30 seconds of the selected file with current settings, saves to a session temp directory, and auto-plays; lets you audition presets before committing compute to full-file processing
+- `AudioProcessor.process()` gained an optional `preview_seconds` parameter that trims the input to the first N seconds before the pipeline runs
+- New `PreviewWorker(QThread)` renders previews off the UI thread; mutually exclusive with batch processing (each blocks the other's button while running)
+- Preview files carry a visible marker in the Preview label (`(preview: 30s)`) and the Play button relabels to "Play Preview" so users never confuse a sample with a full output
+- `item_id`-based bookkeeping handles list mutations during render (removed/reordered items don't crash the done-handler)
+- Preview temp directory auto-created on first use and cleaned up on app close
+- Graceful degradation: Render Preview button disabled with tooltip when PyQt6 QtMultimedia module isn't available
+- Clicking Process All while a preview is rendering is blocked (and vice versa) to keep resource use predictable
+
 ## v1.2.1 (2026-04-19)
 - **Default preset changed to Extreme** -- real-world testing confirmed Extreme delivers the most consistent bypass results against Suno's detection; now the recommended starting point for all users
 - README preset table and guidance updated to highlight Extreme as the recommended choice

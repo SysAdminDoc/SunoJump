@@ -1,4 +1,4 @@
-![Version](https://img.shields.io/badge/version-1.2.1-blue)
+![Version](https://img.shields.io/badge/version-1.3.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -56,7 +56,8 @@ All Python dependencies install automatically on first run.
 - **Non-uniform segment processing** — breaks constellation fingerprint patterns
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
 - **Per-pass toggles and strength sliders** — fine-grained control
-- **In-app preview** — A/B compare original vs processed without leaving the app
+- **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing; tweak presets, re-render, compare
+- **In-app A/B playback** — play original and processed side-by-side without leaving the app
 - **Batch processing** — drag/drop multiple files, reorder them, process in parallel
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
 - **Chunked long-audio processing** — bounded memory for songs > 1 minute
@@ -72,8 +73,8 @@ python sunojump.py
 
 1. Drop audio files into the file list (or click Browse)
 2. Select a preset or customize individual parameters
-3. Click **Process All**
-4. Output files appear in the output directory with `_sj` suffix
+3. (Optional) Click **Render Preview** to process the first 30 seconds of the selected file so you can hear the result before committing; adjust settings and re-render as needed
+4. Click **Process All** to render every file in the list to the output directory with `_sj` suffix
 
 ### CLI Mode
 ```bash

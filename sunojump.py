@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.4.1 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.4.2 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -1156,7 +1156,13 @@ class ProcessWorker(QThread):
 
     def run(self):
         import time as _time
-        os.makedirs(self.output_dir, exist_ok=True)
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+        except OSError as e:
+            # Report and emit all_done so the UI doesn't stay stuck on "processing"
+            self.log_signal.emit(f"Cannot create output directory: {e}")
+            self.all_done.emit(0.0)
+            return
         n_files = len(self.files)
         t_start = _time.time()
 
@@ -1449,6 +1455,11 @@ class MainWindow(QMainWindow):
         self._compare_results = {}  # preset_name -> path
         self._compare_for_item_id = None  # id() of item compare was rendered for
         self._playing_compare_preset = None  # name of preset currently playing from compare
+        # Suppresses stale StoppedState signals during source transitions
+        # (player.stop() + setSource() + play() fires Stopped then Playing;
+        # the Stopped handler would otherwise wipe _playing_source state
+        # that _toggle_play() just set).
+        self._media_transitioning = False
         self._applying_preset = False
         self._last_browse_dir = str(Path.home())
         self._last_preset_dir = str(Path.home())
@@ -2199,13 +2210,18 @@ class MainWindow(QMainWindow):
             self.player.stop()
             return
 
-        # Stop any regular playback first
-        self._stop_playback()
-
-        self.player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
-        self.player.play()
-        self._playing_compare_preset = preset_name
-        self._playing_source = None  # compare mode, not original/processed
+        # Bracket transition -- prevents Stopped signal from _stop_playback()
+        # (or the implicit stop in setSource) from wiping the new state.
+        self._media_transitioning = True
+        try:
+            if self._playing_source is not None or self._playing_compare_preset is not None:
+                self.player.stop()
+            self.player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
+            self.player.play()
+            self._playing_compare_preset = preset_name
+            self._playing_source = None  # compare mode, not original/processed
+        finally:
+            self._media_transitioning = False
         self._update_compare_buttons()
         self.btn_apply_compare.setEnabled(True)
         self.btn_apply_compare.setText(f"Apply {preset_name}")
@@ -2243,10 +2259,17 @@ class MainWindow(QMainWindow):
             self._log(f"Cannot preview: file not available")
             return
 
-        self.player.stop()
-        self.player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
-        self.player.play()
-        self._playing_source = source
+        # Bracket the source transition so the Stopped signal from
+        # player.stop() doesn't race ahead of our state update.
+        self._media_transitioning = True
+        try:
+            self.player.stop()
+            self.player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
+            self.player.play()
+            self._playing_source = source
+            self._playing_compare_preset = None
+        finally:
+            self._media_transitioning = False
         self._update_preview_ui()
 
     def _stop_playback(self):
@@ -2258,6 +2281,10 @@ class MainWindow(QMainWindow):
 
     def _on_playback_state_changed(self, state):
         if self.player is None:
+            return
+        if self._media_transitioning:
+            # Stopped signal from our own stop() during a source swap;
+            # ignore -- the new play() call will drive state back to Playing.
             return
         if state == QMediaPlayer.PlaybackState.StoppedState:
             self._playing_source = None
@@ -2280,10 +2307,10 @@ class MainWindow(QMainWindow):
             return
         item = self._current_selected_item()
 
-        # If selection changed to a different item, hide stale compare results
-        if self.compare_panel.isVisible() and item is not None:
-            if id(item) != self._compare_for_item_id:
-                # Stop compare playback if it was running
+        # Hide stale compare panel if the file it was rendered for is gone
+        # or selection moved to a different file.
+        if self.compare_panel.isVisible():
+            if item is None or id(item) != self._compare_for_item_id:
                 if self._playing_compare_preset is not None and self.player is not None:
                     self.player.stop()
                 self._playing_compare_preset = None
@@ -2342,7 +2369,15 @@ class MainWindow(QMainWindow):
             self.btn_play_proc.setEnabled(proc_ok)
 
     def closeEvent(self, event):
+        # Disconnect playback state handler before stopping; otherwise the
+        # Stopped signal queued by stop() can fire after the window is being
+        # destroyed, hitting deallocated widgets.
         if self.player is not None:
+            try:
+                self.player.playbackStateChanged.disconnect(self._on_playback_state_changed)
+                self.player.errorOccurred.disconnect(self._on_player_error)
+            except (TypeError, RuntimeError):
+                pass
             self.player.stop()
         if self.worker and self.worker.isRunning():
             self.worker.cancel()

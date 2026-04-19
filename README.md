@@ -1,8 +1,8 @@
-<img width="1536" height="448" alt="banner" src="https://github.com/user-attachments/assets/aa8bac03-9f24-46eb-8d0d-4607e73d6146" />
+<img width="1536" height="448" alt="banner" src="banner.png" />
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.4.1-blue)
+![Version](https://img.shields.io/badge/version-1.4.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 

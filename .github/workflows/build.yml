@@ -25,14 +25,17 @@ jobs:
             os-label: Windows
             artifact-name: SunoJump.exe
             binary-path: dist/SunoJump.exe
+            release-name: SunoJump.exe
           - os: macos-latest
             os-label: macOS
             artifact-name: SunoJump-macOS
             binary-path: dist/SunoJump
+            release-name: SunoJump-macOS
           - os: ubuntu-latest
             os-label: Linux
             artifact-name: SunoJump-Linux
             binary-path: dist/SunoJump
+            release-name: SunoJump-Linux
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -92,5 +95,15 @@ jobs:
               gh release view "$TAG" >/dev/null 2>&1 || exit 1
             }
           fi
-          echo "Uploading ${{ matrix.binary-path }} to release $TAG"
-          gh release upload "$TAG" "${{ matrix.binary-path }}" --clobber
+          # Rename the binary so macOS and Linux don't collide on upload
+          # (both build dist/SunoJump, which would upload as the same asset
+          # name). Windows binary is already uniquely named .exe.
+          SRC="${{ matrix.binary-path }}"
+          DEST_NAME="${{ matrix.release-name }}"
+          DEST_DIR="$(dirname "$SRC")"
+          if [ "$(basename "$SRC")" != "$DEST_NAME" ]; then
+            cp "$SRC" "$DEST_DIR/$DEST_NAME"
+            SRC="$DEST_DIR/$DEST_NAME"
+          fi
+          echo "Uploading $SRC to release $TAG as $DEST_NAME"
+          gh release upload "$TAG" "$SRC" --clobber

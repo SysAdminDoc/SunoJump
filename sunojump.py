@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.4.2 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.0 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.4.2"
+VERSION = "1.5.0"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -55,9 +55,10 @@ from mutagen import File as MutagenFile
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGroupBox, QPushButton, QLabel, QListWidget, QListWidgetItem,
+    QPushButton, QLabel, QListWidget, QListWidgetItem,
     QComboBox, QLineEdit, QCheckBox, QSlider, QProgressBar,
-    QTextEdit, QFileDialog, QAbstractItemView,
+    QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
+    QStyle, QScrollArea,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
@@ -74,12 +75,16 @@ except ImportError:
 
 # --- Constants ---
 C = {
-    'base': '#1e1e2e', 'mantle': '#181825', 'crust': '#11111b',
-    'surface0': '#313244', 'surface1': '#45475a', 'surface2': '#585b70',
-    'text': '#cdd6f4', 'subtext': '#a6adc8', 'overlay': '#6c7086',
-    'blue': '#89b4fa', 'green': '#a6e3a1', 'red': '#f38ba8',
-    'yellow': '#f9e2af', 'mauve': '#cba6f7', 'peach': '#fab387',
-    'teal': '#94e2d5', 'lavender': '#b4befe',
+    'base': '#0f1110', 'mantle': '#151716', 'crust': '#090a0a',
+    'panel': '#191b1a', 'panel_alt': '#202321',
+    'surface0': '#242825', 'surface1': '#343933', 'surface2': '#4a5149',
+    'track': '#2a2e2b',
+    'text': '#f4efe6', 'subtext': '#b9b2a6', 'overlay': '#82877f',
+    'blue': '#75b7ff', 'green': '#7bd88f', 'red': '#ff6b6b',
+    'yellow': '#e8c468', 'mauve': '#c9a4ff', 'peach': '#d8a24a',
+    'teal': '#55d6be', 'lavender': '#d9d0c1',
+    'accent': '#d8a24a', 'accent_soft': '#f2d08a',
+    'stroke': '#2d322e',
 }
 
 SUPPORTED_FORMATS = {'.wav', '.mp3', '.flac', '.ogg', '.aiff', '.aif', '.opus'}
@@ -158,11 +163,81 @@ COMPARE_DURATION_SEC = 20.0  # length of each preset sample in Compare Presets m
 
 # --- Stylesheet ---
 STYLE = f"""
-QMainWindow, QWidget {{
+QMainWindow {{
     background-color: {C['base']};
+}}
+QWidget {{
     color: {C['text']};
-    font-family: 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Arial', sans-serif;
     font-size: 13px;
+}}
+QWidget#appRoot {{
+    background-color: {C['base']};
+}}
+QFrame#topBar {{
+    background-color: {C['crust']};
+    border: 1px solid {C['stroke']};
+    border-radius: 8px;
+}}
+QFrame#panel {{
+    background-color: {C['panel']};
+    border: 1px solid {C['stroke']};
+    border-radius: 8px;
+}}
+QScrollArea {{
+    background: transparent;
+    border: none;
+}}
+QScrollArea > QWidget > QWidget {{
+    background: transparent;
+}}
+QLabel {{
+    background: transparent;
+}}
+QLabel#appTitle {{
+    color: {C['text']};
+    font-size: 28px;
+    font-weight: bold;
+}}
+QLabel#appSubtitle {{
+    color: {C['subtext']};
+    font-size: 12px;
+}}
+QLabel#sectionTitle {{
+    color: {C['text']};
+    font-size: 15px;
+    font-weight: bold;
+}}
+QLabel#sectionSubtitle {{
+    color: {C['overlay']};
+    font-size: 11px;
+}}
+QLabel#statusPill, QLabel#accentPill {{
+    background-color: {C['surface0']};
+    border: 1px solid {C['surface1']};
+    border-radius: 8px;
+    padding: 5px 10px;
+    color: {C['subtext']};
+    font-size: 12px;
+    font-weight: bold;
+}}
+QLabel#accentPill {{
+    background-color: {C['accent']};
+    border-color: {C['accent']};
+    color: {C['crust']};
+}}
+QLabel#countLabel {{
+    color: {C['accent_soft']};
+    font-size: 12px;
+    font-weight: bold;
+}}
+QLabel#hintLabel {{
+    color: {C['overlay']};
+    font-size: 11px;
+}}
+QLabel#nowPlaying {{
+    color: {C['subtext']};
+    font-weight: 600;
 }}
 QGroupBox {{
     border: 1px solid {C['surface1']};
@@ -180,17 +255,17 @@ QGroupBox::title {{
 QPushButton {{
     background-color: {C['surface0']};
     border: 1px solid {C['surface1']};
-    border-radius: 6px;
-    padding: 6px 16px;
+    border-radius: 7px;
+    padding: 7px 14px;
     color: {C['text']};
     font-weight: bold;
 }}
 QPushButton:hover {{
-    background-color: {C['surface1']};
-    border-color: {C['blue']};
+    background-color: {C['panel_alt']};
+    border-color: {C['accent']};
 }}
 QPushButton:pressed {{
-    background-color: {C['surface2']};
+    background-color: {C['surface1']};
 }}
 QPushButton:disabled {{
     background-color: {C['mantle']};
@@ -198,41 +273,55 @@ QPushButton:disabled {{
     border-color: {C['surface0']};
 }}
 QPushButton#processBtn {{
-    background-color: {C['blue']};
+    background-color: {C['accent']};
+    border-color: {C['accent']};
     color: {C['crust']};
-    font-size: 14px;
-    padding: 8px 24px;
+    font-size: 15px;
+    padding: 10px 24px;
 }}
 QPushButton#processBtn:hover {{
-    background-color: {C['lavender']};
+    background-color: {C['accent_soft']};
+    border-color: {C['accent_soft']};
 }}
 QPushButton#processBtn:disabled {{
     background-color: {C['surface1']};
     color: {C['overlay']};
 }}
 QPushButton#cancelBtn {{
-    background-color: {C['red']};
-    color: {C['crust']};
+    background-color: rgba(255, 107, 107, 0.14);
+    border-color: rgba(255, 107, 107, 0.45);
+    color: {C['red']};
+}}
+QPushButton#iconButton {{
+    padding: 7px 9px;
+}}
+QPushButton#compareButton {{
+    padding: 6px 10px;
+    font-size: 12px;
 }}
 QListWidget {{
-    background-color: {C['mantle']};
+    background-color: {C['crust']};
     border: 1px solid {C['surface1']};
-    border-radius: 6px;
-    padding: 4px;
+    border-radius: 8px;
+    padding: 6px;
     color: {C['text']};
 }}
 QListWidget::item {{
-    padding: 4px 8px;
-    border-radius: 4px;
+    padding: 8px 10px;
+    border-radius: 6px;
 }}
 QListWidget::item:selected {{
     background-color: {C['surface0']};
+    color: {C['text']};
+}}
+QListWidget::item:hover {{
+    background-color: {C['mantle']};
 }}
 QComboBox {{
     background-color: {C['surface0']};
     border: 1px solid {C['surface1']};
-    border-radius: 6px;
-    padding: 4px 8px;
+    border-radius: 7px;
+    padding: 7px 10px;
     color: {C['text']};
     min-width: 100px;
 }}
@@ -247,14 +336,14 @@ QComboBox QAbstractItemView {{
     selection-background-color: {C['surface1']};
 }}
 QLineEdit {{
-    background-color: {C['mantle']};
+    background-color: {C['crust']};
     border: 1px solid {C['surface1']};
-    border-radius: 6px;
-    padding: 4px 8px;
+    border-radius: 7px;
+    padding: 7px 10px;
     color: {C['text']};
 }}
 QLineEdit:focus {{
-    border-color: {C['blue']};
+    border-color: {C['accent']};
 }}
 QCheckBox {{
     color: {C['text']};
@@ -263,28 +352,45 @@ QCheckBox {{
 QCheckBox::indicator {{
     width: 16px;
     height: 16px;
-    border-radius: 4px;
+    border-radius: 5px;
     border: 1px solid {C['surface2']};
     background-color: {C['surface0']};
 }}
 QCheckBox::indicator:checked {{
-    background-color: {C['blue']};
-    border-color: {C['blue']};
+    background-color: {C['accent']};
+    border-color: {C['accent']};
+}}
+QWidget#paramRow {{
+    background-color: {C['surface0']};
+    border: 1px solid transparent;
+    border-radius: 8px;
+}}
+QWidget#paramRow:hover {{
+    border-color: {C['surface1']};
+}}
+QLabel#paramName {{
+    color: {C['text']};
+    font-weight: bold;
+}}
+QLabel#paramValue {{
+    color: {C['accent_soft']};
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-weight: bold;
 }}
 QSlider::groove:horizontal {{
-    background: {C['surface0']};
+    background: {C['track']};
     height: 6px;
     border-radius: 3px;
 }}
 QSlider::handle:horizontal {{
-    background: {C['blue']};
-    width: 14px;
-    height: 14px;
-    margin: -4px 0;
-    border-radius: 7px;
+    background: {C['accent_soft']};
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
 }}
 QSlider::sub-page:horizontal {{
-    background: {C['blue']};
+    background: {C['accent']};
     border-radius: 3px;
 }}
 QSlider::groove:horizontal:disabled {{
@@ -297,28 +403,29 @@ QSlider::sub-page:horizontal:disabled {{
     background: {C['surface1']};
 }}
 QProgressBar {{
-    background-color: {C['surface0']};
+    background-color: {C['crust']};
     border: 1px solid {C['surface1']};
-    border-radius: 6px;
+    border-radius: 8px;
     text-align: center;
-    color: {C['text']};
-    height: 22px;
+    color: {C['subtext']};
+    height: 24px;
+    font-weight: bold;
 }}
 QProgressBar::chunk {{
-    background-color: {C['green']};
-    border-radius: 5px;
+    background-color: {C['teal']};
+    border-radius: 7px;
 }}
 QTextEdit {{
-    background-color: {C['mantle']};
+    background-color: {C['crust']};
     border: 1px solid {C['surface1']};
-    border-radius: 6px;
-    padding: 6px;
+    border-radius: 8px;
+    padding: 8px;
     color: {C['subtext']};
     font-family: 'Cascadia Code', 'Consolas', monospace;
     font-size: 12px;
 }}
 QScrollBar:vertical {{
-    background: {C['mantle']};
+    background: {C['crust']};
     width: 10px;
     border-radius: 5px;
 }}
@@ -1374,6 +1481,9 @@ class ParamRow(QWidget):
     def __init__(self, key, label, min_val, max_val, default, suffix='',
                  decimals=2, enabled_key='', display_factor=1.0):
         super().__init__()
+        self.setObjectName("paramRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMinimumHeight(38)
         self.key = key
         self.enabled_key = enabled_key
         self.min_val = min_val
@@ -1383,14 +1493,17 @@ class ParamRow(QWidget):
         self.display_factor = display_factor
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(10)
 
         self.check = QCheckBox()
         self.check.setChecked(True)
+        self.check.setToolTip(f"Enable {label}")
         lay.addWidget(self.check)
 
         self._label = QLabel(label)
-        self._label.setFixedWidth(170)
+        self._label.setObjectName("paramName")
+        self._label.setFixedWidth(180)
         lay.addWidget(self._label)
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -1398,7 +1511,8 @@ class ParamRow(QWidget):
         lay.addWidget(self.slider, 1)
 
         self.val_label = QLabel()
-        self.val_label.setFixedWidth(65)
+        self.val_label.setObjectName("paramValue")
+        self.val_label.setFixedWidth(72)
         self.val_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
         )
@@ -1445,8 +1559,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
-        self.setMinimumSize(720, 900)
-        self.resize(760, 980)
+        self.setMinimumSize(1060, 780)
+        self.resize(1180, 880)
         self.worker = None
         self.preview_worker = None
         self.compare_worker = None
@@ -1476,28 +1590,33 @@ class MainWindow(QMainWindow):
             self.player.errorOccurred.connect(self._on_player_error)
 
         central = QWidget()
+        central.setObjectName("appRoot")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(12, 8, 12, 12)
-        root.setSpacing(6)
+        root.setContentsMargins(18, 16, 18, 18)
+        root.setSpacing(14)
 
-        # Title
-        title_row = QHBoxLayout()
-        title = QLabel(APP_NAME)
-        title.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {C['blue']};")
-        ver = QLabel(f"v{VERSION}")
-        ver.setStyleSheet(f"font-size: 12px; color: {C['overlay']};")
-        title_row.addWidget(title)
-        title_row.addWidget(ver)
-        title_row.addStretch()
-        root.addLayout(title_row)
+        root.addWidget(self._build_header())
 
-        root.addWidget(self._build_files())
-        root.addWidget(self._build_settings())
-        root.addWidget(self._build_output())
-        root.addLayout(self._build_controls())
-        root.addWidget(self._build_preview())
-        root.addWidget(self._build_log())
+        workspace = QHBoxLayout()
+        workspace.setSpacing(14)
+
+        left_col = QVBoxLayout()
+        left_col.setSpacing(14)
+        left_col.addWidget(self._build_files(), 5)
+        left_col.addWidget(self._build_preview(), 0)
+        left_col.addWidget(self._build_log(), 3)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(14)
+        right_col.addWidget(self._build_settings(), 7)
+        right_col.addWidget(self._build_output(), 0)
+        right_col.addWidget(self._build_controls(), 0)
+
+        workspace.addLayout(left_col, 5)
+        workspace.addLayout(right_col, 6)
+        root.addLayout(workspace, 1)
+        self._sync_header_stats()
 
         # Center on screen
         screen = QApplication.primaryScreen()
@@ -1507,21 +1626,114 @@ class MainWindow(QMainWindow):
             y = (geo.height() - self.height()) // 2 + geo.y()
             self.move(x, y)
 
+    def _standard_icon(self, pixmap):
+        return self.style().standardIcon(pixmap)
+
+    def _decorate_button(self, button, pixmap=None, object_name=None):
+        if object_name:
+            button.setObjectName(object_name)
+        if pixmap is not None:
+            button.setIcon(self._standard_icon(pixmap))
+        return button
+
+    def _build_header(self):
+        bar = QFrame()
+        bar.setObjectName("topBar")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(16)
+
+        brand_col = QVBoxLayout()
+        brand_col.setSpacing(1)
+        title = QLabel(APP_NAME)
+        title.setObjectName("appTitle")
+        subtitle = QLabel("Audio fingerprint masking studio")
+        subtitle.setObjectName("appSubtitle")
+        brand_col.addWidget(title)
+        brand_col.addWidget(subtitle)
+        lay.addLayout(brand_col, 1)
+
+        self.queue_status_label = QLabel("0 files")
+        self.queue_status_label.setObjectName("statusPill")
+        self.preset_status_label = QLabel("Extreme")
+        self.preset_status_label.setObjectName("accentPill")
+        self.format_status_label = QLabel("WAV")
+        self.format_status_label.setObjectName("statusPill")
+        self.render_status_label = QLabel("Ready")
+        self.render_status_label.setObjectName("statusPill")
+
+        for widget in (
+            self.queue_status_label,
+            self.preset_status_label,
+            self.format_status_label,
+            self.render_status_label,
+        ):
+            lay.addWidget(widget)
+
+        version = QLabel(f"v{VERSION}")
+        version.setObjectName("sectionSubtitle")
+        lay.addWidget(version)
+        return bar
+
+    def _make_panel(self, title, subtitle=None):
+        panel = QFrame()
+        panel.setObjectName("panel")
+        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(16, 14, 16, 16)
+        outer.setSpacing(12)
+
+        head = QVBoxLayout()
+        head.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setObjectName("sectionTitle")
+        head.addWidget(title_label)
+        if subtitle:
+            subtitle_label = QLabel(subtitle)
+            subtitle_label.setObjectName("sectionSubtitle")
+            head.addWidget(subtitle_label)
+        outer.addLayout(head)
+        return panel, outer
+
+    def _sync_header_stats(self):
+        if not hasattr(self, 'queue_status_label'):
+            return
+        count = self.file_list.count() if hasattr(self, 'file_list') else 0
+        self.queue_status_label.setText(f"{count} file{'s' if count != 1 else ''}")
+        if hasattr(self, 'preset_combo'):
+            self.preset_status_label.setText(self.preset_combo.currentText())
+        if hasattr(self, 'format_combo'):
+            self.format_status_label.setText(self.format_combo.currentText())
+
+    def _set_render_state(self, text):
+        if hasattr(self, 'render_status_label'):
+            self.render_status_label.setText(text)
+
     # --- File section ---
     def _build_files(self):
-        grp = QGroupBox("Files")
-        lay = QVBoxLayout(grp)
+        panel, lay = self._make_panel(
+            "Queue",
+            "Add audio files, reorder the batch, and track rendered outputs.",
+        )
 
         btn_row = QHBoxLayout()
-        self.btn_browse = QPushButton("Browse...")
+        btn_row.setSpacing(8)
+        self.btn_browse = self._decorate_button(
+            QPushButton("Browse"),
+            QStyle.StandardPixmap.SP_DialogOpenButton,
+        )
         self.btn_browse.clicked.connect(self._on_browse)
-        self.btn_remove = QPushButton("Remove")
+        self.btn_remove = self._decorate_button(
+            QPushButton("Remove"),
+            QStyle.StandardPixmap.SP_DialogCancelButton,
+        )
         self.btn_remove.clicked.connect(self._on_remove_selected)
         self.btn_clear = QPushButton("Clear")
         self.btn_clear.clicked.connect(self._on_clear)
 
         self.file_count_label = QLabel("0 files")
-        self.file_count_label.setStyleSheet(f"color: {C['overlay']}; font-style: italic;")
+        self.file_count_label.setObjectName("countLabel")
 
         btn_row.addWidget(self.btn_browse)
         btn_row.addWidget(self.btn_remove)
@@ -1531,25 +1743,27 @@ class MainWindow(QMainWindow):
         lay.addLayout(btn_row)
 
         self.file_list = DropListWidget()
-        self.file_list.setMinimumHeight(90)
-        self.file_list.setMaximumHeight(140)
+        self.file_list.setMinimumHeight(220)
         self.file_list.filesDropped.connect(self._add_files)
         self.file_list.itemSelectionChanged.connect(self._update_preview_ui)
         lay.addWidget(self.file_list)
 
-        hint = QLabel("Drop files here  \u2022  drag to reorder")
-        hint.setStyleSheet(f"color: {C['overlay']}; font-style: italic; font-size: 11px;")
+        hint = QLabel("Drop files here - drag to reorder - WAV, MP3, FLAC, OGG, AIFF, Opus")
+        hint.setObjectName("hintLabel")
         lay.addWidget(hint)
 
-        return grp
+        return panel
 
     # --- Settings section ---
     def _build_settings(self):
-        grp = QGroupBox("Processing Pipeline")
-        lay = QVBoxLayout(grp)
+        panel, lay = self._make_panel(
+            "Processing Pipeline",
+            "Tune the transform profile before rendering the batch.",
+        )
 
         # Preset row
         preset_row = QHBoxLayout()
+        preset_row.setSpacing(8)
         preset_row.addWidget(QLabel("Preset:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(list(PRESETS.keys()) + ['Custom'])
@@ -1557,12 +1771,18 @@ class MainWindow(QMainWindow):
         self.preset_combo.currentTextChanged.connect(self._on_preset)
         preset_row.addWidget(self.preset_combo)
 
-        self.btn_save_preset = QPushButton("Save...")
+        self.btn_save_preset = self._decorate_button(
+            QPushButton("Save"),
+            QStyle.StandardPixmap.SP_DialogSaveButton,
+        )
         self.btn_save_preset.setToolTip("Save current settings to a JSON file")
         self.btn_save_preset.clicked.connect(self._save_preset)
         preset_row.addWidget(self.btn_save_preset)
 
-        self.btn_load_preset = QPushButton("Load...")
+        self.btn_load_preset = self._decorate_button(
+            QPushButton("Load"),
+            QStyle.StandardPixmap.SP_DialogOpenButton,
+        )
         self.btn_load_preset.setToolTip("Load settings from a JSON file")
         self.btn_load_preset.clicked.connect(self._load_preset)
         preset_row.addWidget(self.btn_load_preset)
@@ -1577,72 +1797,118 @@ class MainWindow(QMainWindow):
 
         # Param rows
         self.param_rows = {}
+        param_scroller = QScrollArea()
+        param_scroller.setWidgetResizable(True)
+        param_scroller.setMinimumHeight(320)
+        param_scroller.setFrameShape(QFrame.Shape.NoFrame)
+        param_container = QWidget()
+        param_lay = QVBoxLayout(param_container)
+        param_lay.setContentsMargins(0, 0, 0, 0)
+        param_lay.setSpacing(8)
         for key, label, mn, mx, df, suf, dec, ek, *rest in PARAM_DEFS:
             dfact = rest[0] if rest else 1.0
             row = ParamRow(key, label, mn, mx, df, suf, dec, ek, dfact)
             row.changed.connect(self._on_param_changed)
             self.param_rows[key] = row
-            lay.addWidget(row)
+            param_lay.addWidget(row)
+        param_lay.addStretch()
+        param_scroller.setWidget(param_container)
+        lay.addWidget(param_scroller, 1)
 
         self._apply_preset('Extreme')
-        return grp
+        return panel
 
     # --- Output section ---
     def _build_output(self):
-        grp = QGroupBox("Output")
-        lay = QHBoxLayout(grp)
-
-        lay.addWidget(QLabel("Format:"))
+        panel, lay = self._make_panel(
+            "Destination",
+            "Choose format and output directory for processed files.",
+        )
+        format_row = QHBoxLayout()
+        format_row.setSpacing(8)
+        format_row.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
         self.format_combo.addItems(['WAV', 'FLAC', 'OGG'])
-        lay.addWidget(self.format_combo)
-
-        lay.addSpacing(16)
-        lay.addWidget(QLabel("Directory:"))
-        self.output_dir = QLineEdit(DEFAULT_OUTPUT)
-        lay.addWidget(self.output_dir, 1)
-        btn_dir = QPushButton("...")
-        btn_dir.setFixedWidth(36)
-        btn_dir.clicked.connect(self._browse_output)
-        lay.addWidget(btn_dir)
-
-        self.btn_open_output = QPushButton("Open")
+        self.format_combo.currentTextChanged.connect(lambda _: self._sync_header_stats())
+        self.format_combo.setFixedWidth(140)
+        format_row.addWidget(self.format_combo)
+        format_row.addStretch()
+        self.btn_open_output = self._decorate_button(
+            QPushButton("Open"),
+            QStyle.StandardPixmap.SP_DirOpenIcon,
+        )
         self.btn_open_output.setToolTip("Open output directory in file manager")
         self.btn_open_output.clicked.connect(self._open_output)
-        lay.addWidget(self.btn_open_output)
+        format_row.addWidget(self.btn_open_output)
+        lay.addLayout(format_row)
 
-        return grp
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(8)
+        dir_row.addWidget(QLabel("Directory:"))
+        self.output_dir = QLineEdit(DEFAULT_OUTPUT)
+        self.output_dir.setMinimumWidth(320)
+        dir_row.addWidget(self.output_dir, 1)
+        btn_dir = self._decorate_button(
+            QPushButton(""),
+            QStyle.StandardPixmap.SP_DirOpenIcon,
+            "iconButton",
+        )
+        btn_dir.setFixedWidth(36)
+        btn_dir.clicked.connect(self._browse_output)
+        dir_row.addWidget(btn_dir)
+        lay.addLayout(dir_row)
+
+        return panel
 
     # --- Controls ---
     def _build_controls(self):
-        lay = QHBoxLayout()
+        panel, lay = self._make_panel(
+            "Render",
+            "Start the full batch or stop an active render.",
+        )
+        row = QHBoxLayout()
+        row.setSpacing(10)
 
-        self.btn_process = QPushButton("Process All")
-        self.btn_process.setObjectName("processBtn")
+        self.btn_process = self._decorate_button(
+            QPushButton("Process All"),
+            QStyle.StandardPixmap.SP_MediaPlay,
+            "processBtn",
+        )
         self.btn_process.clicked.connect(self._on_process)
-        lay.addWidget(self.btn_process)
+        row.addWidget(self.btn_process)
 
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_cancel.setObjectName("cancelBtn")
+        self.btn_cancel = self._decorate_button(
+            QPushButton("Cancel"),
+            QStyle.StandardPixmap.SP_MediaStop,
+            "cancelBtn",
+        )
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._on_cancel)
-        lay.addWidget(self.btn_cancel)
+        row.addWidget(self.btn_cancel)
 
-        lay.addSpacing(16)
+        row.addSpacing(8)
         self.progress = QProgressBar()
         self.progress.setValue(0)
-        lay.addWidget(self.progress, 1)
+        self.progress.setFormat("%p%")
+        row.addWidget(self.progress, 1)
+        lay.addLayout(row)
 
-        return lay
+        return panel
 
     # --- Preview ---
     def _build_preview(self):
-        grp = QGroupBox("Preview")
-        outer = QVBoxLayout(grp)
+        panel, outer = self._make_panel(
+            "Monitor",
+            "Render short previews, compare presets, and audition results.",
+        )
 
         # Row 1: render + playback controls
         row1 = QHBoxLayout()
-        self.btn_render_preview = QPushButton("Render Preview")
+        row1.setSpacing(8)
+        self.btn_render_preview = self._decorate_button(
+            QPushButton("Preview"),
+            QStyle.StandardPixmap.SP_BrowserReload,
+        )
         self.btn_render_preview.setToolTip(
             f"Process the first {int(PREVIEW_DURATION_SEC)} seconds of the selected file "
             "with current settings so you can hear the result before committing."
@@ -1651,7 +1917,10 @@ class MainWindow(QMainWindow):
         self.btn_render_preview.setEnabled(False)
         row1.addWidget(self.btn_render_preview)
 
-        self.btn_compare = QPushButton("Compare Presets")
+        self.btn_compare = self._decorate_button(
+            QPushButton("Compare"),
+            QStyle.StandardPixmap.SP_MediaPlay,
+        )
         self.btn_compare.setToolTip(
             f"Render a {int(COMPARE_DURATION_SEC)}s sample with each built-in preset "
             "so you can A/B/C/D audition them, then apply your favorite."
@@ -1660,30 +1929,39 @@ class MainWindow(QMainWindow):
         self.btn_compare.setEnabled(False)
         row1.addWidget(self.btn_compare)
 
-        self.btn_play_orig = QPushButton("Play Original")
+        self.btn_play_orig = self._decorate_button(
+            QPushButton("Original"),
+            QStyle.StandardPixmap.SP_MediaPlay,
+        )
         self.btn_play_orig.clicked.connect(lambda: self._toggle_play('original'))
         self.btn_play_orig.setEnabled(False)
         row1.addWidget(self.btn_play_orig)
 
-        self.btn_play_proc = QPushButton("Play Processed")
+        self.btn_play_proc = self._decorate_button(
+            QPushButton("Processed"),
+            QStyle.StandardPixmap.SP_MediaPlay,
+        )
         self.btn_play_proc.clicked.connect(lambda: self._toggle_play('processed'))
         self.btn_play_proc.setEnabled(False)
         row1.addWidget(self.btn_play_proc)
 
         row1.addSpacing(12)
         self.preview_label = QLabel("Select a file")
-        self.preview_label.setStyleSheet(f"color: {C['overlay']}; font-style: italic;")
+        self.preview_label.setObjectName("nowPlaying")
         row1.addWidget(self.preview_label, 1)
         outer.addLayout(row1)
 
         # Row 2: compare panel (hidden until Compare Presets is rendered)
         self.compare_panel = QWidget()
+        self.compare_panel.setObjectName("comparePanel")
         compare_lay = QHBoxLayout(self.compare_panel)
-        compare_lay.setContentsMargins(0, 4, 0, 0)
+        compare_lay.setContentsMargins(0, 2, 0, 0)
+        compare_lay.setSpacing(8)
         compare_lay.addWidget(QLabel("A/B:"))
         self.compare_buttons = {}
         for name in PRESETS.keys():
             btn = QPushButton(name)
+            btn.setObjectName("compareButton")
             btn.setToolTip(f"Play the {name} sample")
             btn.setEnabled(False)
             btn.clicked.connect(lambda _checked=False, n=name: self._play_compare(n))
@@ -1709,18 +1987,19 @@ class MainWindow(QMainWindow):
             self.btn_compare.setToolTip("Requires PyQt6 QtMultimedia module")
             self.preview_label.setText("(PyQt6 Multimedia not available)")
 
-        return grp
+        return panel
 
     # --- Log ---
     def _build_log(self):
-        grp = QGroupBox("Log")
-        lay = QVBoxLayout(grp)
+        panel, lay = self._make_panel(
+            "Session Log",
+            "Processing events, warnings, and strength metrics.",
+        )
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(110)
-        self.log_box.setMaximumHeight(180)
+        self.log_box.setMinimumHeight(170)
         lay.addWidget(self.log_box)
-        return grp
+        return panel
 
     # --- File list slots ---
     def _on_browse(self):
@@ -1794,7 +2073,8 @@ class MainWindow(QMainWindow):
         self._update_preview_ui()
 
     def _append_item(self, path):
-        item = QListWidgetItem(f"  {Path(path).name}")
+        item = QListWidgetItem(f"READY    {Path(path).name}")
+        item.setToolTip(path)
         item.setData(ROLE_INPUT, path)
         item.setData(ROLE_OUTPUT, None)
         self.file_list.addItem(item)
@@ -1802,11 +2082,13 @@ class MainWindow(QMainWindow):
     def _update_file_count(self):
         n = self.file_list.count()
         self.file_count_label.setText(f"{n} file{'s' if n != 1 else ''}")
+        self._sync_header_stats()
 
     # --- Preset slots ---
     def _on_preset(self, name):
         if name in PRESETS:
             self._apply_preset(name)
+        self._sync_header_stats()
 
     def _apply_preset(self, name):
         self._applying_preset = True
@@ -1828,6 +2110,7 @@ class MainWindow(QMainWindow):
             self.preset_combo.blockSignals(True)
             self.preset_combo.setCurrentText('Custom')
             self.preset_combo.blockSignals(False)
+            self._sync_header_stats()
 
     def _save_preset(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1888,6 +2171,7 @@ class MainWindow(QMainWindow):
             self.preset_combo.blockSignals(True)
             self.preset_combo.setCurrentText('Custom')
             self.preset_combo.blockSignals(False)
+            self._sync_header_stats()
             self._log(f"Preset loaded: {Path(path).name}")
         except Exception as e:
             self._log(f"Load preset failed: {e}")
@@ -1907,6 +2191,7 @@ class MainWindow(QMainWindow):
         self.btn_process.setEnabled(not processing)
         self.btn_cancel.setEnabled(processing)
         self._set_general_controls(not processing)
+        self._set_render_state("Processing" if processing else "Ready")
         # Preview + compare mutually exclusive with batch processing
         has_selection = self._current_selected_item() is not None
         if _MULTIMEDIA_OK:
@@ -1920,8 +2205,9 @@ class MainWindow(QMainWindow):
     def _set_preview_running_ui(self, running):
         if _MULTIMEDIA_OK:
             self.btn_render_preview.setEnabled(not running)
-            self.btn_render_preview.setText("Rendering..." if running else "Render Preview")
+            self.btn_render_preview.setText("Rendering..." if running else "Preview")
             self.btn_compare.setEnabled(not running)
+        self._set_render_state("Previewing" if running else "Ready")
         self.btn_process.setEnabled(not running)
         self._set_general_controls(not running)
         self.file_list.setDragEnabled(not running)
@@ -1929,13 +2215,14 @@ class MainWindow(QMainWindow):
     def _set_compare_running_ui(self, running):
         if _MULTIMEDIA_OK:
             self.btn_compare.setEnabled(not running)
-            self.btn_compare.setText("Comparing..." if running else "Compare Presets")
+            self.btn_compare.setText("Comparing..." if running else "Compare")
             self.btn_render_preview.setEnabled(not running)
             # Individual compare buttons disabled during re-render
             if running:
                 for b in self.compare_buttons.values():
                     b.setEnabled(False)
                 self.btn_apply_compare.setEnabled(False)
+        self._set_render_state("Comparing" if running else "Ready")
         self.btn_process.setEnabled(not running)
         self._set_general_controls(not running)
         self.file_list.setDragEnabled(not running)
@@ -1949,6 +2236,7 @@ class MainWindow(QMainWindow):
 
     def _on_process(self):
         if self.file_list.count() == 0:
+            self._set_render_state("Add files")
             self._log("No files to process.")
             return
 
@@ -1978,6 +2266,7 @@ class MainWindow(QMainWindow):
 
     def _on_cancel(self):
         if self.worker:
+            self._set_render_state("Cancelling")
             self.worker.cancel()
             self._log("\nCancelling...")
 
@@ -1985,23 +2274,24 @@ class MainWindow(QMainWindow):
         if 0 <= idx < self.file_list.count():
             item = self.file_list.item(idx)
             name = Path(item.data(ROLE_INPUT)).name
-            item.setText(f"  {name}  [processing...]")
+            item.setText(f"RUNNING  {name}")
 
     def _on_file_done(self, idx, ok, out_path):
         if 0 <= idx < self.file_list.count():
             item = self.file_list.item(idx)
             name = Path(item.data(ROLE_INPUT)).name
             if ok:
-                item.setText(f"  {name}  [-> {Path(out_path).name}]")
+                item.setText(f"DONE     {name} -> {Path(out_path).name}")
                 item.setData(ROLE_OUTPUT, out_path)
             else:
-                item.setText(f"  {name}  [FAILED]")
+                item.setText(f"FAILED   {name}")
                 item.setData(ROLE_OUTPUT, None)
         self._update_preview_ui()
 
     def _on_all_done(self, total_seconds=0.0):
         self._set_processing_ui(False)
         self.progress.setValue(100)
+        self._set_render_state("Complete")
         if total_seconds > 0.01:
             mins, secs = divmod(total_seconds, 60)
             timing = f" ({int(mins)}m {secs:.1f}s)" if mins else f" ({total_seconds:.1f}s)"
@@ -2332,8 +2622,8 @@ class MainWindow(QMainWindow):
         self.btn_compare.setEnabled(can_run)
 
         if item is None:
-            self.btn_play_orig.setText("Play Original")
-            self.btn_play_proc.setText("Play Processed")
+            self.btn_play_orig.setText("Original")
+            self.btn_play_proc.setText("Processed")
             self.btn_play_orig.setEnabled(False)
             self.btn_play_proc.setEnabled(False)
             self.preview_label.setText("Select a file")
@@ -2350,7 +2640,7 @@ class MainWindow(QMainWindow):
             display_name = f"{display_name}  (preview: {int(PREVIEW_DURATION_SEC)}s)"
         self.preview_label.setText(display_name)
 
-        processed_label = "Play Preview" if is_preview else "Play Processed"
+        processed_label = "Preview" if is_preview else "Processed"
 
         if self._playing_source == 'original':
             self.btn_play_orig.setText("Stop")
@@ -2358,12 +2648,12 @@ class MainWindow(QMainWindow):
             self.btn_play_proc.setText(processed_label)
             self.btn_play_proc.setEnabled(False)
         elif self._playing_source == 'processed':
-            self.btn_play_orig.setText("Play Original")
+            self.btn_play_orig.setText("Original")
             self.btn_play_orig.setEnabled(False)
             self.btn_play_proc.setText("Stop")
             self.btn_play_proc.setEnabled(True)
         else:
-            self.btn_play_orig.setText("Play Original")
+            self.btn_play_orig.setText("Original")
             self.btn_play_proc.setText(processed_label)
             self.btn_play_orig.setEnabled(orig_ok)
             self.btn_play_proc.setEnabled(proc_ok)

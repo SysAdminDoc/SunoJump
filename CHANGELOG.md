@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.1 (2026-04-19)
+- **Fix (regression): Phase vocoder pitch shifter produced a silence tail** on any segment with a positive semitone shift. The `_pv_time_stretch` implementation had inverted rate semantics -- calling it with the pitch factor gave output_length = input_length / factor^2 samples of real audio, padded to full length with zeros. Only positive shifts were affected (negative shifts worked because the resample step produced longer intermediate audio that was correctly trimmed). Verified fix: +12 st on a 3s 440 Hz tone now produces a full 3s at 880 Hz with uniform RMS instead of 1s signal + 2s silence.
+- **Progress bar updates during Compare Presets and Render Preview** -- PresetCompareWorker and PreviewWorker now emit progress signals; the main window progress bar reflects render progress instead of sitting at 0 for 30s.
+- **File list rows show "[processing...]" marker** while a file is being processed in a batch (previously just sat at the default text until completion).
+- **Total time logged on batch completion** -- "All done (45.2s)" or "(1m 23s)" for longer runs.
+- **CI workflow is now idempotent** -- creates the GitHub Release if it doesn't exist before uploading binaries, handling the race between `git push --tags` and manual `gh release create`. Also handles concurrent matrix-job creates gracefully.
+- **Defense-in-depth guard on Render Preview** -- explicit check that compare_worker isn't running (UI already disables the button, but the slot now bails cleanly if somehow invoked concurrently).
+
 ## v1.4.0 (2026-04-19)
 - **Phase vocoder pitch shifting** -- replaced time-warp-based pitch micro-shift with a proper phase vocoder implementation (pure scipy, no librosa dependency). Eliminates the audible warble at Extreme preset's ±3-semitone shifts while preserving the non-uniform per-segment randomization that breaks fingerprints. Tempo no longer shifts as a side-effect of pitch.
 - **Non-uniform spectral perturbation** -- spectral perturbation now processes in 3-second segments with per-segment random seeds, breaking detectors that look for consistent spectral signatures across a whole track. Short files (<3s) still get a single pass to avoid STFT edge issues.

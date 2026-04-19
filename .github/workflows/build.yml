@@ -78,5 +78,19 @@ jobs:
           if [ -z "$TAG" ]; then
             TAG="${GITHUB_REF#refs/tags/}"
           fi
+          # Idempotent: create the release if it doesn't exist yet. This
+          # handles the case where a tag push triggers CI before the release
+          # has been created manually (race between `git push --tags` and
+          # `gh release create`). --generate-notes pulls from git log.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG does not exist yet; creating."
+            gh release create "$TAG" --title "$TAG" --generate-notes || {
+              # Another matrix job may have created it between our check and
+              # create -- that's fine, proceed to upload.
+              echo "Create failed (likely race with another matrix job); retrying view."
+              sleep 2
+              gh release view "$TAG" >/dev/null 2>&1 || exit 1
+            }
+          fi
           echo "Uploading ${{ matrix.binary-path }} to release $TAG"
           gh release upload "$TAG" "${{ matrix.binary-path }}" --clobber

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.4.0 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.4.1 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -1140,9 +1140,12 @@ class AudioProcessor:
 class ProcessWorker(QThread):
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)
+    # file_started(row_index) - fired just before processing each file
+    file_started = pyqtSignal(int)
     # file_done(row_index, success, output_path_or_empty)
     file_done = pyqtSignal(int, bool, str)
-    all_done = pyqtSignal()
+    # all_done(total_seconds)
+    all_done = pyqtSignal(float)
 
     def __init__(self, files, params, output_dir):
         super().__init__()
@@ -1152,12 +1155,16 @@ class ProcessWorker(QThread):
         self._cancel_event = threading.Event()
 
     def run(self):
+        import time as _time
         os.makedirs(self.output_dir, exist_ok=True)
         n_files = len(self.files)
+        t_start = _time.time()
 
         for idx, filepath in enumerate(self.files):
             if self._cancel_event.is_set():
                 break
+
+            self.file_started.emit(idx)
 
             # Map per-file progress (0-100) to batch progress
             def batch_progress(v, _idx=idx, _n=n_files):
@@ -1181,7 +1188,7 @@ class ProcessWorker(QThread):
 
             self.file_done.emit(idx, ok, out_path if ok else "")
 
-        self.all_done.emit()
+        self.all_done.emit(_time.time() - t_start)
 
     def cancel(self):
         self._cancel_event.set()
@@ -1194,6 +1201,7 @@ class PreviewWorker(QThread):
     """Renders a short clip of a single file for audition purposes."""
 
     log_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(int)
     # done(success, output_path_or_empty, item_id)
     done = pyqtSignal(bool, str, int)
 
@@ -1228,6 +1236,7 @@ class PreviewWorker(QThread):
         processor = AudioProcessor(
             params,
             log_fn=lambda m: self.log_signal.emit(m),
+            progress_fn=lambda v: self.progress_signal.emit(v),
             cancel_event=self._cancel_event,
         )
         ok = processor.process(self.input_path, out_path, preview_seconds=self.duration_sec)
@@ -1246,6 +1255,7 @@ class PresetCompareWorker(QThread):
     temp directory keyed by preset name."""
 
     log_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(int)  # 0-100 overall (across all presets)
     # preset_done(preset_name, ok, path)
     preset_done = pyqtSignal(str, bool, str)
     # all_done(results_dict)  mapping preset_name -> out_path (only successes)
@@ -1270,11 +1280,16 @@ class PresetCompareWorker(QThread):
         stem = Path(self.input_path).stem
         ts = datetime.now().strftime("%H%M%S%f")
         preset_names = list(PRESETS.keys())
+        n_presets = len(preset_names)
 
         for i, name in enumerate(preset_names):
             if self._cancel_event.is_set():
                 break
-            self.log_signal.emit(f"Compare {i+1}/{len(preset_names)}: {name}")
+            self.log_signal.emit(f"Compare {i+1}/{n_presets}: {name}")
+
+            # Map single-render progress (0-100) to overall (0-100)
+            def sub_progress(v, _i=i, _n=n_presets):
+                self.progress_signal.emit((_i * 100 + v) // _n)
 
             params = dict(PRESETS[name])
             params['output_format'] = 'wav'
@@ -1284,10 +1299,10 @@ class PresetCompareWorker(QThread):
                 self.temp_dir, f"{stem}_compare_{name}_{ts}.wav",
             )
 
-            # Share the cancel event so the user's Cancel stops mid-render
             proc = AudioProcessor(
                 params,
                 log_fn=lambda m: self.log_signal.emit(f"  {m}"),
+                progress_fn=sub_progress,
                 cancel_event=self._cancel_event,
             )
             ok = proc.process(
@@ -1299,6 +1314,7 @@ class PresetCompareWorker(QThread):
             else:
                 self.preset_done.emit(name, False, "")
 
+        self.progress_signal.emit(100)
         self.all_done.emit(results)
 
     def cancel(self):
@@ -1944,6 +1960,7 @@ class MainWindow(QMainWindow):
         self.worker = ProcessWorker(files, params, out_dir)
         self.worker.log_signal.connect(self._log)
         self.worker.progress_signal.connect(self.progress.setValue)
+        self.worker.file_started.connect(self._on_file_started)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.all_done.connect(self._on_all_done)
         self.worker.start()
@@ -1952,6 +1969,12 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.cancel()
             self._log("\nCancelling...")
+
+    def _on_file_started(self, idx):
+        if 0 <= idx < self.file_list.count():
+            item = self.file_list.item(idx)
+            name = Path(item.data(ROLE_INPUT)).name
+            item.setText(f"  {name}  [processing...]")
 
     def _on_file_done(self, idx, ok, out_path):
         if 0 <= idx < self.file_list.count():
@@ -1965,10 +1988,15 @@ class MainWindow(QMainWindow):
                 item.setData(ROLE_OUTPUT, None)
         self._update_preview_ui()
 
-    def _on_all_done(self):
+    def _on_all_done(self, total_seconds=0.0):
         self._set_processing_ui(False)
         self.progress.setValue(100)
-        self._log("\nAll done.")
+        if total_seconds > 0.01:
+            mins, secs = divmod(total_seconds, 60)
+            timing = f" ({int(mins)}m {secs:.1f}s)" if mins else f" ({total_seconds:.1f}s)"
+        else:
+            timing = ""
+        self._log(f"\nAll done.{timing}")
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -2058,6 +2086,7 @@ class MainWindow(QMainWindow):
             input_path, params, self._preview_tempdir, self._preview_item_id,
         )
         self.preview_worker.log_signal.connect(self._log)
+        self.preview_worker.progress_signal.connect(self.progress.setValue)
         self.preview_worker.done.connect(self._on_preview_done)
         self.preview_worker.start()
 
@@ -2134,6 +2163,7 @@ class MainWindow(QMainWindow):
 
         self.compare_worker = PresetCompareWorker(input_path, self._preview_tempdir)
         self.compare_worker.log_signal.connect(self._log)
+        self.compare_worker.progress_signal.connect(self.progress.setValue)
         self.compare_worker.preset_done.connect(self._on_compare_preset_done)
         self.compare_worker.all_done.connect(self._on_compare_all_done)
         self.compare_worker.start()

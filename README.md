@@ -10,6 +10,9 @@
 
 Audio fingerprint masking tool. Transforms audio files through a multi-pass processing pipeline to alter their acoustic fingerprint while preserving audible quality. Designed for creators who need to re-upload their own Suno-generated music as templates when detection systems produce false positives.
 
+<img width="1475" height="1100" alt="download" src="https://github.com/user-attachments/assets/babf6acb-1a36-41bd-ba8a-d20fa3aff7a1" />
+
+
 ## How It Works
 
 SunoJump applies a 10-pass processing pipeline with **non-uniform segment-based transforms** — each segment of the audio gets slightly different processing parameters, breaking the constellation patterns that fingerprinting systems rely on.

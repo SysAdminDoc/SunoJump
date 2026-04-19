@@ -1,4 +1,4 @@
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -114,7 +114,9 @@ Use `Save...` in the GUI to export the current settings, then pass the resulting
 | **Gentle** | 0.3 st | 0.10 | 0.10 | -60 dB | Minimal change, preserve quality |
 | **Moderate** | 0.8 st | 0.30 | 0.30 | -50 dB | Good balance of masking vs quality |
 | **Aggressive** | 1.5 st | 0.50 | 0.50 | -45 dB | Strong masking, slight quality trade-off |
-| **Extreme** | 3.0 st | 0.70 | 0.70 | -40 dB | Maximum masking, verify quality after |
+| **Extreme (default, recommended)** | 3.0 st | 0.70 | 0.70 | -40 dB | Highest bypass success rate -- tested and confirmed |
+
+> **Recommendation:** Start with **Extreme**. Real-world testing against Suno's detection has shown it to deliver the most consistent bypass results. The lighter presets are included for cases where audio fidelity is the priority, but for re-uploading your own songs as templates, Extreme is the proven winner.
 
 ## Modification Strength
 
@@ -125,7 +127,7 @@ After processing, SunoJump reports a **modification strength** percentage:
 - **50-75%** — Strong: highly likely effective
 - **75-100%** — Extreme: verify audio quality hasn't degraded too much
 
-Start with **Moderate** preset and increase if detection persists.
+Start with the default **Extreme** preset -- field-tested as the most reliable for bypassing Suno's detection.
 
 ## Supported Formats
 

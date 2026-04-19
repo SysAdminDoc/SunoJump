@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.2.0 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.2.1 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -1115,7 +1115,7 @@ class MainWindow(QMainWindow):
         preset_row.addWidget(QLabel("Preset:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(list(PRESETS.keys()) + ['Custom'])
-        self.preset_combo.setCurrentText('Moderate')
+        self.preset_combo.setCurrentText('Extreme')
         self.preset_combo.currentTextChanged.connect(self._on_preset)
         preset_row.addWidget(self.preset_combo)
 
@@ -1146,7 +1146,7 @@ class MainWindow(QMainWindow):
             self.param_rows[key] = row
             lay.addWidget(row)
 
-        self._apply_preset('Moderate')
+        self._apply_preset('Extreme')
         return grp
 
     # --- Output section ---

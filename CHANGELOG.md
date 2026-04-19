@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.0 (2026-04-19)
+- **Premium GUI redesign.** Reworked the PyQt interface from a vertical utility stack into a two-column studio console with queue, monitor, session log, pipeline controls, destination, and render sections.
+- **New visual system.** Added graphite surfaces, brass primary actions, clearer hover/disabled states, status pills, and icon-bearing controls for a more polished desktop-software feel.
+- **Improved operational hierarchy.** Added a top status strip for file count, preset, output format, and render state so the app reads like an active production tool.
+- **Scrollable processing controls.** Pipeline rows now live in a dedicated scrollable control surface to avoid cramped layouts while keeping every transform visible and easy to tune.
+- **Clearer queue and render states.** File rows now show READY/RUNNING/DONE/FAILED states, and render status updates during processing, previewing, comparing, cancelling, and completion.
+- **Destination layout fix.** Output format and directory controls were separated into cleaner rows so long paths remain readable.
+
 ## v1.4.2 (2026-04-19)
 - **Fix: CI uploaded Linux and macOS binaries with the same name, causing collision.** Both targets built `dist/SunoJump` and uploaded as asset "SunoJump", so the second run clobbered the first. Only one surviving binary per release. Workflow now copies each binary to a unique name (`SunoJump-Linux`, `SunoJump-macOS`) before upload. Windows was already unique via `.exe`.
 - **Fix: Playback state race on source transitions.** The `QMediaPlayer.playbackStateChanged(Stopped)` signal fired after `stop()` could run after the UI had already set state for the new source, wiping the new state. Added a `_media_transitioning` flag bracketing the stop -> setSource -> play sequence to suppress the stale signal. Affects both `_toggle_play` (original/processed) and `_play_compare` (compare panel).

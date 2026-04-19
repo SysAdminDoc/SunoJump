@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.2 (2026-04-19)
+- **Fix: CI uploaded Linux and macOS binaries with the same name, causing collision.** Both targets built `dist/SunoJump` and uploaded as asset "SunoJump", so the second run clobbered the first. Only one surviving binary per release. Workflow now copies each binary to a unique name (`SunoJump-Linux`, `SunoJump-macOS`) before upload. Windows was already unique via `.exe`.
+- **Fix: Playback state race on source transitions.** The `QMediaPlayer.playbackStateChanged(Stopped)` signal fired after `stop()` could run after the UI had already set state for the new source, wiping the new state. Added a `_media_transitioning` flag bracketing the stop -> setSource -> play sequence to suppress the stale signal. Affects both `_toggle_play` (original/processed) and `_play_compare` (compare panel).
+- **Fix: Compare panel could show stale content when selection became None.** Now hides cleanly when the list is empty or selection moves away from the file compare was rendered for.
+- **Fix: Output directory creation errors silently stranded the UI.** ProcessWorker now catches the OSError from `os.makedirs`, logs it, and emits `all_done` so the UI re-enables controls instead of hanging on "processing".
+- **Fix: closeEvent could hit deallocated widgets via queued Stopped signal.** Disconnect `playbackStateChanged` and `errorOccurred` from the player before calling `stop()` during shutdown.
+- **README banner points to committed file.** `banner.png` in the repo root (committed alongside) is now referenced via relative path instead of a GitHub attachments CDN URL, so the README renders correctly in forks and offline viewers.
+
 ## v1.4.1 (2026-04-19)
 - **Fix (regression): Phase vocoder pitch shifter produced a silence tail** on any segment with a positive semitone shift. The `_pv_time_stretch` implementation had inverted rate semantics -- calling it with the pitch factor gave output_length = input_length / factor^2 samples of real audio, padded to full length with zeros. Only positive shifts were affected (negative shifts worked because the resample step produced longer intermediate audio that was correctly trimmed). Verified fix: +12 st on a 3s 440 Hz tone now produces a full 3s at 880 Hz with uniform RMS instead of 1s signal + 2s silence.
 - **Progress bar updates during Compare Presets and Render Preview** -- PresetCompareWorker and PreviewWorker now emit progress signals; the main window progress bar reflects render progress instead of sitting at 0 for 30s.

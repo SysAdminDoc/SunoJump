@@ -1,3 +1,9 @@
+
+
+<img width="1536" height="448" alt="banner" src="https://github.com/user-attachments/assets/aa8bac03-9f24-46eb-8d0d-4607e73d6146" />
+
+<br>
+
 ![Version](https://img.shields.io/badge/version-1.3.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -138,18 +144,6 @@ Start with the default **Extreme** preset -- field-tested as the most reliable f
 **Input:** WAV, MP3, FLAC, OGG, AIFF, Opus
 
 **Output:** WAV (24-bit), FLAC, OGG Vorbis
-
-## Logo Prompts
-
-1. **Minimal icon** — A clean, flat single-color glyph of an audio waveform passing through a geometric portal/gateway, dark background (#1e1e2e), no text, high contrast cyan (#89b4fa) on dark, SVG-friendly simple shapes. SunoJump: audio fingerprint masking tool.
-
-2. **App icon** — Rounded square app icon with gradient from deep purple to electric blue, showing a stylized soundwave morphing/transforming mid-stream with a subtle shield overlay, dark background, no text, recognizable at 128px. SunoJump: audio fingerprint masking tool.
-
-3. **Wordmark** — Stylized "SunoJump" typography with the letters constructed from audio waveform segments, dark background (#11111b), electric blue (#89b4fa) text with subtle purple (#cba6f7) accent on the "J", modern sans-serif base. SunoJump: audio fingerprint masking tool.
-
-4. **Emblem** — Detailed shield/badge with a central audio waveform splitting and reforming into a different pattern, surrounded by circuit-like borders, dark background, blue/purple/teal color palette from Catppuccin Mocha, no text. SunoJump: audio fingerprint masking tool.
-
-5. **Abstract** — Conceptual representation of audio transformation: parallel sound waves entering a prism-like geometric shape and emerging as a different waveform pattern on the other side, dark background (#1e1e2e), gradient from blue (#89b4fa) to teal (#94e2d5), no text, SVG-friendly. SunoJump: audio fingerprint masking tool.
 
 ## License
 

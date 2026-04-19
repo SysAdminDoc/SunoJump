@@ -31,8 +31,11 @@ Unlike tools that apply flat transforms across the entire track, SunoJump splits
 
 ## Installation
 
+### Windows (recommended) -- prebuilt executable
+Download `SunoJump.exe` from the [latest release](https://github.com/SysAdminDoc/SunoJump/releases/latest). No Python install required. Double-click to launch.
+
+### From source (any platform)
 ```bash
-# Clone
 git clone https://github.com/SysAdminDoc/SunoJump.git
 cd SunoJump
 

@@ -11,3 +11,5 @@ CODEX_CHANGELOG.md
 .env
 *.exe
 SunoJump_Output/
+SunoJump-v*.zip
+

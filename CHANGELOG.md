@@ -3,6 +3,8 @@
 ## v1.2.1 (2026-04-19)
 - **Default preset changed to Extreme** -- real-world testing confirmed Extreme delivers the most consistent bypass results against Suno's detection; now the recommended starting point for all users
 - README preset table and guidance updated to highlight Extreme as the recommended choice
+- **Windows executable** (`SunoJump.exe`) now attached to every release -- no Python install required
+- Added GitHub Actions CI workflow (`.github/workflows/build.yml`) for automated cross-platform builds on tag push (Windows / macOS / Linux) via PyInstaller
 
 ## v1.2.0 (2026-04-19)
 - **In-app preview player** -- A/B compare original vs processed without leaving SunoJump; uses PyQt6 QMediaPlayer with graceful fallback if Multimedia module is unavailable

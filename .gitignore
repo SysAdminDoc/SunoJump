@@ -13,3 +13,7 @@ CODEX_CHANGELOG.md
 SunoJump_Output/
 SunoJump-v*.zip
 
+
+# Markdown files local-only (except README)
+*.md
+!README.md

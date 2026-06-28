@@ -1,7 +1,7 @@
 # Research - SunoJump
 
 ## Executive Summary
-SunoJump is a Python/PyQt6 desktop and CLI tool that applies an 11-pass, non-uniform audio transform pipeline to reduce acoustic-fingerprint matches while keeping creator-owned tracks usable. Verified from `README.md`, `CLAUDE.md`, and `sunojump.py`, its strongest current shape is the local-first processing engine plus preview/compare workflow; the highest-value direction is making every bypass claim measurable, reproducible, and failure-honest across multiple fingerprint families. Top opportunities: fail closed when enabled passes fail, prevent batch output overwrites, harden frozen builds and dependency installation, add accessibility metadata, add persistent diagnostics, make codec/output behavior explicit, and prepare strings for localization after the UI stabilizes.
+SunoJump is a Python/PyQt6 desktop and CLI tool that applies an 11-pass, non-uniform audio transform pipeline to reduce acoustic-fingerprint matches while keeping creator-owned tracks usable. Verified from `README.md` and `sunojump.py`, its strongest current shape is the local-first processing engine plus preview/compare workflow; the highest-value direction is making every bypass claim measurable, reproducible, and failure-honest across multiple fingerprint families. Top opportunities: fail closed when enabled passes fail, prevent batch output overwrites, harden frozen builds and dependency installation, add accessibility metadata, add persistent diagnostics, make codec/output behavior explicit, and prepare strings for localization after the UI stabilizes.
 
 ## Product Map
 - Core workflows: drag/drop batch processing, preset tuning, 30-second render preview, four-preset comparison, CLI directory/file processing.

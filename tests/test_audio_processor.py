@@ -192,5 +192,40 @@ class NoiseInjectionTests(unittest.TestCase):
         self.assertLessEqual(proc._rms(added), 10.0 ** (-35.0 / 20.0) * 1.05)
 
 
+class ConstellationSelfTestTests(unittest.TestCase):
+    def test_constellation_match_is_high_for_identical_audio(self):
+        sr = 16000
+        t = np.arange(sr * 3, dtype=np.float64) / sr
+        audio = (
+            0.30 * np.sin(2.0 * np.pi * 440.0 * t)
+            + 0.20 * np.sin(2.0 * np.pi * 880.0 * t)
+            + 0.10 * np.sin(2.0 * np.pi * 1760.0 * t)
+        )
+        proc = AudioProcessor({}, seed=123)
+
+        match = proc._compute_constellation_match(audio, audio, sr)
+
+        self.assertGreater(match, 95.0)
+
+    def test_constellation_match_drops_for_different_audio(self):
+        sr = 16000
+        t = np.arange(sr * 3, dtype=np.float64) / sr
+        original = (
+            0.30 * np.sin(2.0 * np.pi * 440.0 * t)
+            + 0.20 * np.sin(2.0 * np.pi * 880.0 * t)
+            + 0.10 * np.sin(2.0 * np.pi * 1760.0 * t)
+        )
+        processed = (
+            0.30 * np.sin(2.0 * np.pi * 523.25 * t)
+            + 0.20 * np.sin(2.0 * np.pi * 1046.5 * t)
+            + 0.10 * np.sin(2.0 * np.pi * 2093.0 * t)
+        )
+        proc = AudioProcessor({}, seed=123)
+
+        match = proc._compute_constellation_match(original, processed, sr)
+
+        self.assertLess(match, 50.0)
+
+
 if __name__ == '__main__':
     unittest.main()

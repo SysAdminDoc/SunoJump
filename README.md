@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.6-blue)
+![Version](https://img.shields.io/badge/version-1.5.7-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -72,7 +72,7 @@ All Python dependencies install automatically on first run.
 - **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing
 - **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, then apply your favorite
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
-- **Detection-signature score** — logs how AI-detectable the audio looked before vs after processing (heuristic)
+- **Detection-signature and constellation self-test logs** — reports heuristic AI-detection movement plus estimated landmark overlap remaining after processing
 - **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)
 - **Batch processing** — drag/drop multiple files, reorder them, process in parallel
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse

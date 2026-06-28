@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.6 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.7 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.6"
+VERSION = "1.5.7"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -712,6 +712,8 @@ class AudioProcessor:
                 f"Detection signature: {pre_risk:.0f}% -> {post_risk:.0f}% "
                 f"({arrow} {abs(delta):.0f}%)"
             )
+            match = self._compute_constellation_match(orig_ch[:n], proc_ch[:n], sr)
+            self.log(f"Constellation match: 100% -> {match:.0f}% landmarks")
 
         self.progress(100)
         return True
@@ -1673,6 +1675,66 @@ class AudioProcessor:
             + 0.25 * dynamic_score
         )
         return float(np.clip(total, 0.0, 100.0))
+
+    def _compute_constellation_match(self, original, processed, sr):
+        """Estimate surviving constellation fingerprints using hash overlap."""
+        orig_hashes = self._constellation_hashes(original, sr)
+        proc_hashes = self._constellation_hashes(processed, sr)
+        if not orig_hashes or not proc_hashes:
+            return 0.0
+        overlap = len(orig_hashes & proc_hashes)
+        return float(np.clip((overlap / len(orig_hashes)) * 100.0, 0.0, 100.0))
+
+    def _constellation_hashes(self, mono, sr, max_seconds=30.0):
+        if len(mono) < int(sr * 2):
+            return set()
+        max_samples = int(sr * max_seconds)
+        work = mono[:max_samples].astype(np.float64, copy=False)
+        peak = np.max(np.abs(work))
+        if peak < 1e-9:
+            return set()
+        work = work / peak
+
+        nperseg = min(2048, 1 << (len(work).bit_length() - 1))
+        if nperseg < 512:
+            return set()
+        hop = nperseg // 4
+        f, _, Zxx = signal.stft(work, sr, nperseg=nperseg, noverlap=nperseg - hop)
+        mag = np.log1p(np.abs(Zxx))
+        if mag.shape[1] < 4:
+            return set()
+
+        valid_freq = (f >= 40.0) & (f <= min(12000.0, sr / 2.0))
+        valid_idx = np.flatnonzero(valid_freq)
+        if len(valid_idx) == 0:
+            return set()
+
+        peaks = []
+        bins_per_frame = min(6, len(valid_idx))
+        for frame_idx in range(mag.shape[1]):
+            column = mag[valid_idx, frame_idx]
+            threshold = np.percentile(column, 82.0)
+            top_local = np.argpartition(column, -bins_per_frame)[-bins_per_frame:]
+            for local_idx in top_local:
+                amp = column[local_idx]
+                if amp >= threshold:
+                    peaks.append((frame_idx, int(valid_idx[local_idx]), float(amp)))
+
+        peaks.sort(key=lambda p: (p[0], -p[2]))
+        hashes = set()
+        for i, (t1, f1, _) in enumerate(peaks):
+            pairs = 0
+            for t2, f2, _ in peaks[i + 1:]:
+                dt = t2 - t1
+                if dt < 1:
+                    continue
+                if dt > 10:
+                    break
+                hashes.add((int(f1), int(f2), int(dt)))
+                pairs += 1
+                if pairs >= 3:
+                    break
+        return hashes
 
 
 # ============================================================

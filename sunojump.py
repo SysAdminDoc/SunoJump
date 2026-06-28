@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.2 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.3 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -96,6 +96,7 @@ ROLE_OUTPUT = Qt.ItemDataRole.UserRole + 1
 PRESETS = {
     'Gentle': {
         'strip_metadata': True,
+        'watermark_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.10,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.10,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.10,
@@ -112,6 +113,7 @@ PRESETS = {
     },
     'Moderate': {
         'strip_metadata': True,
+        'watermark_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.30,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.30,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.30,
@@ -128,6 +130,7 @@ PRESETS = {
     },
     'Aggressive': {
         'strip_metadata': True,
+        'watermark_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.50,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.50,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.50,
@@ -144,6 +147,7 @@ PRESETS = {
     },
     'Extreme': {
         'strip_metadata': True,
+        'watermark_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.70,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.70,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.70,
@@ -187,6 +191,7 @@ SPECTRAL_BANDS = (
     ('spectral_presence', 2500.0, 6000.0, 0.24),
     ('spectral_air', 10000.0, None, 0.40),
 )
+WATERMARK_SCAN_MAX_CANDIDATES = 5
 
 # --- Stylesheet ---
 STYLE = f"""
@@ -518,6 +523,7 @@ class AudioProcessor:
         # reproducing test results, diffing outputs, or debugging. None -> random.
         self.rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
         self._cancel_event = cancel_event or threading.Event()
+        self._watermark_candidates = []
 
     def cancel(self):
         self._cancel_event.set()
@@ -568,6 +574,8 @@ class AudioProcessor:
         if self.params.get('strip_metadata', True):
             pass_names.append('Metadata Strip')
         if self.params.get('spectral_enabled'):
+            if self.params.get('watermark_scan_enabled', True):
+                pass_names.append('Watermark Band Scan')
             pass_names.append('Spectral Perturbation')
         if coupled_pitch_tempo:
             pass_names.append('Coupled Pitch/Tempo Micro-Variation')
@@ -605,6 +613,13 @@ class AudioProcessor:
             try:
                 if name == 'Metadata Strip':
                     pass  # applied on save
+                elif name == 'Watermark Band Scan':
+                    self._watermark_candidates = self._scan_watermark_bands(audio, sr)
+                    if self._watermark_candidates:
+                        bands = self._format_watermark_candidates(self._watermark_candidates)
+                        self.log(f"    Candidate bands: {bands}")
+                    else:
+                        self.log("    Candidate bands: none")
                 elif name == 'Spectral Perturbation':
                     audio = self._spectral_perturb(audio, sr)
                 elif name == 'Coupled Pitch/Tempo Micro-Variation':
@@ -695,6 +710,86 @@ class AudioProcessor:
         except Exception:
             pass
 
+    # --- Watermark-band scan pre-pass ---
+    def _scan_watermark_bands(self, audio, sr):
+        if audio.shape[0] < 1024:
+            return []
+
+        mono = audio[:, 0] if audio.shape[1] == 1 else np.mean(audio, axis=1)
+        n = len(mono)
+        nperseg = min(4096, 1 << (n.bit_length() - 1))
+        if nperseg < 512:
+            return []
+        noverlap = int(nperseg * 0.75)
+
+        try:
+            f, _, Zxx = signal.stft(mono, sr, nperseg=nperseg, noverlap=noverlap)
+        except Exception:
+            return []
+
+        mag = np.abs(Zxx)
+        if mag.shape[1] < 2:
+            return []
+
+        eps = 1e-12
+        median_mag = np.median(mag, axis=1)
+        mean_mag = np.mean(mag, axis=1)
+        std_mag = np.std(mag, axis=1)
+
+        kernel = min(51, (len(median_mag) // 2) * 2 - 1)
+        if kernel < 5:
+            return []
+        floor = signal.medfilt(median_mag, kernel_size=kernel)
+        floor = np.maximum(floor, eps)
+
+        excess_db = 20.0 * np.log10(np.maximum(median_mag, eps) / floor)
+        stability = 1.0 / (1.0 + (std_mag / np.maximum(mean_mag, eps)))
+
+        focus = np.full_like(f, 0.75, dtype=np.float64)
+        focus[(f >= 20.0) & (f <= 120.0)] = 1.25
+        focus[f >= 8000.0] = 1.35
+
+        score = excess_db * stability * focus
+        valid = (f >= 20.0) & (f <= min(sr / 2.0, 20000.0)) & (excess_db >= 5.0)
+        score = np.where(valid, score, -np.inf)
+
+        candidates = []
+        for idx in np.argsort(score)[::-1]:
+            if len(candidates) >= WATERMARK_SCAN_MAX_CANDIDATES:
+                break
+            if not np.isfinite(score[idx]) or score[idx] <= 2.0:
+                break
+
+            center = float(f[idx])
+            half_width = max(25.0, center * 0.012)
+            low_hz = max(20.0, center - half_width)
+            high_hz = min(sr / 2.0, center + half_width)
+            overlaps = any(
+                low_hz <= existing['high_hz'] and high_hz >= existing['low_hz']
+                for existing in candidates
+            )
+            if overlaps:
+                continue
+
+            candidates.append({
+                'center_hz': center,
+                'low_hz': low_hz,
+                'high_hz': high_hz,
+                'score': float(score[idx]),
+            })
+
+        return candidates
+
+    def _format_watermark_candidates(self, candidates):
+        labels = []
+        for cand in candidates:
+            center = cand['center_hz']
+            if center >= 1000.0:
+                labels.append(f"{center / 1000.0:.1f}kHz")
+            else:
+                labels.append(f"{center:.0f}Hz")
+        return ", ".join(labels)
+
     # --- Spectral perturbation (non-uniform across segments) ---
     def _spectral_perturb(self, audio, sr):
         """Process in 3-second segments so the perturbation varies across the
@@ -768,6 +863,23 @@ class AudioProcessor:
                     1.0 + band_strength * depth,
                     mag[band_mask].shape,
                 )
+
+        scan_strength = max(
+            [strength] + [
+                self._spectral_band_strength(key, strength)
+                for key, _, _, _ in SPECTRAL_BANDS
+            ],
+        )
+        if scan_strength > 0.0:
+            for cand in self._watermark_candidates:
+                band_mask = (f >= cand['low_hz']) & (f <= cand['high_hz'])
+                if np.any(band_mask):
+                    depth = min(0.55, 0.30 + cand['score'] * 0.01)
+                    mag[band_mask] *= self.rng.uniform(
+                        1.0 - scan_strength * depth,
+                        1.0 + scan_strength * depth,
+                        mag[band_mask].shape,
+                    )
 
         Zxx_new = mag * np.exp(1j * phase)
         _, result = signal.istft(Zxx_new, sr, nperseg=nperseg, noverlap=noverlap)
@@ -1938,6 +2050,11 @@ class MainWindow(QMainWindow):
 
         preset_row.addStretch()
 
+        self.watermark_scan_check = QCheckBox("Watermark Scan")
+        self.watermark_scan_check.setChecked(True)
+        self.watermark_scan_check.stateChanged.connect(lambda _: self._on_param_changed())
+        preset_row.addWidget(self.watermark_scan_check)
+
         self.meta_check = QCheckBox("Metadata Strip")
         self.meta_check.setChecked(True)
         self.meta_check.stateChanged.connect(lambda _: self._on_param_changed())
@@ -2244,6 +2361,7 @@ class MainWindow(QMainWindow):
         try:
             p = PRESETS[name]
             self.meta_check.setChecked(p.get('strip_metadata', True))
+            self.watermark_scan_check.setChecked(p.get('watermark_scan_enabled', True))
             for key, row in self.param_rows.items():
                 if key in p:
                     row.set_value(p[key])
@@ -2306,6 +2424,8 @@ class MainWindow(QMainWindow):
             try:
                 if 'strip_metadata' in params:
                     self.meta_check.setChecked(bool(params['strip_metadata']))
+                if 'watermark_scan_enabled' in params:
+                    self.watermark_scan_check.setChecked(bool(params['watermark_scan_enabled']))
                 for key, row in self.param_rows.items():
                     if key in params:
                         try:
@@ -2328,6 +2448,7 @@ class MainWindow(QMainWindow):
     def _get_params(self):
         params = {
             'strip_metadata': self.meta_check.isChecked(),
+            'watermark_scan_enabled': self.watermark_scan_check.isChecked(),
             'output_format': self.format_combo.currentText().lower(),
         }
         for key, row in self.param_rows.items():
@@ -2382,6 +2503,8 @@ class MainWindow(QMainWindow):
         self.btn_clear.setEnabled(enabled)
         self.btn_save_preset.setEnabled(enabled)
         self.btn_load_preset.setEnabled(enabled)
+        self.watermark_scan_check.setEnabled(enabled)
+        self.meta_check.setEnabled(enabled)
 
     def _on_process(self):
         if self.file_list.count() == 0:
@@ -2856,6 +2979,8 @@ def cli_main():
                         dest='out_format')
     parser.add_argument('--preset-file', default=None,
                         help='Path to JSON preset file (overrides -p/--preset)')
+    parser.add_argument('--no-watermark-scan', action='store_true',
+                        help='Disable automatic watermark-band scan pre-pass')
     parser.add_argument('--spectral', type=float, help='Spectral perturbation (0.0-1.0)')
     parser.add_argument('--spectral-sub-bass', type=float,
                         help='Sub-bass spectral perturbation (0.0-1.0)')
@@ -2891,7 +3016,11 @@ def cli_main():
             if not isinstance(loaded, dict):
                 raise ValueError("preset file missing params block")
             # Only accept known keys to avoid poisoning
-            known = {'strip_metadata'} | {d[0] for d in PARAM_DEFS} | {d[7] for d in PARAM_DEFS}
+            known = (
+                {'strip_metadata', 'watermark_scan_enabled'}
+                | {d[0] for d in PARAM_DEFS}
+                | {d[7] for d in PARAM_DEFS}
+            )
             for k, v in loaded.items():
                 if k in known:
                     params[k] = v
@@ -2901,6 +3030,8 @@ def cli_main():
             print(f"Warning: could not load preset file: {e}")
 
     # Override with CLI args (validated)
+    if args.no_watermark_scan:
+        params['watermark_scan_enabled'] = False
     if args.spectral is not None:
         params['spectral_strength'] = _clamp(args.spectral, 0.0, 1.0, 'spectral')
     if args.spectral_sub_bass is not None:

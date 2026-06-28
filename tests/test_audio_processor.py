@@ -84,5 +84,46 @@ class SpectralBandTests(unittest.TestCase):
         self.assertGreater(np.max(np.abs(out - audio)), 1e-6)
 
 
+class WatermarkScanTests(unittest.TestCase):
+    def test_scan_detects_stable_high_frequency_candidate(self):
+        sr = 48000
+        rng = np.random.default_rng(123)
+        t = np.arange(sr * 2, dtype=np.float64) / sr
+        tone = 0.45 * np.sin(2.0 * np.pi * 12000.0 * t)
+        noise = rng.normal(0.0, 0.01, len(t))
+        audio = np.column_stack([tone + noise, tone + noise])
+        proc = AudioProcessor({'watermark_scan_enabled': True}, seed=123)
+
+        candidates = proc._scan_watermark_bands(audio, sr)
+
+        self.assertTrue(
+            any(abs(c['center_hz'] - 12000.0) < 80.0 for c in candidates),
+            candidates,
+        )
+
+    def test_detected_candidate_band_changes_spectral_output(self):
+        sr = 48000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = 0.35 * np.sin(2.0 * np.pi * 12000.0 * t)
+        proc = AudioProcessor({
+            'spectral_sub_bass_enabled': False,
+            'spectral_low_mids_enabled': False,
+            'spectral_presence_enabled': False,
+            'spectral_air_enabled': False,
+        }, seed=123)
+        proc._watermark_candidates = [{
+            'center_hz': 12000.0,
+            'low_hz': 11800.0,
+            'high_hz': 12200.0,
+            'score': 12.0,
+        }]
+
+        out = proc._spectral_perturb_ch(audio, sr, 0.5)
+
+        self.assertEqual(out.shape, audio.shape)
+        self.assertTrue(np.all(np.isfinite(out)))
+        self.assertGreater(np.max(np.abs(out - audio)), 1e-6)
+
+
 if __name__ == '__main__':
     unittest.main()

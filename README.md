@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.2-blue)
+![Version](https://img.shields.io/badge/version-1.5.3-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -22,7 +22,7 @@ SunoJump applies a 10-pass processing pipeline with **non-uniform segment-based 
 | # | Pass | What It Does |
 |---|------|-------------|
 | 1 | **Metadata Strip** | Removes all embedded tags, IDs, and hidden metadata |
-| 2 | **Spectral Perturbation** | Perturbs frequency magnitudes with per-band controls for sub-bass, low-mids, presence, and air |
+| 2 | **Spectral Perturbation** | Scans candidate watermark bands, then perturbs frequency magnitudes with per-band controls for sub-bass, low-mids, presence, and air |
 | 3 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
 | 4 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
 | 5 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
@@ -60,6 +60,7 @@ All Python dependencies install automatically on first run.
 ## Features
 
 - **10-pass audio processing pipeline** — metadata strip, spectral perturbation, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
+- **Watermark-band scan pre-pass** — auto-detects stable narrowband candidates per file and targets them during spectral perturbation
 - **Per-band spectral controls** — tune sub-bass, low-mids, presence, and air perturbation independently
 - **Coupled non-uniform pitch/tempo processing** — breaks constellation fingerprint patterns while keeping segment boundaries beat-aligned
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
@@ -110,6 +111,7 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
 | `-f, --format` | wav, flac, ogg | wav |
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
+| `--no-watermark-scan` | Disable automatic watermark-band scan pre-pass | enabled |
 | `--spectral` | Spectral perturbation (0.0-1.0) | preset |
 | `--spectral-sub-bass` | Sub-bass spectral perturbation (0.0-1.0) | preset |
 | `--spectral-low-mids` | Low-mids spectral perturbation (0.0-1.0) | preset |

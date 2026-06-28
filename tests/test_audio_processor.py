@@ -48,5 +48,41 @@ class CoupledPitchTempoTests(unittest.TestCase):
         np.testing.assert_allclose(out[-1], audio[-1], atol=1e-9)
 
 
+class SpectralBandTests(unittest.TestCase):
+    def test_band_strength_falls_back_clamps_and_honors_enabled_flag(self):
+        proc = AudioProcessor({
+            'spectral_air_strength': 2.0,
+            'spectral_presence_enabled': False,
+        }, seed=123)
+
+        self.assertEqual(proc._spectral_band_strength('spectral_air', 0.3), 1.0)
+        self.assertEqual(proc._spectral_band_strength('spectral_presence', 0.7), 0.0)
+        self.assertEqual(proc._spectral_band_strength('spectral_sub_bass', 0.4), 0.4)
+
+    def test_air_band_perturbation_changes_output_with_other_bands_disabled(self):
+        sr = 48000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = (
+            0.20 * np.sin(2.0 * np.pi * 60.0 * t)
+            + 0.20 * np.sin(2.0 * np.pi * 300.0 * t)
+            + 0.20 * np.sin(2.0 * np.pi * 4000.0 * t)
+            + 0.20 * np.sin(2.0 * np.pi * 12000.0 * t)
+        )
+        params = {
+            'spectral_sub_bass_enabled': False,
+            'spectral_low_mids_enabled': False,
+            'spectral_presence_enabled': False,
+            'spectral_air_enabled': True,
+            'spectral_air_strength': 1.0,
+        }
+        proc = AudioProcessor(params, seed=123)
+
+        out = proc._spectral_perturb_ch(audio, sr, 0.0)
+
+        self.assertEqual(out.shape, audio.shape)
+        self.assertTrue(np.all(np.isfinite(out)))
+        self.assertGreater(np.max(np.abs(out - audio)), 1e-6)
+
+
 if __name__ == '__main__':
     unittest.main()

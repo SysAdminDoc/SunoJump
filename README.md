@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.1-blue)
+![Version](https://img.shields.io/badge/version-1.5.2-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -10,7 +10,7 @@
 
 Audio fingerprint masking tool. Transforms audio files through a multi-pass processing pipeline to alter their acoustic fingerprint while preserving audible quality. Designed for creators who need to re-upload their own Suno-generated music as templates when detection systems produce false positives.
 
-<img width="1475" height="1100" alt="download" src="https://github.com/user-attachments/assets/babf6acb-1a36-41bd-ba8a-d20fa3aff7a1" />
+<img width="1844" height="1375" alt="SunoJump main window" src="screenshot.png" />
 
 
 ## How It Works
@@ -22,7 +22,7 @@ SunoJump applies a 10-pass processing pipeline with **non-uniform segment-based 
 | # | Pass | What It Does |
 |---|------|-------------|
 | 1 | **Metadata Strip** | Removes all embedded tags, IDs, and hidden metadata |
-| 2 | **Spectral Perturbation** | Perturbs frequency magnitudes, targets common watermark bands (sub-bass, ultrasonic) |
+| 2 | **Spectral Perturbation** | Perturbs frequency magnitudes with per-band controls for sub-bass, low-mids, presence, and air |
 | 3 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
 | 4 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
 | 5 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
@@ -60,6 +60,7 @@ All Python dependencies install automatically on first run.
 ## Features
 
 - **10-pass audio processing pipeline** — metadata strip, spectral perturbation, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
+- **Per-band spectral controls** — tune sub-bass, low-mids, presence, and air perturbation independently
 - **Coupled non-uniform pitch/tempo processing** — breaks constellation fingerprint patterns while keeping segment boundaries beat-aligned
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
 - **Per-pass toggles and strength sliders** — fine-grained control
@@ -110,6 +111,10 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `-f, --format` | wav, flac, ogg | wav |
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
 | `--spectral` | Spectral perturbation (0.0-1.0) | preset |
+| `--spectral-sub-bass` | Sub-bass spectral perturbation (0.0-1.0) | preset |
+| `--spectral-low-mids` | Low-mids spectral perturbation (0.0-1.0) | preset |
+| `--spectral-presence` | Presence-band spectral perturbation (0.0-1.0) | preset |
+| `--spectral-air` | Air-band spectral perturbation (0.0-1.0) | preset |
 | `--pitch` | Pitch micro-shift in semitones (0.0-5.0) | preset |
 | `--tempo` | Tempo variation (0.0-0.15) | preset |
 | `--phase` | Phase scrambling (0.0-1.0) | preset |

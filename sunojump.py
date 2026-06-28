@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.0 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.1 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -534,15 +534,21 @@ class AudioProcessor:
         original = audio.copy()
 
         # Build pass list
+        pitch_enabled = self.params.get('pitch_enabled')
+        tempo_enabled = self.params.get('tempo_enabled')
+        coupled_pitch_tempo = pitch_enabled and tempo_enabled
         pass_names = []
         if self.params.get('strip_metadata', True):
             pass_names.append('Metadata Strip')
         if self.params.get('spectral_enabled'):
             pass_names.append('Spectral Perturbation')
-        if self.params.get('pitch_enabled'):
-            pass_names.append('Pitch Micro-Shift')
-        if self.params.get('tempo_enabled'):
-            pass_names.append('Tempo Micro-Variation')
+        if coupled_pitch_tempo:
+            pass_names.append('Coupled Pitch/Tempo Micro-Variation')
+        else:
+            if pitch_enabled:
+                pass_names.append('Pitch Micro-Shift')
+            if tempo_enabled:
+                pass_names.append('Tempo Micro-Variation')
         if self.params.get('phase_enabled'):
             pass_names.append('Phase Scrambling')
         if self.params.get('stereo_enabled') and not mono:
@@ -574,6 +580,8 @@ class AudioProcessor:
                     pass  # applied on save
                 elif name == 'Spectral Perturbation':
                     audio = self._spectral_perturb(audio, sr)
+                elif name == 'Coupled Pitch/Tempo Micro-Variation':
+                    audio = self._pitch_tempo_coupled_microvar(audio, sr)
                 elif name == 'Pitch Micro-Shift':
                     audio = self._pitch_microshift(audio, sr)
                 elif name == 'Tempo Micro-Variation':
@@ -740,6 +748,108 @@ class AudioProcessor:
         elif len(result) < orig_len:
             result = np.pad(result, (0, orig_len - len(result)))
         return result
+
+    # --- Coupled pitch + tempo micro-variation ---
+    def _pitch_tempo_coupled_microvar(self, audio, sr):
+        """Share one non-uniform segment curve across pitch and timing.
+
+        Independent pitch and tempo passes can move transient emphasis in
+        unrelated ways. This coupled path keeps every segment's start/end
+        aligned, then applies a small in-segment timing warp and pitch shift
+        from the same random control value so beats stay anchored while the
+        fingerprint still varies across the track.
+        """
+        max_st = self.params.get('pitch_range', 0.8)
+        max_var = self.params.get('tempo_range', 0.05)
+        if max_st < 0.001 and max_var < 0.001:
+            return audio
+
+        n = audio.shape[0]
+        seg_samples = int(2.5 * sr)
+        overlap = int(0.12 * sr)
+        hop = max(1, seg_samples - overlap)
+
+        if n < seg_samples:
+            control = self._nonzero_segment_control()
+            return self._apply_coupled_variation_chunk(audio, sr, control, max_st, max_var)
+
+        result = np.zeros_like(audio)
+        weights = np.zeros(n)
+        pos = 0
+        while pos < n:
+            if self._is_cancelled():
+                return audio
+
+            end = min(pos + seg_samples, n)
+            chunk = audio[pos:end]
+            clen = end - pos
+            if clen < int(0.25 * sr):
+                win = np.ones(clen)
+                if pos > 0:
+                    fl = min(overlap, clen)
+                    win[:fl] = np.linspace(0, 1, fl)
+                result[pos:end] += chunk * win[:, np.newaxis]
+                weights[pos:end] += win
+                break
+
+            control = self._nonzero_segment_control()
+            varied = self._apply_coupled_variation_chunk(chunk, sr, control, max_st, max_var)
+            varied = self._fit_audio_length(varied, clen)
+
+            win = np.ones(clen)
+            fl = min(overlap, clen // 2)
+            if pos > 0 and fl > 0:
+                win[:fl] = np.linspace(0, 1, fl)
+            if end < n and fl > 0:
+                win[-fl:] = np.linspace(1, 0, fl)
+
+            result[pos:end] += varied * win[:, np.newaxis]
+            weights[pos:end] += win
+            pos += hop
+
+        weights = np.maximum(weights, 1e-8)
+        return result / weights[:, np.newaxis]
+
+    def _nonzero_segment_control(self):
+        control = float(self.rng.uniform(-1.0, 1.0))
+        if abs(control) < 0.15:
+            control = 0.15 if control >= 0 else -0.15
+        return control
+
+    def _apply_coupled_variation_chunk(self, chunk, sr, control, max_st, max_var):
+        varied = chunk
+        if max_var >= 0.001:
+            varied = self._tempo_warp_aligned_chunk(varied, control * max_var)
+        if max_st >= 0.001:
+            semitones = control * max_st
+            varied = self._pv_pitch_shift_multi(varied, sr, semitones)
+        return self._fit_audio_length(varied, chunk.shape[0])
+
+    def _tempo_warp_aligned_chunk(self, chunk, amount):
+        n = chunk.shape[0]
+        if n < 4 or abs(amount) < 0.0001:
+            return chunk.copy()
+
+        x_norm = np.linspace(0.0, 1.0, n, dtype=np.float64)
+        # Endpoints remain fixed. The derivative varies about +/- amount,
+        # creating local tempo drift without moving segment boundaries.
+        displacement = (amount * n / (2.0 * np.pi)) * np.sin(2.0 * np.pi * x_norm)
+        src_idx = np.arange(n, dtype=np.float64) + displacement
+        np.clip(src_idx, 0.0, n - 1.0, out=src_idx)
+
+        result = np.empty_like(chunk)
+        x = np.arange(n, dtype=np.float64)
+        for ch in range(chunk.shape[1]):
+            result[:, ch] = np.interp(src_idx, x, chunk[:, ch])
+        return result
+
+    def _fit_audio_length(self, audio, length):
+        if audio.shape[0] == length:
+            return audio
+        if audio.shape[0] > length:
+            return audio[:length]
+        pad = np.zeros((length - audio.shape[0], audio.shape[1]), dtype=audio.dtype)
+        return np.concatenate([audio, pad])
 
     # --- Non-uniform pitch micro-shift (phase vocoder, preserves tempo) ---
     def _pitch_microshift(self, audio, sr):

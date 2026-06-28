@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.0-blue)
+![Version](https://img.shields.io/badge/version-1.5.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -24,7 +24,7 @@ SunoJump applies a 10-pass processing pipeline with **non-uniform segment-based 
 | 1 | **Metadata Strip** | Removes all embedded tags, IDs, and hidden metadata |
 | 2 | **Spectral Perturbation** | Perturbs frequency magnitudes, targets common watermark bands (sub-bass, ultrasonic) |
 | 3 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
-| 4 | **Tempo Micro-Variation** | Non-uniform time warping across random segments |
+| 4 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
 | 5 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
 | 6 | **Stereo Manipulation** | Mid-side processing to alter stereo field |
 | 7 | **Noise Injection** | Adds shaped pink noise to mask watermark energy |
@@ -60,7 +60,7 @@ All Python dependencies install automatically on first run.
 ## Features
 
 - **10-pass audio processing pipeline** — metadata strip, spectral perturbation, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
-- **Non-uniform segment processing** — breaks constellation fingerprint patterns
+- **Coupled non-uniform pitch/tempo processing** — breaks constellation fingerprint patterns while keeping segment boundaries beat-aligned
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
 - **Per-pass toggles and strength sliders** — fine-grained control
 - **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing

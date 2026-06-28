@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.3 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.4 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.3"
+VERSION = "1.5.4"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -102,6 +102,7 @@ PRESETS = {
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.10,
         'spectral_presence_enabled': True, 'spectral_presence_strength': 0.10,
         'spectral_air_enabled': True, 'spectral_air_strength': 0.10,
+        'dynamic_eq_enabled': True, 'dynamic_eq_amount': 0.10,
         'pitch_enabled': True, 'pitch_range': 0.30,
         'tempo_enabled': True, 'tempo_range': 0.02,
         'phase_enabled': True, 'phase_amount': 0.10,
@@ -119,6 +120,7 @@ PRESETS = {
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.30,
         'spectral_presence_enabled': True, 'spectral_presence_strength': 0.30,
         'spectral_air_enabled': True, 'spectral_air_strength': 0.30,
+        'dynamic_eq_enabled': True, 'dynamic_eq_amount': 0.20,
         'pitch_enabled': True, 'pitch_range': 0.80,
         'tempo_enabled': True, 'tempo_range': 0.05,
         'phase_enabled': True, 'phase_amount': 0.30,
@@ -136,6 +138,7 @@ PRESETS = {
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.50,
         'spectral_presence_enabled': True, 'spectral_presence_strength': 0.50,
         'spectral_air_enabled': True, 'spectral_air_strength': 0.50,
+        'dynamic_eq_enabled': True, 'dynamic_eq_amount': 0.30,
         'pitch_enabled': True, 'pitch_range': 1.50,
         'tempo_enabled': True, 'tempo_range': 0.08,
         'phase_enabled': True, 'phase_amount': 0.50,
@@ -153,6 +156,7 @@ PRESETS = {
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.70,
         'spectral_presence_enabled': True, 'spectral_presence_strength': 0.70,
         'spectral_air_enabled': True, 'spectral_air_strength': 0.70,
+        'dynamic_eq_enabled': True, 'dynamic_eq_amount': 0.40,
         'pitch_enabled': True, 'pitch_range': 3.00,
         'tempo_enabled': True, 'tempo_range': 0.12,
         'phase_enabled': True, 'phase_amount': 0.70,
@@ -171,6 +175,7 @@ PARAM_DEFS = [
     ('spectral_low_mids_strength', 'Low-Mids Spectral', 0.0, 1.0, 0.30, '', 2, 'spectral_low_mids_enabled', 1.0),
     ('spectral_presence_strength', 'Presence Spectral', 0.0, 1.0, 0.30, '', 2, 'spectral_presence_enabled', 1.0),
     ('spectral_air_strength', 'Air Spectral', 0.0, 1.0, 0.30, '', 2, 'spectral_air_enabled', 1.0),
+    ('dynamic_eq_amount', 'Dynamic EQ', 0.0, 1.0, 0.20, '', 2, 'dynamic_eq_enabled', 1.0),
     ('pitch_range', 'Pitch Micro-Shift', 0.0, 5.0, 0.80, ' st', 1, 'pitch_enabled', 1.0),
     ('tempo_range', 'Tempo Micro-Variation', 0.0, 0.15, 0.05, '%', 1, 'tempo_enabled', 100.0),
     ('phase_amount', 'Phase Scrambling', 0.0, 1.0, 0.30, '', 2, 'phase_enabled', 1.0),
@@ -192,6 +197,13 @@ SPECTRAL_BANDS = (
     ('spectral_air', 10000.0, None, 0.40),
 )
 WATERMARK_SCAN_MAX_CANDIDATES = 5
+DYNAMIC_EQ_BANDS = (
+    (60.0, 180.0, 1.2),
+    (180.0, 700.0, 1.0),
+    (700.0, 2500.0, 0.9),
+    (2500.0, 6500.0, 1.1),
+    (6500.0, None, 1.3),
+)
 
 # --- Stylesheet ---
 STYLE = f"""
@@ -577,6 +589,8 @@ class AudioProcessor:
             if self.params.get('watermark_scan_enabled', True):
                 pass_names.append('Watermark Band Scan')
             pass_names.append('Spectral Perturbation')
+        if self.params.get('dynamic_eq_enabled'):
+            pass_names.append('Dynamic EQ')
         if coupled_pitch_tempo:
             pass_names.append('Coupled Pitch/Tempo Micro-Variation')
         else:
@@ -622,6 +636,8 @@ class AudioProcessor:
                         self.log("    Candidate bands: none")
                 elif name == 'Spectral Perturbation':
                     audio = self._spectral_perturb(audio, sr)
+                elif name == 'Dynamic EQ':
+                    audio = self._dynamic_eq(audio, sr)
                 elif name == 'Coupled Pitch/Tempo Micro-Variation':
                     audio = self._pitch_tempo_coupled_microvar(audio, sr)
                 elif name == 'Pitch Micro-Shift':
@@ -899,6 +915,94 @@ class AudioProcessor:
         except (TypeError, ValueError):
             value = fallback
         return float(np.clip(value, 0.0, 1.0))
+
+    # --- Dynamic EQ with loudness-preserving gain staging ---
+    def _dynamic_eq(self, audio, sr):
+        amount = self.params.get('dynamic_eq_amount', 0.2)
+        if amount < 0.001:
+            return audio
+
+        reference = audio.copy()
+        result = np.zeros_like(audio)
+        for ch in range(audio.shape[1]):
+            result[:, ch] = self._dynamic_eq_ch(audio[:, ch], sr, amount)
+
+        return self._match_lufs(result, reference, sr)
+
+    def _dynamic_eq_ch(self, channel, sr, amount):
+        nperseg = _nperseg_for(len(channel))
+        if nperseg == 0:
+            return channel.copy()
+        noverlap = nperseg // 2
+
+        f, _, Zxx = signal.stft(channel, sr, nperseg=nperseg, noverlap=noverlap)
+        mag = np.abs(Zxx)
+        phase = np.angle(Zxx)
+        eps = 1e-12
+
+        for low_hz, high_hz, max_db in DYNAMIC_EQ_BANDS:
+            if high_hz is None:
+                band_mask = f >= low_hz
+            else:
+                band_mask = (f >= low_hz) & (f < high_hz)
+            if not np.any(band_mask):
+                continue
+
+            band_energy = np.mean(mag[band_mask], axis=0)
+            median = np.median(band_energy) + eps
+            relative_db = 20.0 * np.log10(np.maximum(band_energy, eps) / median)
+            gain_db = -np.tanh(relative_db / 10.0) * max_db * amount
+
+            if len(gain_db) > 2:
+                jitter = self.rng.normal(0.0, 0.18 * amount, len(gain_db))
+                kernel = min(9, (len(gain_db) // 2) * 2 - 1)
+                if kernel >= 3:
+                    jitter = signal.medfilt(jitter, kernel_size=kernel)
+                gain_db += jitter
+
+            gain = 10.0 ** (gain_db / 20.0)
+            mag[band_mask] *= gain[np.newaxis, :]
+
+        Zxx_new = mag * np.exp(1j * phase)
+        _, result = signal.istft(Zxx_new, sr, nperseg=nperseg, noverlap=noverlap)
+        if len(result) > len(channel):
+            result = result[:len(channel)]
+        elif len(result) < len(channel):
+            result = np.pad(result, (0, len(channel) - len(result)))
+        return result
+
+    def _integrated_lufs(self, audio, sr):
+        if audio.size == 0:
+            return -np.inf
+        if audio.ndim == 1:
+            work = audio[:, np.newaxis]
+        else:
+            work = audio
+
+        try:
+            sos = signal.butter(2, 60.0, btype='highpass', fs=sr, output='sos')
+            weighted = signal.sosfilt(sos, work, axis=0)
+        except Exception:
+            weighted = work
+
+        mean_square = np.mean(np.square(weighted), axis=0)
+        loudness_power = float(np.mean(mean_square))
+        if loudness_power <= 1e-12:
+            return -np.inf
+        return -0.691 + 10.0 * np.log10(loudness_power)
+
+    def _match_lufs(self, audio, reference, sr):
+        ref_lufs = self._integrated_lufs(reference, sr)
+        audio_lufs = self._integrated_lufs(audio, sr)
+        if not np.isfinite(ref_lufs) or not np.isfinite(audio_lufs):
+            return audio
+
+        gain_db = float(np.clip(ref_lufs - audio_lufs, -6.0, 6.0))
+        matched = audio * (10.0 ** (gain_db / 20.0))
+        peak = float(np.max(np.abs(matched))) if matched.size else 0.0
+        if peak > 0.98:
+            matched = matched * (0.98 / peak)
+        return matched
 
     # --- Coupled pitch + tempo micro-variation ---
     def _pitch_tempo_coupled_microvar(self, audio, sr):
@@ -2990,6 +3094,7 @@ def cli_main():
                         help='Presence-band spectral perturbation (0.0-1.0)')
     parser.add_argument('--spectral-air', type=float,
                         help='Air-band spectral perturbation (0.0-1.0)')
+    parser.add_argument('--dynamic-eq', type=float, help='Dynamic EQ amount (0.0-1.0)')
     parser.add_argument('--pitch', type=float, help='Pitch micro-shift in semitones (0.0-5.0)')
     parser.add_argument('--tempo', type=float, help='Tempo variation (0.0-0.15)')
     parser.add_argument('--phase', type=float, help='Phase scrambling (0.0-1.0)')
@@ -3052,6 +3157,9 @@ def cli_main():
     if args.spectral_air is not None:
         params['spectral_air_strength'] = _clamp(args.spectral_air, 0.0, 1.0, 'spectral-air')
         params['spectral_air_enabled'] = True
+    if args.dynamic_eq is not None:
+        params['dynamic_eq_amount'] = _clamp(args.dynamic_eq, 0.0, 1.0, 'dynamic-eq')
+        params['dynamic_eq_enabled'] = True
     if args.pitch is not None:
         params['pitch_range'] = _clamp(args.pitch, 0.0, 5.0, 'pitch')
     if args.tempo is not None:

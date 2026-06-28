@@ -125,5 +125,33 @@ class WatermarkScanTests(unittest.TestCase):
         self.assertGreater(np.max(np.abs(out - audio)), 1e-6)
 
 
+class DynamicEqTests(unittest.TestCase):
+    def test_dynamic_eq_preserves_loudness(self):
+        sr = 16000
+        t = np.arange(sr * 2, dtype=np.float64) / sr
+        envelope = 0.6 + 0.3 * np.sin(2.0 * np.pi * 1.5 * t)
+        left = envelope * (
+            0.20 * np.sin(2.0 * np.pi * 140.0 * t)
+            + 0.16 * np.sin(2.0 * np.pi * 1200.0 * t)
+            + 0.12 * np.sin(2.0 * np.pi * 5200.0 * t)
+        )
+        right = envelope * (
+            0.18 * np.sin(2.0 * np.pi * 220.0 * t)
+            + 0.14 * np.sin(2.0 * np.pi * 2400.0 * t)
+            + 0.10 * np.sin(2.0 * np.pi * 7000.0 * t)
+        )
+        audio = np.column_stack([left, right])
+        proc = AudioProcessor({'dynamic_eq_amount': 0.8}, seed=123)
+
+        before = proc._integrated_lufs(audio, sr)
+        out = proc._dynamic_eq(audio, sr)
+        after = proc._integrated_lufs(out, sr)
+
+        self.assertEqual(out.shape, audio.shape)
+        self.assertTrue(np.all(np.isfinite(out)))
+        self.assertGreater(np.max(np.abs(out - audio)), 1e-6)
+        self.assertLess(abs(before - after), 0.25)
+
+
 if __name__ == '__main__':
     unittest.main()

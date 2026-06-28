@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.3-blue)
+![Version](https://img.shields.io/badge/version-1.5.4-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -15,7 +15,7 @@ Audio fingerprint masking tool. Transforms audio files through a multi-pass proc
 
 ## How It Works
 
-SunoJump applies a 10-pass processing pipeline with **non-uniform segment-based transforms** — each segment of the audio gets slightly different processing parameters, breaking the constellation patterns that fingerprinting systems rely on.
+SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based transforms** — each segment of the audio gets slightly different processing parameters, breaking the constellation patterns that fingerprinting systems rely on.
 
 ### Processing Pipeline
 
@@ -23,14 +23,15 @@ SunoJump applies a 10-pass processing pipeline with **non-uniform segment-based 
 |---|------|-------------|
 | 1 | **Metadata Strip** | Removes all embedded tags, IDs, and hidden metadata |
 | 2 | **Spectral Perturbation** | Scans candidate watermark bands, then perturbs frequency magnitudes with per-band controls for sub-bass, low-mids, presence, and air |
-| 3 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
-| 4 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
-| 5 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
-| 6 | **Stereo Manipulation** | Mid-side processing to alter stereo field |
-| 7 | **Noise Injection** | Adds shaped pink noise to mask watermark energy |
-| 8 | **Dynamics Modification** | Per-frame random gain variation to break statistical patterns |
-| 9 | **Humanization** | Wow/flutter, dynamic breathing, micro noise floor |
-| 10 | **Lossy Re-encode** | MP3 encode/decode cycle to degrade fine watermark detail (requires ffmpeg) |
+| 3 | **Dynamic EQ** | Time-varying multiband EQ with LUFS-like gain matching |
+| 4 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
+| 5 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
+| 6 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
+| 7 | **Stereo Manipulation** | Mid-side processing to alter stereo field |
+| 8 | **Noise Injection** | Adds shaped pink noise to mask watermark energy |
+| 9 | **Dynamics Modification** | Per-frame random gain variation to break statistical patterns |
+| 10 | **Humanization** | Wow/flutter, dynamic breathing, micro noise floor |
+| 11 | **Lossy Re-encode** | MP3 encode/decode cycle to degrade fine watermark detail (requires ffmpeg) |
 
 ### Key Differentiator: Non-Uniform Processing
 
@@ -59,7 +60,8 @@ All Python dependencies install automatically on first run.
 
 ## Features
 
-- **10-pass audio processing pipeline** — metadata strip, spectral perturbation, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
+- **11-pass audio processing pipeline** — metadata strip, spectral perturbation, dynamic EQ, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
+- **LUFS-preserving Dynamic EQ** — reshapes band energy without silently changing perceived loudness
 - **Watermark-band scan pre-pass** — auto-detects stable narrowband candidates per file and targets them during spectral perturbation
 - **Per-band spectral controls** — tune sub-bass, low-mids, presence, and air perturbation independently
 - **Coupled non-uniform pitch/tempo processing** — breaks constellation fingerprint patterns while keeping segment boundaries beat-aligned
@@ -117,6 +119,7 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `--spectral-low-mids` | Low-mids spectral perturbation (0.0-1.0) | preset |
 | `--spectral-presence` | Presence-band spectral perturbation (0.0-1.0) | preset |
 | `--spectral-air` | Air-band spectral perturbation (0.0-1.0) | preset |
+| `--dynamic-eq` | Dynamic EQ amount (0.0-1.0) | preset |
 | `--pitch` | Pitch micro-shift in semitones (0.0-5.0) | preset |
 | `--tempo` | Tempo variation (0.0-0.15) | preset |
 | `--phase` | Phase scrambling (0.0-1.0) | preset |

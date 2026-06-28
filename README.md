@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.10-blue)
+![Version](https://img.shields.io/badge/version-1.5.11-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -75,6 +75,7 @@ Install Python dependencies before running from source; the packaged executable 
 - **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing
 - **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, then apply your favorite
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
+- **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
 - **Detection-signature and constellation self-test logs** — reports heuristic AI-detection movement plus estimated landmark overlap remaining after processing
 - **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)
 - **Batch processing** — drag/drop multiple files, reorder them, process in parallel

@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.10 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.11 - Audio fingerprint masking tool for Suno AI"""
 
 import multiprocessing
 multiprocessing.freeze_support()
 
 # --- Imports ---
 import os, json, argparse, tempfile, shutil, threading
+import platform, traceback
 import subprocess, sys
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.5.10"
+VERSION = "1.5.11"
 APP_NAME = "SunoJump"
 
 try:
     import numpy as np
     import soundfile as sf
+    import scipy
     from scipy import signal
     import mutagen
     from mutagen import File as MutagenFile
@@ -33,7 +35,7 @@ try:
         QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
         QStyle, QScrollArea,
     )
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, PYQT_VERSION_STR, QT_VERSION_STR
     from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
 except ImportError as e:
     missing = getattr(e, 'name', None) or str(e)
@@ -496,6 +498,80 @@ def _open_in_file_manager(path):
     return QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
 
 
+def _open_file(path):
+    if not os.path.isfile(path):
+        return False
+    return QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
+
+
+def _diagnostics_dir():
+    if sys.platform.startswith('win'):
+        root = os.environ.get('LOCALAPPDATA')
+        if root:
+            return Path(root) / APP_NAME / 'logs'
+        return Path.home() / 'AppData' / 'Local' / APP_NAME / 'logs'
+    if sys.platform == 'darwin':
+        return Path.home() / 'Library' / 'Logs' / APP_NAME
+    root = os.environ.get('XDG_STATE_HOME')
+    if root:
+        return Path(root) / APP_NAME / 'logs'
+    return Path.home() / '.local' / 'state' / APP_NAME / 'logs'
+
+
+def _new_diagnostics_path(prefix='run'):
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    return _diagnostics_dir() / f"{prefix}-{stamp}.log"
+
+
+def _diagnostic_environment_lines():
+    return [
+        f"App: {APP_NAME} v{VERSION}",
+        f"Python: {sys.version.replace(os.linesep, ' ')}",
+        f"Executable: {sys.executable}",
+        f"Frozen: {bool(getattr(sys, 'frozen', False))}",
+        f"Platform: {platform.platform()}",
+        f"numpy: {np.__version__}",
+        f"scipy: {scipy.__version__}",
+        f"soundfile: {getattr(sf, '__version__', 'unknown')}",
+        f"mutagen: {getattr(mutagen, 'version_string', 'unknown')}",
+        f"PyQt6: {PYQT_VERSION_STR}",
+        f"Qt: {QT_VERSION_STR}",
+        f"PyQt6 Multimedia: {'available' if _MULTIMEDIA_OK else 'missing'}",
+        f"ffmpeg: {'available' if _check_ffmpeg() else 'missing'}",
+    ]
+
+
+class RunDiagnostics:
+    def __init__(self, prefix='run', path=None):
+        self.path = Path(path) if path is not None else _new_diagnostics_path(prefix)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self.path.write_text('', encoding='utf-8')
+
+    def write(self, msg):
+        text = '' if msg is None else str(msg)
+        lines = text.splitlines() or ['']
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with self._lock:
+            with self.path.open('a', encoding='utf-8') as f:
+                for line in lines:
+                    f.write(f"[{ts}] {line}\n")
+
+    def write_header(self, mode, inputs, output_dir, params, preset_name=None, seed=None):
+        self.write(f"{APP_NAME} v{VERSION} run started")
+        self.write(f"Mode: {mode}")
+        self.write(f"Preset: {preset_name or 'Custom'}")
+        self.write(f"Seed: {seed if seed is not None else 'random'}")
+        self.write(f"Output dir: {output_dir}")
+        for i, input_path in enumerate(inputs, start=1):
+            self.write(f"Input {i}: {input_path}")
+        self.write("Environment:")
+        for line in _diagnostic_environment_lines():
+            self.write(f"  {line}")
+        self.write("Parameters:")
+        self.write(json.dumps(params, indent=2, sort_keys=True, default=str))
+
+
 def _norm_output_path(path):
     return os.path.normcase(os.path.abspath(path))
 
@@ -553,6 +629,7 @@ class AudioProcessor:
             audio, sr = sf.read(input_path, dtype='float64')
         except Exception as e:
             self.log(f"  Error reading file: {e}")
+            self.log(traceback.format_exc().rstrip())
             return False
 
         if audio.size == 0:
@@ -654,6 +731,7 @@ class AudioProcessor:
                     audio = self._lossy_reencode(audio, sr, mono)
             except Exception as e:
                 self.log(f"    Error: {name} failed ({e}); render aborted")
+                self.log(traceback.format_exc().rstrip())
                 return False
 
         audio = np.clip(audio, -1.0, 1.0)
@@ -674,6 +752,7 @@ class AudioProcessor:
                 sf.write(output_path, save_audio, sr, subtype='PCM_24')
         except Exception as e:
             self.log(f"  Save error: {e}")
+            self.log(traceback.format_exc().rstrip())
             return False
 
         if self.params.get('strip_metadata', True):
@@ -1794,7 +1873,14 @@ class ProcessWorker(QThread):
                 self.log_signal.emit(
                     f"Output name collision avoided: {Path(out_path).name}",
                 )
-            ok = processor.process(filepath, out_path)
+            self.log_signal.emit(f"Output path: {out_path}")
+            try:
+                ok = processor.process(filepath, out_path)
+            except Exception as e:
+                self.log_signal.emit(f"Unexpected render failure: {e}")
+                self.log_signal.emit(traceback.format_exc().rstrip())
+                ok = False
+            self.log_signal.emit("Result: success" if ok else "Result: failed")
 
             self.file_done.emit(idx, ok, out_path if ok else "")
 
@@ -1849,7 +1935,13 @@ class PreviewWorker(QThread):
             progress_fn=lambda v: self.progress_signal.emit(v),
             cancel_event=self._cancel_event,
         )
-        ok = processor.process(self.input_path, out_path, preview_seconds=self.duration_sec)
+        self.log_signal.emit(f"Preview output path: {out_path}")
+        try:
+            ok = processor.process(self.input_path, out_path, preview_seconds=self.duration_sec)
+        except Exception as e:
+            self.log_signal.emit(f"Preview failed unexpectedly: {e}")
+            self.log_signal.emit(traceback.format_exc().rstrip())
+            ok = False
         self.done.emit(ok, out_path if ok else "", self.item_id)
 
     def cancel(self):
@@ -1908,6 +2000,7 @@ class PresetCompareWorker(QThread):
             out_path = os.path.join(
                 self.temp_dir, f"{stem}_compare_{name}_{ts}.wav",
             )
+            self.log_signal.emit(f"  Compare output path: {out_path}")
 
             proc = AudioProcessor(
                 params,
@@ -1915,9 +2008,14 @@ class PresetCompareWorker(QThread):
                 progress_fn=sub_progress,
                 cancel_event=self._cancel_event,
             )
-            ok = proc.process(
-                self.input_path, out_path, preview_seconds=self.duration_sec,
-            )
+            try:
+                ok = proc.process(
+                    self.input_path, out_path, preview_seconds=self.duration_sec,
+                )
+            except Exception as e:
+                self.log_signal.emit(f"  Compare {name} failed unexpectedly: {e}")
+                self.log_signal.emit(traceback.format_exc().rstrip())
+                ok = False
             if ok:
                 results[name] = out_path
                 self.preset_done.emit(name, True, out_path)
@@ -2074,6 +2172,7 @@ class MainWindow(QMainWindow):
         self._applying_preset = False
         self._last_browse_dir = str(Path.home())
         self._last_preset_dir = str(Path.home())
+        self._current_run_log = None
 
         # Media player for preview (optional)
         self.player = None
@@ -2285,17 +2384,21 @@ class MainWindow(QMainWindow):
         preset_row.addWidget(self.btn_load_preset)
 
         preset_row.addStretch()
+        lay.addLayout(preset_row)
 
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(16)
         self.watermark_scan_check = QCheckBox("Watermark Scan")
         self.watermark_scan_check.setChecked(True)
         self.watermark_scan_check.stateChanged.connect(lambda _: self._on_param_changed())
-        preset_row.addWidget(self.watermark_scan_check)
+        toggle_row.addWidget(self.watermark_scan_check)
 
         self.meta_check = QCheckBox("Metadata Strip")
         self.meta_check.setChecked(True)
         self.meta_check.stateChanged.connect(lambda _: self._on_param_changed())
-        preset_row.addWidget(self.meta_check)
-        lay.addLayout(preset_row)
+        toggle_row.addWidget(self.meta_check)
+        toggle_row.addStretch()
+        lay.addLayout(toggle_row)
 
         # Param rows
         self.param_rows = {}
@@ -2501,6 +2604,17 @@ class MainWindow(QMainWindow):
         self.log_box.setReadOnly(True)
         self.log_box.setMinimumHeight(170)
         lay.addWidget(self.log_box)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.btn_open_log = self._decorate_button(
+            QPushButton("Open Log"),
+            QStyle.StandardPixmap.SP_FileIcon,
+        )
+        self.btn_open_log.setToolTip("Open the latest persistent run log")
+        self.btn_open_log.setEnabled(False)
+        self.btn_open_log.clicked.connect(self._open_run_log)
+        actions.addWidget(self.btn_open_log)
+        lay.addLayout(actions)
         return panel
 
     # --- File list slots ---
@@ -2761,6 +2875,9 @@ class MainWindow(QMainWindow):
 
         self._set_processing_ui(True)
         self.log_box.clear()
+        self._start_run_log(
+            "gui-batch", files, out_dir, params, self.preset_combo.currentText(),
+        )
         self._log(f"Starting -- {len(files)} file(s), preset: {self.preset_combo.currentText()}")
         self._log(f"Output: {out_dir}\n")
 
@@ -2810,8 +2927,28 @@ class MainWindow(QMainWindow):
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_box.append(f"[{ts}] {msg}")
+        if self._current_run_log is not None:
+            self._current_run_log.write(msg)
         sb = self.log_box.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def _start_run_log(self, mode, files, out_dir, params, preset_name):
+        try:
+            self._current_run_log = RunDiagnostics(mode)
+            self._current_run_log.write_header(mode, files, out_dir, params, preset_name)
+            self.btn_open_log.setEnabled(True)
+            self._log(f"Run log: {self._current_run_log.path}")
+        except Exception as e:
+            self._current_run_log = None
+            self.btn_open_log.setEnabled(False)
+            self._log(f"Run log unavailable: {e}")
+
+    def _open_run_log(self):
+        if self._current_run_log is None:
+            self._log("No run log available yet.")
+            return
+        if not _open_file(str(self._current_run_log.path)):
+            self._log(f"Could not open run log: {self._current_run_log.path}")
 
     # --- Preview / playback ---
     def _current_selected_item(self):
@@ -2883,6 +3020,11 @@ class MainWindow(QMainWindow):
                 pass
             item.setData(ROLE_OUTPUT, None)
 
+        params = self._get_params()
+        self._start_run_log(
+            "gui-preview", [input_path], self._preview_tempdir, params,
+            self.preset_combo.currentText(),
+        )
         self._preview_item_id = id(item)
         self._set_preview_running_ui(True)
         self._log(
@@ -2890,7 +3032,6 @@ class MainWindow(QMainWindow):
             f"{Path(input_path).name} with current settings..."
         )
 
-        params = self._get_params()
         self.preview_worker = PreviewWorker(
             input_path, params, self._preview_tempdir, self._preview_item_id,
         )
@@ -2965,6 +3106,11 @@ class MainWindow(QMainWindow):
         self.btn_apply_compare.setText("Apply Currently Playing")
 
         self._set_compare_running_ui(True)
+        self._start_run_log(
+            "gui-compare", [input_path], self._preview_tempdir,
+            {'presets': list(PRESETS.keys()), 'duration_sec': COMPARE_DURATION_SEC},
+            "Compare Presets",
+        )
         self._log(
             f"Rendering {int(COMPARE_DURATION_SEC)}s sample per preset "
             f"({len(PRESETS)} presets)..."
@@ -3333,26 +3479,41 @@ def cli_main():
     ext_map = {'wav': '.wav', 'flac': '.flac', 'ogg': '.ogg'}
     ext = ext_map.get(args.out_format, '.wav')
 
+    run_log = RunDiagnostics('cli')
+
+    def cli_log(msg):
+        print(msg)
+        run_log.write(msg)
+
     print(f"{APP_NAME} v{VERSION}")
-    print(f"Preset: {preset_name} | Format: {args.out_format.upper()} | Files: {len(files)}\n")
+    print(f"Preset: {preset_name} | Format: {args.out_format.upper()} | Files: {len(files)}")
+    print(f"Run log: {run_log.path}\n")
+    run_log.write_header('cli', files, out_dir, params, preset_name, args.seed)
 
     fail_count = 0
     used_outputs = set()
     for filepath in files:
         out_path, renamed = _planned_output_path(filepath, out_dir, ext, used_outputs)
         if renamed:
-            print(f"Output name collision avoided: {Path(out_path).name}")
+            cli_log(f"Output name collision avoided: {Path(out_path).name}")
+        cli_log(f"Output path: {out_path}")
 
-        proc = AudioProcessor(params, log_fn=print, progress_fn=lambda v: None,
+        proc = AudioProcessor(params, log_fn=cli_log, progress_fn=lambda v: None,
                               seed=args.seed)
-        ok = proc.process(filepath, out_path)
+        try:
+            ok = proc.process(filepath, out_path)
+        except Exception as e:
+            cli_log(f"Unexpected render failure: {e}")
+            cli_log(traceback.format_exc().rstrip())
+            ok = False
         if not ok:
             fail_count += 1
-        print("---")
+        cli_log("Result: success" if ok else "Result: failed")
+        cli_log("---")
 
-    print(f"\nDone. Output: {out_dir}")
+    cli_log(f"\nDone. Output: {out_dir}")
     if fail_count:
-        print(f"{fail_count} file(s) failed.")
+        cli_log(f"{fail_count} file(s) failed.")
         sys.exit(2)
 
 

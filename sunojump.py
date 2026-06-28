@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.7 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.8 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.7"
+VERSION = "1.5.8"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -657,7 +657,8 @@ class AudioProcessor:
                 elif name == 'Lossy Re-encode':
                     audio = self._lossy_reencode(audio, sr, mono)
             except Exception as e:
-                self.log(f"    Warning: {name} failed ({e}), skipping")
+                self.log(f"    Error: {name} failed ({e}); render aborted")
+                return False
 
         audio = np.clip(audio, -1.0, 1.0)
 
@@ -1541,8 +1542,7 @@ class AudioProcessor:
         bitrate = int(self.params.get('reencode_bitrate', 192))
 
         if not _check_ffmpeg():
-            self.log("    ffmpeg not found -- skipping re-encode")
-            return audio
+            raise RuntimeError("ffmpeg not found")
 
         tmp_dir = tempfile.mkdtemp()
         try:
@@ -1580,8 +1580,7 @@ class AudioProcessor:
 
             return result
         except Exception as e:
-            self.log(f"    Re-encode failed: {e}")
-            return audio
+            raise RuntimeError(f"re-encode failed: {e}") from e
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

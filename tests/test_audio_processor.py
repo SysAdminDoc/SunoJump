@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 from sunojump import AudioProcessor
 
@@ -190,6 +193,39 @@ class NoiseInjectionTests(unittest.TestCase):
 
         self.assertGreater(loud_rms, quiet_rms * 1.5)
         self.assertLessEqual(proc._rms(added), 10.0 ** (-35.0 / 20.0) * 1.05)
+
+
+class FailClosedProcessingTests(unittest.TestCase):
+    def test_enabled_pass_failure_aborts_without_output(self):
+        sr = 8000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = 0.25 * np.sin(2.0 * np.pi * 440.0 * t)
+        logs = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output.wav'
+            sf.write(input_path, audio, sr)
+
+            proc = AudioProcessor({
+                'strip_metadata': False,
+                'spectral_enabled': True,
+                'watermark_scan_enabled': False,
+            }, log_fn=logs.append, seed=123)
+
+            def fail_spectral(_audio, _sr):
+                raise RuntimeError("synthetic failure")
+
+            proc._spectral_perturb = fail_spectral
+
+            ok = proc.process(str(input_path), str(output_path))
+
+            self.assertFalse(ok)
+            self.assertFalse(output_path.exists())
+            self.assertTrue(
+                any("Spectral Perturbation failed" in line for line in logs),
+                logs,
+            )
 
 
 class ConstellationSelfTestTests(unittest.TestCase):

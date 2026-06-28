@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.11 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.12 - Audio fingerprint masking tool for Suno AI"""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -11,7 +11,7 @@ import subprocess, sys
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.5.11"
+VERSION = "1.5.12"
 APP_NAME = "SunoJump"
 
 try:
@@ -502,6 +502,13 @@ def _open_file(path):
     if not os.path.isfile(path):
         return False
     return QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
+
+
+def _set_accessibility(widget, name, description):
+    widget.setAccessibleName(name)
+    widget.setAccessibleDescription(description)
+    if hasattr(widget, 'setToolTip') and not widget.toolTip():
+        widget.setToolTip(description)
 
 
 def _diagnostics_dir():
@@ -2094,6 +2101,11 @@ class ParamRow(QWidget):
         self.check = QCheckBox()
         self.check.setChecked(True)
         self.check.setToolTip(f"Enable {label}")
+        _set_accessibility(
+            self.check,
+            f"Enable {label}",
+            f"Toggle the {label} processing pass.",
+        )
         lay.addWidget(self.check)
 
         self._label = QLabel(label)
@@ -2103,6 +2115,11 @@ class ParamRow(QWidget):
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 200)
+        _set_accessibility(
+            self.slider,
+            f"{label} amount",
+            f"Adjust {label} from {min_val} to {max_val}{suffix}.",
+        )
         lay.addWidget(self.slider, 1)
 
         self.val_label = QLabel()
@@ -2213,6 +2230,8 @@ class MainWindow(QMainWindow):
         workspace.addLayout(right_col, 6)
         root.addLayout(workspace, 1)
         self._sync_header_stats()
+        self._configure_accessibility()
+        self._configure_tab_order()
 
         # Center on screen
         screen = QApplication.primaryScreen()
@@ -2230,7 +2249,80 @@ class MainWindow(QMainWindow):
             button.setObjectName(object_name)
         if pixmap is not None:
             button.setIcon(self._standard_icon(pixmap))
+        label = button.text().strip() or object_name or "Button"
+        _set_accessibility(button, label, f"{label} button.")
         return button
+
+    def _configure_accessibility(self):
+        _set_accessibility(
+            self.file_list,
+            "Audio queue",
+            "Drop audio files, select queued files, and reorder the batch.",
+        )
+        _set_accessibility(self.btn_browse, "Browse audio files", "Add audio files to the queue.")
+        _set_accessibility(self.btn_remove, "Remove selected files", "Remove selected files from the queue.")
+        _set_accessibility(self.btn_clear, "Clear queue", "Remove every file from the queue.")
+        _set_accessibility(self.btn_render_preview, "Render preview", "Render a short preview; disabled until a file is selected.")
+        _set_accessibility(self.btn_compare, "Compare presets", "Render one short sample per preset; disabled until a file is selected.")
+        _set_accessibility(self.btn_play_orig, "Play original", "Play the selected original file; disabled until audio is available.")
+        _set_accessibility(self.btn_play_proc, "Play processed", "Play the selected processed file; disabled until output is available.")
+        _set_accessibility(self.btn_open_log, "Open run log", "Open the latest persistent run log; disabled until a run starts.")
+        _set_accessibility(self.preset_combo, "Preset", "Choose the processing preset.")
+        _set_accessibility(self.btn_save_preset, "Save preset", "Save current settings to a JSON preset file.")
+        _set_accessibility(self.btn_load_preset, "Load preset", "Load settings from a JSON preset file.")
+        _set_accessibility(self.watermark_scan_check, "Watermark scan", "Toggle automatic watermark-band scanning before spectral perturbation.")
+        _set_accessibility(self.meta_check, "Metadata strip", "Toggle metadata stripping on saved output files.")
+        _set_accessibility(self.format_combo, "Output format", "Choose WAV, FLAC, or OGG output.")
+        _set_accessibility(self.btn_open_output, "Open output folder", "Open the current output directory in the file manager.")
+        _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
+        _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
+        _set_accessibility(self.btn_process, "Process all", "Start processing every queued file.")
+        _set_accessibility(self.btn_cancel, "Cancel processing", "Cancel the active render; disabled when no render is running.")
+        _set_accessibility(self.progress, "Render progress", "Shows current render progress.")
+        _set_accessibility(self.log_box, "Session log", "Shows processing events, warnings, metrics, and diagnostics.")
+
+        for name, btn in self.compare_buttons.items():
+            _set_accessibility(
+                btn,
+                f"Play {name} compare sample",
+                f"Play the rendered {name} preset comparison sample; disabled until compare completes.",
+            )
+        _set_accessibility(
+            self.btn_apply_compare,
+            "Apply currently playing preset",
+            "Apply the currently playing comparison preset to the main preset selector.",
+        )
+
+    def _configure_tab_order(self):
+        order = [
+            self.btn_browse,
+            self.btn_remove,
+            self.btn_clear,
+            self.file_list,
+            self.btn_render_preview,
+            self.btn_compare,
+            self.btn_play_orig,
+            self.btn_play_proc,
+            self.btn_open_log,
+            self.preset_combo,
+            self.btn_save_preset,
+            self.btn_load_preset,
+            self.watermark_scan_check,
+            self.meta_check,
+        ]
+        for row in self.param_rows.values():
+            order.extend([row.check, row.slider])
+        order.extend([
+            self.format_combo,
+            self.btn_open_output,
+            self.output_dir,
+            self.btn_browse_output,
+            self.btn_process,
+            self.btn_cancel,
+        ])
+        for first, second in zip(order, order[1:]):
+            self.setTabOrder(first, second)
+        self._tab_order_widgets = order
 
     def _build_header(self):
         bar = QFrame()
@@ -2453,14 +2545,14 @@ class MainWindow(QMainWindow):
         self.output_dir = QLineEdit(DEFAULT_OUTPUT)
         self.output_dir.setMinimumWidth(320)
         dir_row.addWidget(self.output_dir, 1)
-        btn_dir = self._decorate_button(
+        self.btn_browse_output = self._decorate_button(
             QPushButton(""),
             QStyle.StandardPixmap.SP_DirOpenIcon,
             "iconButton",
         )
-        btn_dir.setFixedWidth(36)
-        btn_dir.clicked.connect(self._browse_output)
-        dir_row.addWidget(btn_dir)
+        self.btn_browse_output.setFixedWidth(36)
+        self.btn_browse_output.clicked.connect(self._browse_output)
+        dir_row.addWidget(self.btn_browse_output)
         lay.addLayout(dir_row)
 
         return panel

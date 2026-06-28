@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.9 (2026-06-28)
+- **Collision-free output names.** Batch and CLI renders now avoid overwriting same-stem files or existing outputs by assigning numbered `_sj_2`, `_sj_3`, ... suffixes.
+- **Regression coverage.** Added tests for duplicate input stems and existing output files.
+
 ## v1.5.8 (2026-06-28)
 - **Fail-closed processing.** Enabled processing pass failures now abort the render instead of silently saving a partially transformed file.
 - **Lossy re-encode guard.** Enabling re-encode now fails the render when ffmpeg or the encode/decode round trip is unavailable.

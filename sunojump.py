@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.8 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.9 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.8"
+VERSION = "1.5.9"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -516,6 +516,24 @@ def _open_in_file_manager(path):
     if not os.path.isdir(path):
         return False
     return QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(path)))
+
+
+def _norm_output_path(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _planned_output_path(input_path, output_dir, ext, used_paths=None):
+    """Return a collision-free output path for an input file."""
+    used_paths = used_paths if used_paths is not None else set()
+    stem = Path(input_path).stem
+    base = os.path.join(output_dir, f"{stem}_sj{ext}")
+    candidate = base
+    counter = 2
+    while _norm_output_path(candidate) in used_paths or os.path.exists(candidate):
+        candidate = os.path.join(output_dir, f"{stem}_sj_{counter}{ext}")
+        counter += 1
+    used_paths.add(_norm_output_path(candidate))
+    return candidate, candidate != base
 
 
 # ============================================================
@@ -1767,6 +1785,7 @@ class ProcessWorker(QThread):
             return
         n_files = len(self.files)
         t_start = _time.time()
+        used_outputs = set()
 
         for idx, filepath in enumerate(self.files):
             if self._cancel_event.is_set():
@@ -1785,13 +1804,18 @@ class ProcessWorker(QThread):
                 cancel_event=self._cancel_event,
             )
 
-            stem = Path(filepath).stem
             ext_map = {'wav': '.wav', 'flac': '.flac', 'ogg': '.ogg'}
             fmt = self.params.get('output_format', 'wav').lower()
             ext = ext_map.get(fmt, '.wav')
-            out_path = os.path.join(self.output_dir, f"{stem}_sj{ext}")
+            out_path, renamed = _planned_output_path(
+                filepath, self.output_dir, ext, used_outputs,
+            )
 
             self.log_signal.emit(f"\n[{idx+1}/{n_files}] {Path(filepath).name}")
+            if renamed:
+                self.log_signal.emit(
+                    f"Output name collision avoided: {Path(out_path).name}",
+                )
             ok = processor.process(filepath, out_path)
 
             self.file_done.emit(idx, ok, out_path if ok else "")
@@ -3335,9 +3359,11 @@ def cli_main():
     print(f"Preset: {preset_name} | Format: {args.out_format.upper()} | Files: {len(files)}\n")
 
     fail_count = 0
+    used_outputs = set()
     for filepath in files:
-        stem = Path(filepath).stem
-        out_path = os.path.join(out_dir, f"{stem}_sj{ext}")
+        out_path, renamed = _planned_output_path(filepath, out_dir, ext, used_outputs)
+        if renamed:
+            print(f"Output name collision avoided: {Path(out_path).name}")
 
         proc = AudioProcessor(params, log_fn=print, progress_fn=lambda v: None,
                               seed=args.seed)

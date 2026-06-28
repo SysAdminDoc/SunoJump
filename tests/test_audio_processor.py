@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from sunojump import AudioProcessor
+from sunojump import AudioProcessor, _planned_output_path
 
 
 class CoupledPitchTempoTests(unittest.TestCase):
@@ -226,6 +226,40 @@ class FailClosedProcessingTests(unittest.TestCase):
                 any("Spectral Perturbation failed" in line for line in logs),
                 logs,
             )
+
+
+class OutputPathTests(unittest.TestCase):
+    def test_output_paths_are_unique_for_duplicate_stems(self):
+        used = set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / 'out'
+            first = Path(tmp) / 'a' / 'song.wav'
+            second = Path(tmp) / 'b' / 'song.wav'
+
+            path_a, renamed_a = _planned_output_path(first, out_dir, '.wav', used)
+            path_b, renamed_b = _planned_output_path(second, out_dir, '.wav', used)
+
+            self.assertEqual(Path(path_a).name, 'song_sj.wav')
+            self.assertEqual(Path(path_b).name, 'song_sj_2.wav')
+            self.assertFalse(renamed_a)
+            self.assertTrue(renamed_b)
+            self.assertNotEqual(path_a, path_b)
+
+    def test_output_path_avoids_existing_file(self):
+        used = set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            existing = out_dir / 'song_sj.wav'
+            existing.write_text('existing', encoding='utf-8')
+
+            path, renamed = _planned_output_path(
+                out_dir / 'song.wav', out_dir, '.wav', used,
+            )
+
+            self.assertEqual(Path(path).name, 'song_sj_2.wav')
+            self.assertTrue(renamed)
 
 
 class ConstellationSelfTestTests(unittest.TestCase):

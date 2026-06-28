@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.9-blue)
+![Version](https://img.shields.io/badge/version-1.5.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -47,7 +47,10 @@ Download `SunoJump.exe` from the [latest release](https://github.com/SysAdminDoc
 git clone https://github.com/SysAdminDoc/SunoJump.git
 cd SunoJump
 
-# Run (auto-installs dependencies)
+# Install dependencies
+python -m pip install -r requirements.txt
+
+# Run
 python sunojump.py
 ```
 
@@ -56,7 +59,7 @@ python sunojump.py
 - ffmpeg (optional, for Lossy Re-encode pass)
 - PyQt6 Multimedia (optional, for in-app preview playback; usually bundled)
 
-All Python dependencies install automatically on first run.
+Install Python dependencies before running from source; the packaged executable already includes them.
 
 ## Features
 

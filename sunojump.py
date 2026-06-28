@@ -1,67 +1,45 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.9 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.10 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.9"
-APP_NAME = "SunoJump"
-
-# --- Bootstrap ---
-import subprocess, sys
-
-def _bootstrap():
-    deps = {
-        'PyQt6': 'PyQt6',
-        'numpy': 'numpy',
-        'scipy': 'scipy',
-        'soundfile': 'soundfile',
-        'mutagen': 'mutagen',
-    }
-    missing = []
-    for module, package in deps.items():
-        try:
-            __import__(module)
-        except ImportError:
-            missing.append(package)
-    if not missing:
-        return
-    installed = False
-    for attempt in [
-        [sys.executable, '-m', 'pip', 'install'] + missing,
-        [sys.executable, '-m', 'pip', 'install', '--user'] + missing,
-        [sys.executable, '-m', 'pip', 'install', '--break-system-packages'] + missing,
-    ]:
-        try:
-            subprocess.check_call(attempt, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            installed = True
-            break
-        except subprocess.CalledProcessError:
-            continue
-    if not installed:
-        print(f"ERROR: Failed to install required packages: {', '.join(missing)}", file=sys.stderr)
-        print("Install manually:  pip install " + " ".join(missing), file=sys.stderr)
-        sys.exit(1)
-
-_bootstrap()
+import multiprocessing
+multiprocessing.freeze_support()
 
 # --- Imports ---
 import os, json, argparse, tempfile, shutil, threading
+import subprocess, sys
 from pathlib import Path
 from datetime import datetime
 
-import numpy as np
-import soundfile as sf
-from scipy import signal
-import mutagen
-from mutagen import File as MutagenFile
+VERSION = "1.5.10"
+APP_NAME = "SunoJump"
 
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QListWidget, QListWidgetItem,
-    QComboBox, QLineEdit, QCheckBox, QSlider, QProgressBar,
-    QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
-    QStyle, QScrollArea,
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
+try:
+    import numpy as np
+    import soundfile as sf
+    from scipy import signal
+    import mutagen
+    from mutagen import File as MutagenFile
+except ImportError as e:
+    missing = getattr(e, 'name', None) or str(e)
+    print(f"ERROR: Missing required Python dependency: {missing}", file=sys.stderr)
+    print("Install dependencies with:  python -m pip install -r requirements.txt", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QPushButton, QLabel, QListWidget, QListWidgetItem,
+        QComboBox, QLineEdit, QCheckBox, QSlider, QProgressBar,
+        QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
+        QStyle, QScrollArea,
+    )
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+    from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
+except ImportError as e:
+    missing = getattr(e, 'name', None) or str(e)
+    print(f"ERROR: Missing required GUI dependency: {missing}", file=sys.stderr)
+    print("Install dependencies with:  python -m pip install -r requirements.txt", file=sys.stderr)
+    sys.exit(1)
 
 # Optional multimedia: only used for preview playback. Some Linux
 # distros ship PyQt6 without the Multimedia module (separate package).

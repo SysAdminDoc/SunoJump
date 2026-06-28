@@ -6,6 +6,7 @@ dist/
 build/
 *.bak
 *.spec
+!SunoJump.spec
 CLAUDE.md
 CODEX_CHANGELOG.md
 .env

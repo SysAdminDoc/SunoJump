@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from sunojump import AudioProcessor, _planned_output_path
+import sunojump
+from sunojump import AudioProcessor, _format_requires_ffmpeg, _output_extension, _planned_output_path
 
 
 class CoupledPitchTempoTests(unittest.TestCase):
@@ -260,6 +261,41 @@ class OutputPathTests(unittest.TestCase):
 
             self.assertEqual(Path(path).name, 'song_sj_2.wav')
             self.assertTrue(renamed)
+
+
+class OutputFormatTests(unittest.TestCase):
+    def test_output_extension_maps_ffmpeg_formats(self):
+        self.assertEqual(_output_extension('wav'), '.wav')
+        self.assertEqual(_output_extension('mp3'), '.mp3')
+        self.assertEqual(_output_extension('m4a'), '.m4a')
+        self.assertTrue(_format_requires_ffmpeg('mp3'))
+        self.assertTrue(_format_requires_ffmpeg('m4a'))
+        self.assertFalse(_format_requires_ffmpeg('flac'))
+
+    def test_ffmpeg_output_format_fails_closed_when_ffmpeg_missing(self):
+        sr = 8000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = 0.25 * np.sin(2.0 * np.pi * 440.0 * t)
+        logs = []
+        old_check = sunojump._check_ffmpeg
+        sunojump._check_ffmpeg = lambda: False
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                input_path = Path(tmp) / 'input.wav'
+                output_path = Path(tmp) / 'output.mp3'
+                sf.write(input_path, audio, sr)
+                proc = AudioProcessor({
+                    'strip_metadata': True,
+                    'output_format': 'mp3',
+                }, log_fn=logs.append, seed=123)
+
+                ok = proc.process(str(input_path), str(output_path))
+
+                self.assertFalse(ok)
+                self.assertFalse(output_path.exists())
+                self.assertTrue(any("MP3 export requires ffmpeg" in line for line in logs))
+        finally:
+            sunojump._check_ffmpeg = old_check
 
 
 class ConstellationSelfTestTests(unittest.TestCase):

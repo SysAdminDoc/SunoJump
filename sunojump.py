@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.12 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.13 - Audio fingerprint masking tool for Suno AI"""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -11,7 +11,7 @@ import subprocess, sys
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.5.12"
+VERSION = "1.5.13"
 APP_NAME = "SunoJump"
 
 try:
@@ -68,6 +68,14 @@ C = {
 }
 
 SUPPORTED_FORMATS = {'.wav', '.mp3', '.flac', '.ogg', '.aiff', '.aif', '.opus'}
+OUTPUT_EXTENSIONS = {
+    'wav': '.wav',
+    'flac': '.flac',
+    'ogg': '.ogg',
+    'mp3': '.mp3',
+    'm4a': '.m4a',
+}
+FFMPEG_EXPORT_FORMATS = {'mp3', 'm4a'}
 
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
@@ -597,6 +605,21 @@ def _planned_output_path(input_path, output_dir, ext, used_paths=None):
     return candidate, candidate != base
 
 
+def _output_extension(fmt):
+    return OUTPUT_EXTENSIONS.get(str(fmt).lower(), '.wav')
+
+
+def _format_requires_ffmpeg(fmt):
+    return str(fmt).lower() in FFMPEG_EXPORT_FORMATS
+
+
+def _available_output_formats():
+    formats = ['wav', 'flac', 'ogg']
+    if _check_ffmpeg():
+        formats.extend(['mp3', 'm4a'])
+    return formats
+
+
 # ============================================================
 #  Audio Processor
 # ============================================================
@@ -751,7 +774,14 @@ class AudioProcessor:
         save_audio = audio[:, 0] if mono else audio
         fmt = self.params.get('output_format', 'wav').lower()
         try:
-            if fmt == 'flac':
+            if _format_requires_ffmpeg(fmt):
+                if not _check_ffmpeg():
+                    self.log(
+                        f"  Save error: {fmt.upper()} export requires ffmpeg in PATH"
+                    )
+                    return False
+                self._export_with_ffmpeg(save_audio, sr, output_path, fmt)
+            elif fmt == 'flac':
                 sf.write(output_path, save_audio, sr, format='FLAC')
             elif fmt == 'ogg':
                 sf.write(output_path, save_audio, sr, format='OGG', subtype='VORBIS')
@@ -810,6 +840,30 @@ class AudioProcessor:
                 f.save()
         except Exception:
             pass
+
+    def _export_with_ffmpeg(self, audio, sr, output_path, fmt):
+        tmp_dir = tempfile.mkdtemp(prefix='sunojump_export_')
+        wav_in = os.path.join(tmp_dir, 'export.wav')
+        bitrate = int(self.params.get('reencode_bitrate', 192))
+        bitrate = max(96, min(320, bitrate))
+        try:
+            sf.write(wav_in, audio, sr, subtype='PCM_24')
+            if fmt == 'mp3':
+                codec_args = ['-codec:a', 'libmp3lame', '-b:a', f'{bitrate}k']
+            elif fmt == 'm4a':
+                codec_args = ['-codec:a', 'aac', '-b:a', f'{bitrate}k']
+            else:
+                raise ValueError(f"Unsupported ffmpeg export format: {fmt}")
+            cmd = [
+                'ffmpeg', '-y', '-loglevel', 'error', '-i', wav_in,
+                '-vn', *codec_args, output_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or 'ffmpeg failed').strip()
+                raise RuntimeError(detail)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # --- Watermark-band scan pre-pass ---
     def _scan_watermark_bands(self, audio, sr):
@@ -1868,9 +1922,8 @@ class ProcessWorker(QThread):
                 cancel_event=self._cancel_event,
             )
 
-            ext_map = {'wav': '.wav', 'flac': '.flac', 'ogg': '.ogg'}
             fmt = self.params.get('output_format', 'wav').lower()
-            ext = ext_map.get(fmt, '.wav')
+            ext = _output_extension(fmt)
             out_path, renamed = _planned_output_path(
                 filepath, self.output_dir, ext, used_outputs,
             )
@@ -2272,7 +2325,11 @@ class MainWindow(QMainWindow):
         _set_accessibility(self.btn_load_preset, "Load preset", "Load settings from a JSON preset file.")
         _set_accessibility(self.watermark_scan_check, "Watermark scan", "Toggle automatic watermark-band scanning before spectral perturbation.")
         _set_accessibility(self.meta_check, "Metadata strip", "Toggle metadata stripping on saved output files.")
-        _set_accessibility(self.format_combo, "Output format", "Choose WAV, FLAC, or OGG output.")
+        _set_accessibility(
+            self.format_combo,
+            "Output format",
+            "Choose WAV, FLAC, OGG, or ffmpeg-backed MP3/M4A output.",
+        )
         _set_accessibility(self.btn_open_output, "Open output folder", "Open the current output directory in the file manager.")
         _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
         _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
@@ -2525,7 +2582,9 @@ class MainWindow(QMainWindow):
         format_row.setSpacing(8)
         format_row.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
-        self.format_combo.addItems(['WAV', 'FLAC', 'OGG'])
+        self.format_combo.addItems([fmt.upper() for fmt in _available_output_formats()])
+        if _format_requires_ffmpeg('mp3') and not _check_ffmpeg():
+            self.format_combo.setToolTip("MP3/M4A export requires ffmpeg in PATH")
         self.format_combo.currentTextChanged.connect(lambda _: self._sync_header_stats())
         self.format_combo.setFixedWidth(140)
         format_row.addWidget(self.format_combo)
@@ -3449,7 +3508,8 @@ def cli_main():
     parser.add_argument('-o', '--output', default=None, help='Output file or directory')
     parser.add_argument('-p', '--preset', default='moderate',
                         choices=['gentle', 'moderate', 'aggressive', 'extreme'])
-    parser.add_argument('-f', '--format', default='wav', choices=['wav', 'flac', 'ogg'],
+    parser.add_argument('-f', '--format', default='wav',
+                        choices=list(OUTPUT_EXTENSIONS.keys()),
                         dest='out_format')
     parser.add_argument('--preset-file', default=None,
                         help='Path to JSON preset file (overrides -p/--preset)')
@@ -3481,6 +3541,14 @@ def cli_main():
     preset_name = args.preset.capitalize()
     params = dict(PRESETS.get(preset_name, PRESETS['Moderate']))
     params['output_format'] = args.out_format
+
+    if _format_requires_ffmpeg(args.out_format) and not _check_ffmpeg():
+        print(
+            f"Error: {args.out_format.upper()} export requires ffmpeg in PATH. "
+            "Use WAV/FLAC/OGG or install ffmpeg.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Optional JSON preset file override
     if args.preset_file:
@@ -3568,8 +3636,7 @@ def cli_main():
     out_dir = args.output or DEFAULT_OUTPUT
     os.makedirs(out_dir, exist_ok=True)
 
-    ext_map = {'wav': '.wav', 'flac': '.flac', 'ogg': '.ogg'}
-    ext = ext_map.get(args.out_format, '.wav')
+    ext = _output_extension(args.out_format)
 
     run_log = RunDiagnostics('cli')
 

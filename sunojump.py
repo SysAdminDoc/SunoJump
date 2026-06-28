@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.5 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.6 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.5"
+VERSION = "1.5.6"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -814,28 +814,34 @@ class AudioProcessor:
         the whole file (the hallmark of many AI music outputs)."""
         strength = self.params.get('spectral_strength', 0.3)
         n = audio.shape[0]
-        seg_samples = int(3.0 * sr)
+        base_seg_samples = int(3.0 * sr)
         overlap = int(0.1 * sr)
-        hop = max(1, seg_samples - overlap)
 
         # Short audio: single pass (no segmentation benefit)
-        if n <= seg_samples:
+        if n <= base_seg_samples:
+            nperseg = self._choose_spectral_window(n)
             result = np.zeros_like(audio)
             for ch in range(audio.shape[1]):
-                result[:, ch] = self._spectral_perturb_ch(audio[:, ch], sr, strength)
+                result[:, ch] = self._spectral_perturb_ch(
+                    audio[:, ch], sr, strength, nperseg=nperseg,
+                )
             return result
 
         result = np.zeros_like(audio)
         weights = np.zeros(n)
         pos = 0
         while pos < n:
+            seg_samples = int(self.rng.uniform(2.4, 3.6) * sr)
             end = min(pos + seg_samples, n)
             chunk = audio[pos:end]
             clen = end - pos
+            nperseg = self._choose_spectral_window(clen)
 
             processed = np.zeros_like(chunk)
             for ch in range(chunk.shape[1]):
-                processed[:, ch] = self._spectral_perturb_ch(chunk[:, ch], sr, strength)
+                processed[:, ch] = self._spectral_perturb_ch(
+                    chunk[:, ch], sr, strength, nperseg=nperseg,
+                )
 
             # Crossfade window to avoid seams
             win = np.ones(clen)
@@ -847,13 +853,19 @@ class AudioProcessor:
 
             result[pos:end] += processed * win[:, np.newaxis]
             weights[pos:end] += win
-            pos += hop
+            pos += max(1, clen - overlap)
 
         weights = np.maximum(weights, 1e-8)
         return result / weights[:, np.newaxis]
 
-    def _spectral_perturb_ch(self, channel, sr, strength):
-        nperseg = _nperseg_for(len(channel))
+    def _choose_spectral_window(self, length):
+        valid = [w for w in (1024, 2048, 4096) if length >= w]
+        if valid:
+            return int(self.rng.choice(valid))
+        return _nperseg_for(length)
+
+    def _spectral_perturb_ch(self, channel, sr, strength, nperseg=None):
+        nperseg = nperseg or _nperseg_for(len(channel))
         if nperseg == 0:
             return channel.copy()
         noverlap = nperseg // 2

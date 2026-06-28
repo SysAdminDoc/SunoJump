@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.5-blue)
+![Version](https://img.shields.io/badge/version-1.5.6-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -22,7 +22,7 @@ SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based
 | # | Pass | What It Does |
 |---|------|-------------|
 | 1 | **Metadata Strip** | Removes all embedded tags, IDs, and hidden metadata |
-| 2 | **Spectral Perturbation** | Scans candidate watermark bands, then perturbs frequency magnitudes with per-band controls for sub-bass, low-mids, presence, and air |
+| 2 | **Spectral Perturbation** | Scans candidate watermark bands, then perturbs frequency magnitudes with per-band controls and randomized STFT window sweeps |
 | 3 | **Dynamic EQ** | Time-varying multiband EQ with LUFS-like gain matching |
 | 4 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
 | 5 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
@@ -64,6 +64,7 @@ All Python dependencies install automatically on first run.
 - **LUFS-preserving Dynamic EQ** — reshapes band energy without silently changing perceived loudness
 - **Psychoacoustic noise shaping** — keeps injected pink noise lower in quiet regions and under louder spectral masks
 - **Watermark-band scan pre-pass** — auto-detects stable narrowband candidates per file and targets them during spectral perturbation
+- **STFT window sweeps** — varies 1024/2048/4096-point windows across randomized spectral segments
 - **Per-band spectral controls** — tune sub-bass, low-mids, presence, and air perturbation independently
 - **Coupled non-uniform pitch/tempo processing** — breaks constellation fingerprint patterns while keeping segment boundaries beat-aligned
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom

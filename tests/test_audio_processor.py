@@ -83,6 +83,25 @@ class SpectralBandTests(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(out)))
         self.assertGreater(np.max(np.abs(out - audio)), 1e-6)
 
+    def test_spectral_window_selector_uses_sweep_sizes(self):
+        proc = AudioProcessor({}, seed=123)
+
+        seen = {proc._choose_spectral_window(5000) for _ in range(40)}
+
+        self.assertTrue(seen.issubset({1024, 2048, 4096}))
+        self.assertGreaterEqual(len(seen), 2)
+
+    def test_spectral_perturb_accepts_4096_window(self):
+        sr = 16000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = 0.25 * np.sin(2.0 * np.pi * 440.0 * t)
+        proc = AudioProcessor({}, seed=123)
+
+        out = proc._spectral_perturb_ch(audio, sr, 0.4, nperseg=4096)
+
+        self.assertEqual(out.shape, audio.shape)
+        self.assertTrue(np.all(np.isfinite(out)))
+
 
 class WatermarkScanTests(unittest.TestCase):
     def test_scan_detects_stable_high_frequency_candidate(self):

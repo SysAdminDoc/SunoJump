@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.4-blue)
+![Version](https://img.shields.io/badge/version-1.5.5-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -28,7 +28,7 @@ SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based
 | 5 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
 | 6 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
 | 7 | **Stereo Manipulation** | Mid-side processing to alter stereo field |
-| 8 | **Noise Injection** | Adds shaped pink noise to mask watermark energy |
+| 8 | **Noise Injection** | Adds masking-aware shaped pink noise below local spectral thresholds |
 | 9 | **Dynamics Modification** | Per-frame random gain variation to break statistical patterns |
 | 10 | **Humanization** | Wow/flutter, dynamic breathing, micro noise floor |
 | 11 | **Lossy Re-encode** | MP3 encode/decode cycle to degrade fine watermark detail (requires ffmpeg) |
@@ -62,6 +62,7 @@ All Python dependencies install automatically on first run.
 
 - **11-pass audio processing pipeline** — metadata strip, spectral perturbation, dynamic EQ, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
 - **LUFS-preserving Dynamic EQ** — reshapes band energy without silently changing perceived loudness
+- **Psychoacoustic noise shaping** — keeps injected pink noise lower in quiet regions and under louder spectral masks
 - **Watermark-band scan pre-pass** — auto-detects stable narrowband candidates per file and targets them during spectral perturbation
 - **Per-band spectral controls** — tune sub-bass, low-mids, presence, and air perturbation independently
 - **Coupled non-uniform pitch/tempo processing** — breaks constellation fingerprint patterns while keeping segment boundaries beat-aligned

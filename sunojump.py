@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.4 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.5 - Audio fingerprint masking tool for Suno AI"""
 
-VERSION = "1.5.4"
+VERSION = "1.5.5"
 APP_NAME = "SunoJump"
 
 # --- Bootstrap ---
@@ -1365,7 +1365,8 @@ class AudioProcessor:
         result = audio.copy()
         for ch in range(result.shape[1]):
             pink = self._pink_noise(result.shape[0])
-            result[:, ch] += pink * level_lin
+            shaped = self._masking_aware_noise(audio[:, ch], pink, sr, level_lin)
+            result[:, ch] += shaped
         return result
 
     def _pink_noise(self, n):
@@ -1379,6 +1380,62 @@ class AudioProcessor:
         if peak < 1e-10:
             return pink
         return pink / peak
+
+    def _masking_aware_noise(self, channel, noise, sr, level_lin):
+        nperseg = _nperseg_for(len(channel))
+        if nperseg == 0:
+            return noise * level_lin
+        noverlap = nperseg // 2
+
+        try:
+            f, t, audio_z = signal.stft(channel, sr, nperseg=nperseg, noverlap=noverlap)
+            _, _, noise_z = signal.stft(noise, sr, nperseg=nperseg, noverlap=noverlap)
+        except Exception:
+            return noise * level_lin
+
+        audio_mag = np.abs(audio_z)
+        noise_mag = np.abs(noise_z) + 1e-12
+
+        kernel_bins = min(17, max(3, (len(f) // 24) * 2 + 1))
+        try:
+            spread = signal.medfilt(audio_mag, kernel_size=(kernel_bins, 1))
+        except Exception:
+            spread = audio_mag
+
+        masking_mag = np.maximum(audio_mag, spread)
+        floor = level_lin * 0.02
+        threshold = np.maximum(masking_mag * 0.10, floor)
+        shaped_z = noise_z * np.minimum(1.0, threshold / noise_mag)
+
+        _, shaped = signal.istft(shaped_z, sr, nperseg=nperseg, noverlap=noverlap)
+        if len(shaped) > len(channel):
+            shaped = shaped[:len(channel)]
+        elif len(shaped) < len(channel):
+            shaped = np.pad(shaped, (0, len(channel) - len(shaped)))
+
+        env = self._masking_envelope(channel, sr)
+        shaped = shaped * env
+
+        target_rms = level_lin
+        current_rms = self._rms(shaped)
+        if current_rms > target_rms > 0:
+            shaped = shaped * (target_rms / current_rms)
+        return shaped
+
+    def _masking_envelope(self, channel, sr):
+        frame = max(1, int(0.03 * sr))
+        kernel = np.ones(frame, dtype=np.float64) / frame
+        energy = np.convolve(np.square(channel), kernel, mode='same')
+        env = np.sqrt(np.maximum(energy, 0.0))
+        ref = np.percentile(env, 95) if env.size else 0.0
+        if ref <= 1e-12:
+            return np.full_like(channel, 0.05)
+        return np.clip(env / ref, 0.05, 1.0)
+
+    def _rms(self, data):
+        if data.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(data))))
 
     # --- Dynamics modification ---
     def _modify_dynamics(self, audio, sr):

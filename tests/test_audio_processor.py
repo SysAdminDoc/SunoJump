@@ -153,5 +153,25 @@ class DynamicEqTests(unittest.TestCase):
         self.assertLess(abs(before - after), 0.25)
 
 
+class NoiseInjectionTests(unittest.TestCase):
+    def test_masking_aware_noise_tracks_louder_regions(self):
+        sr = 16000
+        t = np.arange(sr * 2, dtype=np.float64) / sr
+        quiet = 0.02 * np.sin(2.0 * np.pi * 440.0 * t[:sr])
+        loud = 0.45 * np.sin(2.0 * np.pi * 440.0 * t[:sr])
+        mono = np.concatenate([quiet, loud])
+        audio = mono[:, np.newaxis]
+        proc = AudioProcessor({'noise_level': -35.0}, seed=123)
+
+        out = proc._inject_noise(audio, sr)[:, 0]
+        added = out - mono
+
+        quiet_rms = proc._rms(added[:sr])
+        loud_rms = proc._rms(added[sr:])
+
+        self.assertGreater(loud_rms, quiet_rms * 1.5)
+        self.assertLessEqual(proc._rms(added), 10.0 ** (-35.0 / 20.0) * 1.05)
+
+
 if __name__ == '__main__':
     unittest.main()

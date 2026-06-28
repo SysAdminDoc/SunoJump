@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.13-blue)
+![Version](https://img.shields.io/badge/version-1.5.14-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -60,6 +60,16 @@ python sunojump.py
 - PyQt6 Multimedia (optional, for in-app preview playback; usually bundled)
 
 Install Python dependencies before running from source; the packaged executable already includes them.
+
+### Release Dependency Audit
+```bash
+# Optional: install the release-verified dependency set
+python -m pip install -r requirements-lock.txt
+
+# Install local audit tooling, then scan the release lock
+python -m pip install -r requirements-dev.txt
+python tools/audit_dependencies.py
+```
 
 ## Features
 

@@ -1,0 +1,12 @@
+# Release-verified dependency lock for SunoJump desktop builds.
+# Install with:
+#   python -m pip install -r requirements-lock.txt
+cffi==2.0.0
+mutagen==1.48.1
+numpy==2.2.6
+pycparser==3.0
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+PyQt6_sip==13.11.1
+scipy==1.17.1
+soundfile==0.14.0

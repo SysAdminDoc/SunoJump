@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -456,6 +457,121 @@ class OutputFormatTests(unittest.TestCase):
                 self.assertTrue(any("MP3 export requires ffmpeg" in line for line in logs))
         finally:
             sunojump._check_ffmpeg = old_check
+
+
+class AtomicOutputTests(unittest.TestCase):
+    def _audio_fixture(self, sr=8000):
+        t = np.arange(sr, dtype=np.float64) / sr
+        return 0.25 * np.sin(2.0 * np.pi * 440.0 * t), sr
+
+    def _leftovers(self, tmp, input_path):
+        return sorted(
+            p.name for p in Path(tmp).iterdir()
+            if p.name != Path(input_path).name
+        )
+
+    def test_soundfile_write_failure_removes_temp_and_final_output(self):
+        audio, sr = self._audio_fixture()
+        logs = []
+        old_write = sunojump.sf.write
+        write_targets = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output.wav'
+            old_write(input_path, audio, sr)
+
+            def fail_output_write(path, *args, **kwargs):
+                write_targets.append(str(path))
+                Path(path).write_bytes(b'partial output')
+                raise RuntimeError("synthetic save failure")
+
+            sunojump.sf.write = fail_output_write
+            try:
+                ok = AudioProcessor({'strip_metadata': True}, log_fn=logs.append, seed=123).process(
+                    str(input_path), str(output_path),
+                )
+            finally:
+                sunojump.sf.write = old_write
+
+            self.assertFalse(ok)
+            self.assertFalse(output_path.exists())
+            self.assertEqual([], self._leftovers(tmp, input_path))
+            self.assertTrue(
+                any(Path(path).name.startswith('.output.') for path in write_targets),
+                write_targets,
+            )
+
+    def test_ffmpeg_failure_removes_temp_and_final_output(self):
+        audio, sr = self._audio_fixture()
+        logs = []
+        old_check = sunojump._check_ffmpeg
+        old_run = sunojump.subprocess.run
+
+        class FakeResult:
+            returncode = 1
+            stderr = "synthetic encoder failure"
+            stdout = ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output.mp3'
+            sf.write(input_path, audio, sr)
+
+            def fake_run(cmd, *args, **kwargs):
+                Path(cmd[-1]).write_bytes(b'partial mp3')
+                return FakeResult()
+
+            sunojump._check_ffmpeg = lambda: True
+            sunojump.subprocess.run = fake_run
+            try:
+                ok = AudioProcessor({
+                    'strip_metadata': True,
+                    'output_format': 'mp3',
+                }, log_fn=logs.append, seed=123).process(
+                    str(input_path), str(output_path),
+                )
+            finally:
+                sunojump._check_ffmpeg = old_check
+                sunojump.subprocess.run = old_run
+
+            self.assertFalse(ok)
+            self.assertFalse(output_path.exists())
+            self.assertEqual([], self._leftovers(tmp, input_path))
+            self.assertTrue(any("synthetic encoder failure" in line for line in logs), logs)
+
+    def test_cancel_after_save_removes_temp_and_final_output(self):
+        audio, sr = self._audio_fixture()
+        logs = []
+        cancel_event = threading.Event()
+        old_write = sunojump.sf.write
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output.wav'
+            old_write(input_path, audio, sr)
+
+            def cancel_after_output_write(path, *args, **kwargs):
+                result = old_write(path, *args, **kwargs)
+                if Path(path).name != input_path.name:
+                    cancel_event.set()
+                return result
+
+            sunojump.sf.write = cancel_after_output_write
+            try:
+                ok = AudioProcessor(
+                    {'strip_metadata': True},
+                    log_fn=logs.append,
+                    cancel_event=cancel_event,
+                    seed=123,
+                ).process(str(input_path), str(output_path))
+            finally:
+                sunojump.sf.write = old_write
+
+            self.assertFalse(ok)
+            self.assertFalse(output_path.exists())
+            self.assertEqual([], self._leftovers(tmp, input_path))
+            self.assertTrue(any("Cancelled." in line for line in logs), logs)
 
 
 class ConstellationSelfTestTests(unittest.TestCase):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.15 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.16 - Audio fingerprint masking tool for Suno AI"""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -11,7 +11,7 @@ import subprocess, sys
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.5.15"
+VERSION = "1.5.16"
 APP_NAME = "SunoJump"
 
 try:
@@ -628,6 +628,33 @@ def _available_output_formats():
     return formats
 
 
+def _make_atomic_output_temp(output_path):
+    """Create a same-directory temp output path that keeps the final extension."""
+    final_path = os.path.abspath(output_path)
+    dest_dir = os.path.dirname(final_path) or os.getcwd()
+    os.makedirs(dest_dir, exist_ok=True)
+    stem = Path(final_path).stem or APP_NAME.lower()
+    ext = Path(final_path).suffix or '.tmp'
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{stem}.",
+        suffix=f".tmp{ext}",
+        dir=dest_dir,
+    )
+    os.close(fd)
+    return tmp_path
+
+
+def _remove_file_silent(path):
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
 def _humanize_bytes(n_bytes):
     value = float(n_bytes)
     for suffix in ('B', 'KB', 'MB', 'GB'):
@@ -869,30 +896,43 @@ class AudioProcessor:
         self.log(f"Saving {Path(output_path).name}...")
         self.progress(92)
 
-        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
         save_audio = audio[:, 0] if mono else audio
         fmt = self.params.get('output_format', 'wav').lower()
+        tmp_output = None
         try:
+            if self._is_cancelled():
+                self.log("Cancelled.")
+                return False
+            tmp_output = _make_atomic_output_temp(output_path)
             if _format_requires_ffmpeg(fmt):
                 if not _check_ffmpeg():
                     self.log(
                         f"  Save error: {fmt.upper()} export requires ffmpeg in PATH"
                     )
                     return False
-                self._export_with_ffmpeg(save_audio, sr, output_path, fmt)
+                self._export_with_ffmpeg(save_audio, sr, tmp_output, fmt)
             elif fmt == 'flac':
-                sf.write(output_path, save_audio, sr, format='FLAC')
+                sf.write(tmp_output, save_audio, sr, format='FLAC')
             elif fmt == 'ogg':
-                sf.write(output_path, save_audio, sr, format='OGG', subtype='VORBIS')
+                sf.write(tmp_output, save_audio, sr, format='OGG', subtype='VORBIS')
             else:
-                sf.write(output_path, save_audio, sr, subtype='PCM_24')
+                sf.write(tmp_output, save_audio, sr, subtype='PCM_24')
+
+            if self.params.get('strip_metadata', True):
+                self._strip_metadata(tmp_output)
+
+            if self._is_cancelled():
+                self.log("Cancelled.")
+                return False
+
+            os.replace(tmp_output, output_path)
+            tmp_output = None
         except Exception as e:
             self.log(f"  Save error: {e}")
             self.log(traceback.format_exc().rstrip())
             return False
-
-        if self.params.get('strip_metadata', True):
-            self._strip_metadata(output_path)
+        finally:
+            _remove_file_silent(tmp_output)
 
         # Modification strength
         self.progress(96)

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.16 (2026-06-30)
+- **Atomic final exports.** Final audio writes now target same-directory temporary files and promote with `os.replace()` only after the write, metadata strip, and cancellation checks succeed.
+- **Failure cleanup.** Direct `soundfile` write errors, ffmpeg encoder failures, and late cancellation remove temporary outputs without leaving partial final artifacts.
+- **Regression coverage.** Added atomic-output tests for direct write failure, ffmpeg failure, and cancellation after save.
+
 ## v1.5.15 (2026-06-30)
 - **Input preflight guardrails.** Audio files are validated for supported extension, non-empty content, readable headers, channel count, sample rate, duration, container size, and decoded memory cost before full decode.
 - **Bounded preview reads.** Preview renders now read only the requested preview window instead of decoding the full track before trimming.

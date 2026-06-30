@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.14-blue)
+![Version](https://img.shields.io/badge/version-1.5.15-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -87,6 +87,7 @@ python tools/audit_dependencies.py
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
 - **Accessible GUI controls** — primary controls and pass sliders expose screen-reader names, descriptions, and a tested focus order
 - **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available
+- **Input preflight guardrails** — validates headers, size, sample rate, channels, and decoded memory cost before full-file decode
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
 - **Detection-signature and constellation self-test logs** — reports heuristic AI-detection movement plus estimated landmark overlap remaining after processing
 - **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)

@@ -196,6 +196,166 @@ class NoiseInjectionTests(unittest.TestCase):
         self.assertLessEqual(proc._rms(added), 10.0 ** (-35.0 / 20.0) * 1.05)
 
 
+class AudioPreflightTests(unittest.TestCase):
+    class _Info:
+        def __init__(self, frames=1000, samplerate=48000, channels=2):
+            self.frames = frames
+            self.samplerate = samplerate
+            self.channels = channels
+
+    def _processor(self, logs):
+        return AudioProcessor({
+            'strip_metadata': False,
+            'spectral_enabled': True,
+            'watermark_scan_enabled': False,
+            'spectral_strength': 0.05,
+        }, log_fn=logs.append, seed=123)
+
+    def _assert_preflight_rejects_before_read(self, input_path, expected_log):
+        logs = []
+        old_read = sunojump.sf.read
+        read_called = []
+
+        def fail_read(*_args, **_kwargs):
+            read_called.append(True)
+            raise AssertionError("sf.read should not be called")
+
+        sunojump.sf.read = fail_read
+        try:
+            ok = self._processor(logs).process(str(input_path), str(Path(input_path).with_name('out.wav')))
+        finally:
+            sunojump.sf.read = old_read
+
+        self.assertFalse(ok)
+        self.assertFalse(read_called)
+        self.assertTrue(any(expected_log in line for line in logs), logs)
+
+    def test_valid_file_passes_preflight_and_processes(self):
+        sr = 8000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = 0.20 * np.sin(2.0 * np.pi * 440.0 * t)
+        logs = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output.wav'
+            sf.write(input_path, audio, sr)
+
+            ok = self._processor(logs).process(str(input_path), str(output_path))
+
+            self.assertTrue(ok, logs)
+            self.assertTrue(output_path.exists())
+
+    def test_empty_file_rejected_before_decode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'empty.wav'
+            input_path.write_bytes(b'')
+
+            self._assert_preflight_rejects_before_read(input_path, "empty audio file")
+
+    def test_malformed_file_rejected_before_decode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'broken.wav'
+            input_path.write_bytes(b'not a real wave file')
+
+            self._assert_preflight_rejects_before_read(input_path, "unsupported or malformed")
+
+    def test_unsupported_extension_rejected_before_decode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.txt'
+            input_path.write_text('not audio', encoding='utf-8')
+
+            self._assert_preflight_rejects_before_read(input_path, "unsupported audio format")
+
+    def test_excessive_channel_count_rejected_before_decode(self):
+        old_info = sunojump.sf.info
+        old_read = sunojump.sf.read
+        read_called = []
+        logs = []
+        sunojump.sf.info = lambda _path: self._Info(channels=sunojump.MAX_AUDIO_CHANNELS + 1)
+        sunojump.sf.read = lambda *_args, **_kwargs: read_called.append(True)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                input_path = Path(tmp) / 'too_many_channels.wav'
+                input_path.write_bytes(b'RIFF data')
+                ok = self._processor(logs).process(str(input_path), str(Path(tmp) / 'out.wav'))
+        finally:
+            sunojump.sf.info = old_info
+            sunojump.sf.read = old_read
+
+        self.assertFalse(ok)
+        self.assertFalse(read_called)
+        self.assertTrue(any("too many channels" in line for line in logs), logs)
+
+    def test_excessive_sample_rate_rejected_before_decode(self):
+        old_info = sunojump.sf.info
+        old_read = sunojump.sf.read
+        read_called = []
+        logs = []
+        sunojump.sf.info = lambda _path: self._Info(samplerate=sunojump.MAX_AUDIO_SAMPLE_RATE + 1)
+        sunojump.sf.read = lambda *_args, **_kwargs: read_called.append(True)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                input_path = Path(tmp) / 'too_fast.wav'
+                input_path.write_bytes(b'RIFF data')
+                ok = self._processor(logs).process(str(input_path), str(Path(tmp) / 'out.wav'))
+        finally:
+            sunojump.sf.info = old_info
+            sunojump.sf.read = old_read
+
+        self.assertFalse(ok)
+        self.assertFalse(read_called)
+        self.assertTrue(any("sample rate too high" in line for line in logs), logs)
+
+    def test_decoded_memory_guard_rejects_before_decode(self):
+        old_info = sunojump.sf.info
+        old_read = sunojump.sf.read
+        read_called = []
+        logs = []
+        frames = sunojump.MAX_DECODED_AUDIO_BYTES // (2 * 8) + 1
+        sunojump.sf.info = lambda _path: self._Info(frames=frames, channels=2)
+        sunojump.sf.read = lambda *_args, **_kwargs: read_called.append(True)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                input_path = Path(tmp) / 'huge.wav'
+                input_path.write_bytes(b'RIFF data')
+                ok = self._processor(logs).process(str(input_path), str(Path(tmp) / 'out.wav'))
+        finally:
+            sunojump.sf.info = old_info
+            sunojump.sf.read = old_read
+
+        self.assertFalse(ok)
+        self.assertFalse(read_called)
+        self.assertTrue(any("decoded audio would exceed memory guardrail" in line for line in logs), logs)
+
+    def test_preview_reads_only_requested_frames(self):
+        old_info = sunojump.sf.info
+        old_read = sunojump.sf.read
+        read_kwargs = []
+        logs = []
+        sunojump.sf.info = lambda _path: self._Info(frames=48000 * 60, samplerate=48000, channels=1)
+
+        def fake_read(_path, **kwargs):
+            read_kwargs.append(kwargs)
+            return np.zeros(48000, dtype=np.float64), 48000
+
+        sunojump.sf.read = fake_read
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                input_path = Path(tmp) / 'long.wav'
+                output_path = Path(tmp) / 'out.wav'
+                input_path.write_bytes(b'RIFF data')
+                ok = AudioProcessor({}, log_fn=logs.append, seed=123).process(
+                    str(input_path), str(output_path), preview_seconds=2.0,
+                )
+        finally:
+            sunojump.sf.info = old_info
+            sunojump.sf.read = old_read
+
+        self.assertTrue(ok, logs)
+        self.assertEqual(read_kwargs[0].get('frames'), 96000)
+
+
 class FailClosedProcessingTests(unittest.TestCase):
     def test_enabled_pass_failure_aborts_without_output(self):
         sr = 8000

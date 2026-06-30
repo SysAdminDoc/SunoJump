@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.5.14 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.5.15 - Audio fingerprint masking tool for Suno AI"""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -11,7 +11,7 @@ import subprocess, sys
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.5.14"
+VERSION = "1.5.15"
 APP_NAME = "SunoJump"
 
 try:
@@ -76,6 +76,14 @@ OUTPUT_EXTENSIONS = {
     'm4a': '.m4a',
 }
 FFMPEG_EXPORT_FORMATS = {'mp3', 'm4a'}
+
+# Decode guardrails. SunoJump still processes audio in memory, so validate
+# untrusted inputs before libsndfile decodes them into large float64 arrays.
+MAX_INPUT_FILE_BYTES = 2 * 1024 ** 3
+MAX_DECODED_AUDIO_BYTES = 1024 ** 3
+MAX_AUDIO_CHANNELS = 8
+MAX_AUDIO_SAMPLE_RATE = 384000
+MAX_AUDIO_DURATION_SECONDS = 2 * 60 * 60
 
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
@@ -620,6 +628,87 @@ def _available_output_formats():
     return formats
 
 
+def _humanize_bytes(n_bytes):
+    value = float(n_bytes)
+    for suffix in ('B', 'KB', 'MB', 'GB'):
+        if value < 1024.0 or suffix == 'GB':
+            return f"{value:.1f} {suffix}" if suffix != 'B' else f"{int(value)} B"
+        value /= 1024.0
+
+
+def _preflight_audio_input(input_path, preview_seconds=None):
+    path = Path(input_path)
+    if path.suffix.lower() not in SUPPORTED_FORMATS:
+        raise ValueError(f"unsupported audio format: {path.suffix or '(none)'}")
+
+    try:
+        stat = path.stat()
+    except OSError as e:
+        raise ValueError(f"cannot access input file: {e}") from e
+
+    if not path.is_file():
+        raise ValueError("input path is not a file")
+    if stat.st_size <= 0:
+        raise ValueError("empty audio file")
+    if stat.st_size > MAX_INPUT_FILE_BYTES:
+        raise ValueError(
+            "input file is too large "
+            f"({_humanize_bytes(stat.st_size)} > {_humanize_bytes(MAX_INPUT_FILE_BYTES)})"
+        )
+
+    try:
+        info = sf.info(str(path))
+    except Exception as e:
+        raise ValueError(f"unsupported or malformed audio file: {e}") from e
+
+    frames = int(getattr(info, 'frames', 0) or 0)
+    sr = int(getattr(info, 'samplerate', 0) or 0)
+    channels = int(getattr(info, 'channels', 0) or 0)
+    if frames <= 0:
+        raise ValueError("empty audio file")
+    if sr <= 0:
+        raise ValueError("invalid sample rate")
+    if sr > MAX_AUDIO_SAMPLE_RATE:
+        raise ValueError(
+            f"sample rate too high ({sr} Hz > {MAX_AUDIO_SAMPLE_RATE} Hz)"
+        )
+    if channels <= 0:
+        raise ValueError("invalid channel count")
+    if channels > MAX_AUDIO_CHANNELS:
+        raise ValueError(
+            f"too many channels ({channels} > {MAX_AUDIO_CHANNELS})"
+        )
+
+    duration = frames / float(sr)
+    preview_requested = preview_seconds is not None and preview_seconds > 0
+    if not preview_requested and duration > MAX_AUDIO_DURATION_SECONDS:
+        raise ValueError(
+            f"audio duration too long ({duration / 60.0:.1f} min > "
+            f"{MAX_AUDIO_DURATION_SECONDS / 60.0:.1f} min)"
+        )
+
+    read_frames = frames
+    if preview_requested:
+        read_frames = min(frames, max(1, int(preview_seconds * sr)))
+
+    decoded_bytes = read_frames * channels * np.dtype('float64').itemsize
+    if decoded_bytes > MAX_DECODED_AUDIO_BYTES:
+        raise ValueError(
+            "decoded audio would exceed memory guardrail "
+            f"({_humanize_bytes(decoded_bytes)} > "
+            f"{_humanize_bytes(MAX_DECODED_AUDIO_BYTES)})"
+        )
+
+    return {
+        'frames': frames,
+        'samplerate': sr,
+        'channels': channels,
+        'duration': duration,
+        'read_frames': read_frames,
+        'decoded_bytes': decoded_bytes,
+    }
+
+
 # ============================================================
 #  Audio Processor
 # ============================================================
@@ -656,7 +745,17 @@ class AudioProcessor:
         self.log(f"Loading {Path(input_path).name}...")
 
         try:
-            audio, sr = sf.read(input_path, dtype='float64')
+            preflight = _preflight_audio_input(input_path, preview_seconds)
+        except ValueError as e:
+            self.log(f"  Error: {e}")
+            return False
+
+        read_kwargs = {'dtype': 'float64'}
+        if preview_seconds and preview_seconds > 0:
+            read_kwargs['frames'] = preflight['read_frames']
+
+        try:
+            audio, sr = sf.read(input_path, **read_kwargs)
         except Exception as e:
             self.log(f"  Error reading file: {e}")
             self.log(traceback.format_exc().rstrip())

@@ -459,6 +459,61 @@ class OutputFormatTests(unittest.TestCase):
             sunojump._check_ffmpeg = old_check
 
 
+class FfmpegEncoderProbeTests(unittest.TestCase):
+    def test_missing_encoder_rejects_format_before_render(self):
+        sr = 8000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = 0.25 * np.sin(2.0 * np.pi * 440.0 * t)
+        logs = []
+        old_check = sunojump._check_ffmpeg
+        old_encoders = sunojump._ffmpeg_encoders
+        sunojump._check_ffmpeg = lambda: True
+        sunojump._ffmpeg_encoders = {'mp3': False, 'm4a': True}
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                input_path = Path(tmp) / 'input.wav'
+                output_path = Path(tmp) / 'output.mp3'
+                sf.write(input_path, audio, sr)
+                proc = AudioProcessor({
+                    'strip_metadata': True,
+                    'output_format': 'mp3',
+                }, log_fn=logs.append, seed=123)
+
+                ok = proc.process(str(input_path), str(output_path))
+
+                self.assertFalse(ok)
+                self.assertFalse(output_path.exists())
+                self.assertTrue(any("libmp3lame" in line for line in logs))
+        finally:
+            sunojump._check_ffmpeg = old_check
+            sunojump._ffmpeg_encoders = old_encoders
+
+    def test_available_formats_excludes_unsupported_encoders(self):
+        old_check = sunojump._check_ffmpeg
+        old_encoders = sunojump._ffmpeg_encoders
+        sunojump._check_ffmpeg = lambda: True
+        sunojump._ffmpeg_encoders = {'mp3': True, 'm4a': False}
+        try:
+            formats = sunojump._available_output_formats()
+            self.assertIn('mp3', formats)
+            self.assertNotIn('m4a', formats)
+        finally:
+            sunojump._check_ffmpeg = old_check
+            sunojump._ffmpeg_encoders = old_encoders
+
+    def test_encoder_available_false_when_ffmpeg_missing(self):
+        old_check = sunojump._check_ffmpeg
+        old_encoders = sunojump._ffmpeg_encoders
+        sunojump._check_ffmpeg = lambda: False
+        sunojump._ffmpeg_encoders = None
+        try:
+            self.assertFalse(sunojump._ffmpeg_encoder_available('mp3'))
+            self.assertFalse(sunojump._ffmpeg_encoder_available('m4a'))
+        finally:
+            sunojump._check_ffmpeg = old_check
+            sunojump._ffmpeg_encoders = old_encoders
+
+
 class AtomicOutputTests(unittest.TestCase):
     def _audio_fixture(self, sr=8000):
         t = np.arange(sr, dtype=np.float64) / sr
@@ -506,6 +561,7 @@ class AtomicOutputTests(unittest.TestCase):
         audio, sr = self._audio_fixture()
         logs = []
         old_check = sunojump._check_ffmpeg
+        old_encoders = sunojump._ffmpeg_encoders
         old_run = sunojump.subprocess.run
 
         class FakeResult:
@@ -523,6 +579,7 @@ class AtomicOutputTests(unittest.TestCase):
                 return FakeResult()
 
             sunojump._check_ffmpeg = lambda: True
+            sunojump._ffmpeg_encoders = {'mp3': True, 'm4a': True}
             sunojump.subprocess.run = fake_run
             try:
                 ok = AudioProcessor({
@@ -533,6 +590,7 @@ class AtomicOutputTests(unittest.TestCase):
                 )
             finally:
                 sunojump._check_ffmpeg = old_check
+                sunojump._ffmpeg_encoders = old_encoders
                 sunojump.subprocess.run = old_run
 
             self.assertFalse(ok)

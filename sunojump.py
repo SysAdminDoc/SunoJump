@@ -499,6 +499,7 @@ def _nperseg_for(length):
 
 
 _ffmpeg_available = None
+_ffmpeg_encoders: dict | None = None
 
 def _check_ffmpeg():
     """Check ffmpeg availability once, cache result."""
@@ -512,6 +513,40 @@ def _check_ffmpeg():
         except (FileNotFoundError, subprocess.CalledProcessError):
             _ffmpeg_available = False
     return _ffmpeg_available
+
+
+FFMPEG_FORMAT_ENCODERS = {
+    'mp3': 'libmp3lame',
+    'm4a': 'aac',
+}
+
+
+def _probe_ffmpeg_encoders():
+    """Probe which audio encoders ffmpeg supports. Cached after first call."""
+    global _ffmpeg_encoders
+    if _ffmpeg_encoders is not None:
+        return _ffmpeg_encoders
+    _ffmpeg_encoders = {}
+    if not _check_ffmpeg():
+        return _ffmpeg_encoders
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-encoders'], capture_output=True, text=True, check=False,
+        )
+        lines = (result.stdout or '').splitlines()
+        for fmt, encoder in FFMPEG_FORMAT_ENCODERS.items():
+            _ffmpeg_encoders[fmt] = any(
+                encoder in line for line in lines
+            )
+    except (FileNotFoundError, OSError):
+        pass
+    return _ffmpeg_encoders
+
+
+def _ffmpeg_encoder_available(fmt):
+    """Return True if the required encoder for *fmt* is present in ffmpeg."""
+    encoders = _probe_ffmpeg_encoders()
+    return encoders.get(str(fmt).lower(), False)
 
 
 def _open_in_file_manager(path):
@@ -567,7 +602,8 @@ def _diagnostic_environment_lines():
         f"PyQt6: {PYQT_VERSION_STR}",
         f"Qt: {QT_VERSION_STR}",
         f"PyQt6 Multimedia: {'available' if _MULTIMEDIA_OK else 'missing'}",
-        f"ffmpeg: {'available' if _check_ffmpeg() else 'missing'}",
+        f"ffmpeg: {'available' if _check_ffmpeg() else 'missing'}"
+        + (f" (encoders: {', '.join(k for k, v in _probe_ffmpeg_encoders().items() if v) or 'none'})" if _check_ffmpeg() else ""),
     ]
 
 
@@ -631,7 +667,9 @@ def _format_requires_ffmpeg(fmt):
 def _available_output_formats():
     formats = ['wav', 'flac', 'ogg']
     if _check_ffmpeg():
-        formats.extend(['mp3', 'm4a'])
+        for fmt in ('mp3', 'm4a'):
+            if _ffmpeg_encoder_available(fmt):
+                formats.append(fmt)
     return formats
 
 
@@ -915,6 +953,12 @@ class AudioProcessor:
                 if not _check_ffmpeg():
                     self.log(
                         f"  Save error: {fmt.upper()} export requires ffmpeg in PATH"
+                    )
+                    return False
+                if not _ffmpeg_encoder_available(fmt):
+                    encoder = FFMPEG_FORMAT_ENCODERS.get(fmt, fmt)
+                    self.log(
+                        f"  Save error: ffmpeg lacks {encoder} encoder for {fmt.upper()} export"
                     )
                     return False
                 self._export_with_ffmpeg(save_audio, sr, tmp_output, fmt)
@@ -2729,8 +2773,12 @@ class MainWindow(QMainWindow):
         format_row.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
         self.format_combo.addItems([fmt.upper() for fmt in _available_output_formats()])
-        if _format_requires_ffmpeg('mp3') and not _check_ffmpeg():
+        if not _check_ffmpeg():
             self.format_combo.setToolTip("MP3/M4A export requires ffmpeg in PATH")
+        elif _check_ffmpeg():
+            missing = [f.upper() for f in FFMPEG_FORMAT_ENCODERS if not _ffmpeg_encoder_available(f)]
+            if missing:
+                self.format_combo.setToolTip(f"ffmpeg lacks encoders for: {', '.join(missing)}")
         self.format_combo.currentTextChanged.connect(lambda _: self._sync_header_stats())
         self.format_combo.setFixedWidth(140)
         format_row.addWidget(self.format_combo)
@@ -3688,13 +3736,22 @@ def cli_main():
     params = dict(PRESETS.get(preset_name, PRESETS['Moderate']))
     params['output_format'] = args.out_format
 
-    if _format_requires_ffmpeg(args.out_format) and not _check_ffmpeg():
-        print(
-            f"Error: {args.out_format.upper()} export requires ffmpeg in PATH. "
-            "Use WAV/FLAC/OGG or install ffmpeg.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    if _format_requires_ffmpeg(args.out_format):
+        if not _check_ffmpeg():
+            print(
+                f"Error: {args.out_format.upper()} export requires ffmpeg in PATH. "
+                "Use WAV/FLAC/OGG or install ffmpeg.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not _ffmpeg_encoder_available(args.out_format):
+            encoder = FFMPEG_FORMAT_ENCODERS.get(args.out_format, args.out_format)
+            print(
+                f"Error: ffmpeg lacks {encoder} encoder for {args.out_format.upper()} export. "
+                f"Install ffmpeg with {encoder} support or use WAV/FLAC/OGG.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Optional JSON preset file override
     if args.preset_file:

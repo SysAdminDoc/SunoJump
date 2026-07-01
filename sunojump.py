@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.6.0 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.6.1 - Audio fingerprint masking tool for Suno AI"""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = 1
 

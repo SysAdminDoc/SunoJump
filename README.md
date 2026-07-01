@@ -55,7 +55,7 @@ python sunojump.py
 ```
 
 ### Requirements
-- Python 3.9+
+- Python 3.11+
 - ffmpeg (optional, for Lossy Re-encode pass)
 - PyQt6 Multimedia (optional, for in-app preview playback; usually bundled)
 

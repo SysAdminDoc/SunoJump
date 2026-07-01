@@ -6,6 +6,22 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+class PythonVersionGuardTests(unittest.TestCase):
+    def test_version_guard_rejects_below_3_11(self):
+        lines = (ROOT / 'sunojump.py').read_text(encoding='utf-8').splitlines()
+        joined = '\n'.join(lines[:15])
+        self.assertIn('sys.version_info < (3, 11)', joined)
+        self.assertIn('sys.exit(1)', joined)
+
+    def test_readme_and_source_agree_on_python_floor(self):
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        self.assertIn('Python 3.11+', readme)
+        source = '\n'.join(
+            (ROOT / 'sunojump.py').read_text(encoding='utf-8').splitlines()[:15]
+        )
+        self.assertIn('(3, 11)', source)
+
+
 class FrozenBuildGuardTests(unittest.TestCase):
     def test_freeze_support_runs_before_application_imports(self):
         lines = (ROOT / 'sunojump.py').read_text(encoding='utf-8').splitlines()

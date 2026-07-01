@@ -4,10 +4,17 @@
 import multiprocessing
 multiprocessing.freeze_support()
 
+import sys
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        f"SunoJump requires Python 3.11 or later (found {sys.version}).\n"
+    )
+    sys.exit(1)
+
 # --- Imports ---
 import os, json, argparse, tempfile, shutil, threading
 import platform, traceback
-import subprocess, sys
+import subprocess
 from pathlib import Path
 from datetime import datetime
 

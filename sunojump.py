@@ -12,7 +12,7 @@ if sys.version_info < (3, 11):
     sys.exit(1)
 
 # --- Imports ---
-import os, json, argparse, tempfile, shutil, threading
+import os, json, argparse, tempfile, shutil, threading, hashlib
 import platform, traceback
 import subprocess
 from pathlib import Path
@@ -1085,7 +1085,6 @@ class AudioProcessor:
         return True
 
     def _write_sidecar(self, input_path, output_path, sr, pass_names, strength):
-        import hashlib
         try:
             hasher = hashlib.sha256()
             with open(input_path, 'rb') as f:

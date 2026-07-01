@@ -40,14 +40,15 @@ def capture(output_path: str | None = None) -> int:
 
     dest = Path(output_path) if output_path else ROOT / "screenshot.png"
 
+    _result = [0]
+
     def do_capture():
         screen = win.screen()
         if screen is None:
             print("No screen available.", file=sys.stderr)
+            _result[0] = 1
             app.quit()
             return
-        pixmap = screen.grabWindow(int(win.winId()))
-        pixmap.save(str(dest), "PNG")
         title = win.windowTitle()
         expected = f"{APP_NAME} v{VERSION}"
         if expected not in title:
@@ -56,13 +57,17 @@ def capture(output_path: str | None = None) -> int:
                 f"does not contain '{expected}'",
                 file=sys.stderr,
             )
+            _result[0] = 1
             app.quit()
             return
+        pixmap = screen.grabWindow(int(win.winId()))
+        pixmap.save(str(dest), "PNG")
         print(f"Screenshot saved: {dest} ({pixmap.width()}x{pixmap.height()})")
         app.quit()
 
     QTimer.singleShot(500, do_capture)
-    return app.exec()
+    app.exec()
+    return _result[0]
 
 
 if __name__ == "__main__":

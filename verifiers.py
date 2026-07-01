@@ -98,7 +98,7 @@ def discover_adapters(processor=None) -> list[VerifierAdapter]:
             adapter_cls = getattr(mod, "Adapter", None)
             if adapter_cls and callable(adapter_cls):
                 adapters.append(adapter_cls())
-        except ImportError:
+        except Exception:
             pass
     return adapters
 

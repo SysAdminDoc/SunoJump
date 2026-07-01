@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -19,10 +18,6 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: f.read(65536), b''):
             hasher.update(block)
     return hasher.hexdigest()
-
-
-def sha256sums_command(artifacts: list[Path]) -> list[str]:
-    return [str(a) for a in artifacts]
 
 
 def generate_sha256sums(artifacts: list[Path], output: Path) -> None:

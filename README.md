@@ -71,6 +71,16 @@ python -m pip install -r requirements-dev.txt
 python tools/audit_dependencies.py
 ```
 
+### Release Verification
+Each release includes `SHA256SUMS` and a CycloneDX SBOM (`sbom.cdx.json`). Verify a downloaded executable:
+```bash
+# Check the SHA-256 digest
+sha256sum -c SHA256SUMS
+
+# Generate release artifacts locally
+python tools/build_release.py
+```
+
 ## Features
 
 - **11-pass audio processing pipeline** — metadata strip, spectral perturbation, dynamic EQ, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode

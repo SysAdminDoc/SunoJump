@@ -794,11 +794,11 @@ class AudioProcessor:
         self.params = params
         self.log = log_fn or print
         self.progress = progress_fn or (lambda v: None)
-        # A fixed seed makes the transformation deterministic -- useful for
-        # reproducing test results, diffing outputs, or debugging. None -> random.
         self.rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
         self._cancel_event = cancel_event or threading.Event()
         self._watermark_candidates = []
+        self._seed = seed
+        self._trace = {"passes": {}}
 
     def cancel(self):
         self._cancel_event.set()
@@ -815,6 +815,7 @@ class AudioProcessor:
         for interactive preset A/B auditioning.
         """
         self.log(f"Loading {Path(input_path).name}...")
+        self._trace = {"passes": {}}
 
         try:
             preflight = _preflight_audio_input(input_path, preview_seconds)
@@ -1018,8 +1019,59 @@ class AudioProcessor:
             match = self._compute_constellation_match(orig_ch[:n], proc_ch[:n], sr)
             self.log(f"Constellation match: 100% -> {match:.0f}% landmarks")
 
+        self._write_sidecar(input_path, output_path, sr, pass_names, strength)
+
         self.progress(100)
         return True
+
+    def _write_sidecar(self, input_path, output_path, sr, pass_names, strength):
+        import hashlib
+        try:
+            hasher = hashlib.sha256()
+            with open(input_path, 'rb') as f:
+                for block in iter(lambda: f.read(65536), b''):
+                    hasher.update(block)
+            input_hash = hasher.hexdigest()
+        except OSError:
+            input_hash = None
+
+        sidecar = {
+            "sunojump_version": VERSION,
+            "schema_version": 1,
+            "seed": self._seed,
+            "input_file": Path(input_path).name,
+            "input_sha256": input_hash,
+            "output_file": Path(output_path).name,
+            "sample_rate": sr,
+            "enabled_passes": pass_names,
+            "modification_strength": round(strength, 1),
+            "params": {
+                k: v for k, v in self.params.items()
+                if not callable(v)
+            },
+            "environment": {
+                "numpy": np.__version__,
+                "scipy": scipy.__version__,
+                "soundfile": getattr(sf, '__version__', 'unknown'),
+                "mutagen": getattr(mutagen, 'version_string', 'unknown'),
+            },
+            "passes": self._trace.get("passes", {}),
+        }
+        sidecar_path = Path(output_path).with_suffix('.sidecar.json')
+        try:
+            sidecar_path.write_text(
+                json.dumps(sidecar, indent=2, default=str) + "\n",
+                encoding='utf-8',
+            )
+            self.log(f"Sidecar written: {sidecar_path.name}")
+        except OSError as e:
+            self.log(f"  Warning: sidecar write failed: {e}")
+
+    def _trace_segments(self, pass_name, segments):
+        self._trace["passes"][pass_name] = {
+            "segment_count": len(segments),
+            "segments": segments,
+        }
 
     # --- Metadata ---
     def _strip_metadata(self, filepath):
@@ -1365,8 +1417,11 @@ class AudioProcessor:
         overlap = int(0.12 * sr)
         hop = max(1, seg_samples - overlap)
 
+        segments = []
         if n < seg_samples:
             control = self._nonzero_segment_control()
+            segments.append({"start": 0, "end": n, "control": round(control, 6)})
+            self._trace_segments("coupled_pitch_tempo", segments)
             return self._apply_coupled_variation_chunk(audio, sr, control, max_st, max_var)
 
         result = np.zeros_like(audio)
@@ -1389,6 +1444,7 @@ class AudioProcessor:
                 break
 
             control = self._nonzero_segment_control()
+            segments.append({"start": pos, "end": end, "control": round(control, 6)})
             varied = self._apply_coupled_variation_chunk(chunk, sr, control, max_st, max_var)
             varied = self._fit_audio_length(varied, clen)
 
@@ -1403,6 +1459,7 @@ class AudioProcessor:
             weights[pos:end] += win
             pos += hop
 
+        self._trace_segments("coupled_pitch_tempo", segments)
         weights = np.maximum(weights, 1e-8)
         return result / weights[:, np.newaxis]
 
@@ -1463,9 +1520,11 @@ class AudioProcessor:
         overlap = int(0.12 * sr)  # 120ms crossfade -- generous for PV boundaries
         hop = max(1, seg_samples - overlap)
 
-        # Short input: single shift to avoid STFT edge effects
+        segments = []
         if n < seg_samples:
             shift = float(self.rng.uniform(-max_st, max_st))
+            segments.append({"start": 0, "end": n, "shift_st": round(shift, 6)})
+            self._trace_segments("pitch_microshift", segments)
             return self._pv_pitch_shift_multi(audio, sr, shift)
 
         result = np.zeros_like(audio)
@@ -1476,7 +1535,6 @@ class AudioProcessor:
             chunk = audio[pos:end]
             clen = end - pos
             if clen < int(0.25 * sr):
-                # Tail too small for meaningful PV -- copy as-is with crossfade
                 win = np.ones(clen)
                 if pos > 0:
                     fl = min(overlap, clen)
@@ -1486,9 +1544,9 @@ class AudioProcessor:
                 break
 
             shift = float(self.rng.uniform(-max_st, max_st))
+            segments.append({"start": pos, "end": end, "shift_st": round(shift, 6)})
             shifted = self._pv_pitch_shift_multi(chunk, sr, shift)
 
-            # Length-correct to match chunk
             if shifted.shape[0] != clen:
                 if shifted.shape[0] > clen:
                     shifted = shifted[:clen]
@@ -1507,6 +1565,7 @@ class AudioProcessor:
             weights[pos:end] += win
             pos += hop
 
+        self._trace_segments("pitch_microshift", segments)
         weights = np.maximum(weights, 1e-8)
         return result / weights[:, np.newaxis]
 
@@ -1627,7 +1686,16 @@ class AudioProcessor:
 
         factors = self.rng.uniform(1.0 - max_var, 1.0 + max_var, n_segments)
 
+        segments = []
         seg_size = n / n_segments
+        for i, f in enumerate(factors):
+            segments.append({
+                "start": int(i * seg_size),
+                "end": int(min((i + 1) * seg_size, n)),
+                "factor": round(float(f), 6),
+            })
+        self._trace_segments("tempo_microvar", segments)
+
         src = [0.0]
         dst = [0.0]
         for i, f in enumerate(factors):

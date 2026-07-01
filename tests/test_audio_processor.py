@@ -667,5 +667,75 @@ class ConstellationSelfTestTests(unittest.TestCase):
         self.assertLess(match, 50.0)
 
 
+class SidecarTraceTests(unittest.TestCase):
+    def test_sidecar_written_alongside_output(self):
+        sr = 8000
+        t = np.arange(sr * 3, dtype=np.float64) / sr
+        audio = np.column_stack([
+            0.25 * np.sin(2.0 * np.pi * 220.0 * t),
+            0.25 * np.sin(2.0 * np.pi * 330.0 * t),
+        ])
+        logs = []
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output_sj.wav'
+            sf.write(input_path, audio, sr)
+            proc = AudioProcessor({
+                'strip_metadata': True,
+                'pitch_enabled': True,
+                'pitch_range': 0.5,
+                'tempo_enabled': True,
+                'tempo_range': 0.03,
+            }, log_fn=logs.append, seed=42)
+            ok = proc.process(str(input_path), str(output_path))
+            self.assertTrue(ok, logs)
+
+            sidecar_path = output_path.with_suffix('.sidecar.json')
+            self.assertTrue(sidecar_path.exists(), "sidecar JSON not written")
+            import json
+            data = json.loads(sidecar_path.read_text(encoding='utf-8'))
+            self.assertEqual(data['sunojump_version'], sunojump.VERSION)
+            self.assertEqual(data['schema_version'], 1)
+            self.assertEqual(data['seed'], 42)
+            self.assertIn('input_sha256', data)
+            self.assertIsNotNone(data['input_sha256'])
+            self.assertIn('enabled_passes', data)
+            self.assertIn('params', data)
+            self.assertIn('environment', data)
+            self.assertIn('passes', data)
+            self.assertTrue(len(data['passes']) > 0, "no pass traces recorded")
+
+    def test_sidecar_records_pitch_segments(self):
+        sr = 8000
+        t = np.arange(sr * 5, dtype=np.float64) / sr
+        audio = np.column_stack([
+            0.25 * np.sin(2.0 * np.pi * 220.0 * t),
+            0.25 * np.sin(2.0 * np.pi * 330.0 * t),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output_sj.wav'
+            sf.write(input_path, audio, sr)
+            proc = AudioProcessor({
+                'strip_metadata': False,
+                'pitch_enabled': True,
+                'pitch_range': 1.0,
+                'tempo_enabled': False,
+            }, log_fn=lambda _: None, seed=99)
+            ok = proc.process(str(input_path), str(output_path))
+            self.assertTrue(ok)
+            import json
+            data = json.loads(
+                output_path.with_suffix('.sidecar.json').read_text(encoding='utf-8')
+            )
+            pitch_trace = data['passes'].get('pitch_microshift')
+            self.assertIsNotNone(pitch_trace, data['passes'])
+            self.assertTrue(pitch_trace['segment_count'] > 0)
+            for seg in pitch_trace['segments']:
+                self.assertIn('start', seg)
+                self.assertIn('end', seg)
+                self.assertIn('shift_st', seg)
+
+
 if __name__ == '__main__':
     unittest.main()

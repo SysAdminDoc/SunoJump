@@ -2,7 +2,7 @@
 
 <br>
 
-![Version](https://img.shields.io/badge/version-1.5.16-blue)
+![Version](https://img.shields.io/badge/version-1.6.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
@@ -179,6 +179,22 @@ Start with the default **Extreme** preset -- field-tested as the most reliable f
 **Input:** WAV, MP3, FLAC, OGG, AIFF, Opus
 
 **Output:** WAV (24-bit), FLAC, OGG Vorbis, MP3, M4A/AAC
+
+## Release Licensing
+
+SunoJump's own source code is MIT-licensed. Runtime dependencies include copyleft-licensed packages:
+
+| Package | License | Notes |
+|---------|---------|-------|
+| PyQt6 | GPL-3.0-only | GUI toolkit; users install via pip |
+| mutagen | GPL-2.0-or-later | Metadata tag library; users install via pip |
+| PyQt6-Qt6 | LGPL-3.0 | Qt runtime; dynamically linked |
+
+**Source installs:** users install dependencies themselves via `pip install -r requirements.txt`. SunoJump source is MIT.
+
+**Binary releases (PyInstaller):** the combined executable bundles GPL-licensed components. The binary as a whole must comply with GPL-3.0 terms. Source code is always available in this repository.
+
+Run `python tools/audit_licenses.py` to verify the license inventory for all release dependencies. The audit gate blocks release packaging when unreviewed licenses appear.
 
 ## License
 

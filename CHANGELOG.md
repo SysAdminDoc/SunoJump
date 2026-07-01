@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.0 (2026-06-30)
+- **Release license compliance gate.** Added `tools/audit_licenses.py` that inventories all release dependency licenses, flags unreviewed copyleft packages, and blocks release packaging when license evidence is missing.
+- **License inventory export.** `--write-inventory` flag emits a machine-readable `license-inventory.json` for release verification.
+- **README legal section.** Documents GPL/LGPL runtime dependencies and source vs binary distribution strategy.
+- **Regression coverage.** Added license audit tests for lock coverage, copyleft detection, inventory generation, and distribution note enforcement.
+
 ## v1.5.16 (2026-06-30)
 - **Atomic final exports.** Final audio writes now target same-directory temporary files and promote with `os.replace()` only after the write, metadata strip, and cancellation checks succeed.
 - **Failure cleanup.** Direct `soundfile` write errors, ffmpeg encoder failures, and late cancellation remove temporary outputs without leaving partial final artifacts.

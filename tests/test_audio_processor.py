@@ -575,7 +575,8 @@ class AtomicOutputTests(unittest.TestCase):
             sf.write(input_path, audio, sr)
 
             def fake_run(cmd, *args, **kwargs):
-                Path(cmd[-1]).write_bytes(b'partial mp3')
+                if not cmd[-1].startswith('-'):
+                    Path(cmd[-1]).write_bytes(b'partial mp3')
                 return FakeResult()
 
             sunojump._check_ffmpeg = lambda: True

@@ -628,6 +628,19 @@ def _enforce_log_retention(max_logs=MAX_RETAINED_LOGS):
 
 def _redact_home_paths(text):
     home = str(Path.home())
+    if sys.platform.startswith('win'):
+        lower = text.lower()
+        home_lower = home.lower()
+        result = []
+        i = 0
+        while i < len(text):
+            if lower[i:i + len(home_lower)] == home_lower:
+                result.append('~')
+                i += len(home)
+            else:
+                result.append(text[i])
+                i += 1
+        return ''.join(result)
     return text.replace(home, '~')
 
 
@@ -1084,7 +1097,7 @@ class AudioProcessor:
 
         sidecar = {
             "sunojump_version": VERSION,
-            "schema_version": 1,
+            "schema_version": PRESET_SCHEMA_VERSION,
             "seed": self._seed,
             "input_file": Path(input_path).name,
             "input_sha256": input_hash,
@@ -2014,6 +2027,8 @@ class AudioProcessor:
 
         if not _check_ffmpeg():
             raise RuntimeError("ffmpeg not found")
+        if not _ffmpeg_encoder_available('mp3'):
+            raise RuntimeError("ffmpeg lacks libmp3lame encoder for lossy re-encode")
 
         tmp_dir = tempfile.mkdtemp()
         try:
@@ -2958,7 +2973,7 @@ class MainWindow(QMainWindow):
         self.format_combo.addItems([fmt.upper() for fmt in _available_output_formats()])
         if not _check_ffmpeg():
             self.format_combo.setToolTip("MP3/M4A export requires ffmpeg in PATH")
-        elif _check_ffmpeg():
+        else:
             missing = [f.upper() for f in FFMPEG_FORMAT_ENCODERS if not _ffmpeg_encoder_available(f)]
             if missing:
                 self.format_combo.setToolTip(f"ffmpeg lacks encoders for: {', '.join(missing)}")
@@ -3147,9 +3162,7 @@ class MainWindow(QMainWindow):
             QPushButton("Clear Logs"),
             QStyle.StandardPixmap.SP_TrashIcon,
         )
-        self.btn_clear_logs.setToolTip(
-            f"Delete all persistent run logs (keeps last {MAX_RETAINED_LOGS})"
-        )
+        self.btn_clear_logs.setToolTip("Delete all persistent run logs")
         self.btn_clear_logs.clicked.connect(self._clear_all_logs)
         actions.addWidget(self.btn_clear_logs)
 
@@ -3912,7 +3925,7 @@ def cli_main():
     )
     parser.add_argument('-i', '--input', required=True,
                         help='Input audio file or directory')
-    parser.add_argument('-o', '--output', default=None, help='Output file or directory')
+    parser.add_argument('-o', '--output', default=None, help='Output directory')
     parser.add_argument('-p', '--preset', default='moderate',
                         choices=['gentle', 'moderate', 'aggressive', 'extreme'])
     parser.add_argument('-f', '--format', default='wav',

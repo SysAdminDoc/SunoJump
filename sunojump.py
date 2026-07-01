@@ -43,7 +43,7 @@ try:
         QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
         QStyle, QScrollArea,
     )
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, PYQT_VERSION_STR, QT_VERSION_STR
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QSettings, PYQT_VERSION_STR, QT_VERSION_STR
     from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
 except ImportError as e:
     missing = getattr(e, 'name', None) or str(e)
@@ -2595,14 +2595,15 @@ class MainWindow(QMainWindow):
         self._sync_header_stats()
         self._configure_accessibility()
         self._configure_tab_order()
+        self._restore_session_state()
 
-        # Center on screen
-        screen = QApplication.primaryScreen()
-        if screen:
-            geo = screen.availableGeometry()
-            x = (geo.width() - self.width()) // 2 + geo.x()
-            y = (geo.height() - self.height()) // 2 + geo.y()
-            self.move(x, y)
+        if not self._session_restored_geometry:
+            screen = QApplication.primaryScreen()
+            if screen:
+                geo = screen.availableGeometry()
+                x = (geo.width() - self.width()) // 2 + geo.x()
+                y = (geo.height() - self.height()) // 2 + geo.y()
+                self.move(x, y)
 
     def _standard_icon(self, pixmap):
         return self.style().standardIcon(pixmap)
@@ -2690,6 +2691,42 @@ class MainWindow(QMainWindow):
         for first, second in zip(order, order[1:]):
             self.setTabOrder(first, second)
         self._tab_order_widgets = order
+
+    def _restore_session_state(self):
+        self._session_restored_geometry = False
+        settings = QSettings(APP_NAME, APP_NAME)
+        geo = settings.value("window/geometry")
+        if geo is not None:
+            self.restoreGeometry(geo)
+            self._session_restored_geometry = True
+        out_dir = settings.value("session/output_dir")
+        if out_dir and isinstance(out_dir, str):
+            self.output_dir.setText(out_dir)
+        fmt = settings.value("session/output_format")
+        if fmt and isinstance(fmt, str):
+            idx = self.format_combo.findText(fmt)
+            if idx >= 0:
+                self.format_combo.setCurrentIndex(idx)
+        preset = settings.value("session/preset")
+        if preset and isinstance(preset, str):
+            idx = self.preset_combo.findText(preset)
+            if idx >= 0:
+                self.preset_combo.setCurrentText(preset)
+        browse = settings.value("session/last_browse_dir")
+        if browse and isinstance(browse, str) and os.path.isdir(browse):
+            self._last_browse_dir = browse
+        preset_dir = settings.value("session/last_preset_dir")
+        if preset_dir and isinstance(preset_dir, str) and os.path.isdir(preset_dir):
+            self._last_preset_dir = preset_dir
+
+    def _save_session_state(self):
+        settings = QSettings(APP_NAME, APP_NAME)
+        settings.setValue("window/geometry", self.saveGeometry())
+        settings.setValue("session/output_dir", self.output_dir.text())
+        settings.setValue("session/output_format", self.format_combo.currentText())
+        settings.setValue("session/preset", self.preset_combo.currentText())
+        settings.setValue("session/last_browse_dir", self._last_browse_dir)
+        settings.setValue("session/last_preset_dir", self._last_preset_dir)
 
     def _build_header(self):
         bar = QFrame()
@@ -3802,6 +3839,7 @@ class MainWindow(QMainWindow):
         # Clean up preview temp directory
         if self._preview_tempdir and os.path.isdir(self._preview_tempdir):
             shutil.rmtree(self._preview_tempdir, ignore_errors=True)
+        self._save_session_state()
         event.accept()
 
 

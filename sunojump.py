@@ -1075,13 +1075,43 @@ class AudioProcessor:
 
     # --- Metadata ---
     def _strip_metadata(self, filepath):
+        removed = []
+        retained = []
+        tag_type = "unknown"
         try:
             f = MutagenFile(filepath)
-            if f is not None:
-                f.delete()
-                f.save()
-        except Exception:
-            pass
+            if f is None:
+                self.log("    Metadata: no recognized tag container")
+                self._trace["passes"]["metadata_strip"] = {
+                    "status": "no_container",
+                    "removed": [],
+                    "retained": [],
+                }
+                return
+            before_keys = sorted(set(f.keys())) if hasattr(f, 'keys') else []
+            tag_type = type(f.tags).__name__ if f.tags else "none"
+            f.delete()
+            f.save()
+            removed = before_keys
+            if removed:
+                self.log(f"    Metadata stripped: {len(removed)} tag(s) from {tag_type}")
+            else:
+                self.log(f"    Metadata: no tags present ({tag_type})")
+        except Exception as e:
+            retained = removed or ["unknown"]
+            removed = []
+            self.log(f"    Warning: metadata strip failed ({e})")
+        self._trace["passes"]["metadata_strip"] = {
+            "status": "ok" if not retained else "failed",
+            "tag_type": tag_type,
+            "removed": removed,
+            "retained": retained,
+        }
+        if retained:
+            self.log(
+                "    Note: metadata stripping does not guarantee removal of "
+                "acoustic fingerprints or signed provenance"
+            )
 
     def _export_with_ffmpeg(self, audio, sr, output_path, fmt):
         tmp_dir = tempfile.mkdtemp(prefix='sunojump_export_')

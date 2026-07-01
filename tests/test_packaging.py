@@ -39,5 +39,16 @@ class FrozenBuildGuardTests(unittest.TestCase):
         self.assertIn('multiprocessing.freeze_support()', hook)
 
 
+class ScreenshotVersionTests(unittest.TestCase):
+    def test_screenshot_capture_tool_exists(self):
+        self.assertTrue((ROOT / 'tools' / 'capture_screenshot.py').exists())
+
+    def test_capture_tool_checks_version_in_title(self):
+        source = (ROOT / 'tools' / 'capture_screenshot.py').read_text(encoding='utf-8')
+        self.assertIn('VERSION', source)
+        self.assertIn('windowTitle', source)
+        self.assertIn('Version mismatch', source)
+
+
 if __name__ == '__main__':
     unittest.main()

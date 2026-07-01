@@ -20,6 +20,7 @@ from datetime import datetime
 
 VERSION = "1.6.0"
 APP_NAME = "SunoJump"
+PRESET_SCHEMA_VERSION = 1
 
 try:
     import numpy as np
@@ -170,6 +171,27 @@ PRESETS = {
         'reencode_enabled': True, 'reencode_bitrate': 128,
     },
 }
+
+_PRESET_MIGRATIONS = {}
+
+
+def _migrate_preset(data):
+    schema = data.get('schema_version', 0)
+    if schema > PRESET_SCHEMA_VERSION:
+        raise ValueError(
+            f"Preset requires schema version {schema} but this SunoJump "
+            f"(v{VERSION}) supports up to version {PRESET_SCHEMA_VERSION}. "
+            f"Update SunoJump to load this preset."
+        )
+    while schema < PRESET_SCHEMA_VERSION:
+        migrator = _PRESET_MIGRATIONS.get(schema)
+        if migrator is None:
+            break
+        data = migrator(data)
+        schema = data.get('schema_version', schema + 1)
+    data['schema_version'] = PRESET_SCHEMA_VERSION
+    return data
+
 
 PARAM_DEFS = [
     # (key, label, min, max, default, suffix, decimals, enabled_key, display_factor)
@@ -3188,6 +3210,7 @@ class MainWindow(QMainWindow):
             preset_data = {
                 'name': 'Custom',
                 'version': VERSION,
+                'schema_version': PRESET_SCHEMA_VERSION,
                 'params': {k: v for k, v in params.items() if k != 'output_format'},
             }
             with open(path, 'w', encoding='utf-8') as f:
@@ -3209,7 +3232,8 @@ class MainWindow(QMainWindow):
                 data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError("Invalid preset file format")
-            params = data.get('params', data)  # accept raw dict for flexibility
+            data = _migrate_preset(data)
+            params = data.get('params', data)
             if not isinstance(params, dict):
                 raise ValueError("Missing params block")
 
@@ -3857,6 +3881,8 @@ def cli_main():
         try:
             with open(args.preset_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+            if isinstance(data, dict):
+                data = _migrate_preset(data)
             loaded = data.get('params', data) if isinstance(data, dict) else {}
             if not isinstance(loaded, dict):
                 raise ValueError("preset file missing params block")

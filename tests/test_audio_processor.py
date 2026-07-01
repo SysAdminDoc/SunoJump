@@ -667,6 +667,50 @@ class ConstellationSelfTestTests(unittest.TestCase):
         self.assertLess(match, 50.0)
 
 
+class PresetSchemaTests(unittest.TestCase):
+    def test_current_schema_passes_migration(self):
+        data = {
+            'name': 'Test',
+            'version': sunojump.VERSION,
+            'schema_version': sunojump.PRESET_SCHEMA_VERSION,
+            'params': {'pitch_range': 0.5},
+        }
+        result = sunojump._migrate_preset(data)
+        self.assertEqual(result['schema_version'], sunojump.PRESET_SCHEMA_VERSION)
+        self.assertEqual(result['params']['pitch_range'], 0.5)
+
+    def test_missing_schema_version_treated_as_zero(self):
+        data = {'name': 'Old', 'version': '1.0.0', 'params': {'pitch_range': 0.3}}
+        result = sunojump._migrate_preset(data)
+        self.assertEqual(result['schema_version'], sunojump.PRESET_SCHEMA_VERSION)
+
+    def test_future_schema_version_raises(self):
+        data = {
+            'schema_version': sunojump.PRESET_SCHEMA_VERSION + 10,
+            'params': {},
+        }
+        with self.assertRaises(ValueError) as ctx:
+            sunojump._migrate_preset(data)
+        self.assertIn("Update SunoJump", str(ctx.exception))
+
+    def test_saved_preset_includes_schema_version(self):
+        proc = sunojump.AudioProcessor({
+            'strip_metadata': True,
+            'pitch_enabled': True,
+            'pitch_range': 0.5,
+        }, seed=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'input.wav'
+            output_path = Path(tmp) / 'output.wav'
+            sf.write(input_path, np.zeros(8000, dtype=np.float64), 8000)
+            proc.process(str(input_path), str(output_path))
+            import json
+            sidecar = json.loads(
+                output_path.with_suffix('.sidecar.json').read_text(encoding='utf-8')
+            )
+            self.assertEqual(sidecar['schema_version'], 1)
+
+
 class SidecarTraceTests(unittest.TestCase):
     def test_sidecar_written_alongside_output(self):
         sr = 8000

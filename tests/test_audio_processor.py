@@ -501,6 +501,38 @@ class FfmpegEncoderProbeTests(unittest.TestCase):
             sunojump._check_ffmpeg = old_check
             sunojump._ffmpeg_encoders = old_encoders
 
+    def test_lossy_reencode_rejects_missing_mp3_encoder(self):
+        sr = 8000
+        t = np.arange(sr * 2, dtype=np.float64) / sr
+        audio = np.column_stack([
+            0.25 * np.sin(2.0 * np.pi * 440.0 * t),
+            0.25 * np.sin(2.0 * np.pi * 440.0 * t),
+        ])
+        logs = []
+        old_check = sunojump._check_ffmpeg
+        old_encoders = sunojump._ffmpeg_encoders
+        sunojump._check_ffmpeg = lambda: True
+        sunojump._ffmpeg_encoders = {'mp3': False, 'm4a': True}
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                input_path = Path(tmp) / 'input.wav'
+                output_path = Path(tmp) / 'output.wav'
+                sf.write(input_path, audio, sr)
+                proc = AudioProcessor({
+                    'strip_metadata': False,
+                    'reencode_enabled': True,
+                    'reencode_bitrate': 192,
+                }, log_fn=logs.append, seed=123)
+                ok = proc.process(str(input_path), str(output_path))
+                self.assertFalse(ok)
+                self.assertTrue(
+                    any("libmp3lame" in line for line in logs),
+                    logs,
+                )
+        finally:
+            sunojump._check_ffmpeg = old_check
+            sunojump._ffmpeg_encoders = old_encoders
+
     def test_encoder_available_false_when_ffmpeg_missing(self):
         old_check = sunojump._check_ffmpeg
         old_encoders = sunojump._ffmpeg_encoders

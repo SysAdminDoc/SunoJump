@@ -37,5 +37,37 @@ class RunDiagnosticsTests(unittest.TestCase):
         self.assertIn("Result: success", text)
 
 
+class PathRedactionTests(unittest.TestCase):
+    def test_redact_replaces_home_path(self):
+        from sunojump import _redact_home_paths
+        home = str(Path.home())
+        text = f"Input: {home}/music/song.wav"
+        result = _redact_home_paths(text)
+        self.assertNotIn(home, result)
+        self.assertIn("~/music/song.wav", result)
+
+    def test_redact_handles_no_home_in_text(self):
+        from sunojump import _redact_home_paths
+        text = "Input: /tmp/song.wav"
+        result = _redact_home_paths(text)
+        self.assertEqual(text, result)
+
+    def test_retention_cap_enforced(self):
+        import sunojump
+        with tempfile.TemporaryDirectory() as tmp:
+            log_dir = Path(tmp)
+            old_fn = sunojump._diagnostics_dir
+            sunojump._diagnostics_dir = lambda: log_dir
+            try:
+                for i in range(35):
+                    (log_dir / f"run-{i:03d}.log").write_text(f"log {i}")
+                self.assertEqual(len(list(log_dir.glob("*.log"))), 35)
+                sunojump._enforce_log_retention(max_logs=30)
+                remaining = list(log_dir.glob("*.log"))
+                self.assertLessEqual(len(remaining), 30)
+            finally:
+                sunojump._diagnostics_dir = old_fn
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -605,9 +605,30 @@ def _diagnostics_dir():
     return Path.home() / '.local' / 'state' / APP_NAME / 'logs'
 
 
+MAX_RETAINED_LOGS = 30
+
+
 def _new_diagnostics_path(prefix='run'):
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     return _diagnostics_dir() / f"{prefix}-{stamp}.log"
+
+
+def _enforce_log_retention(max_logs=MAX_RETAINED_LOGS):
+    log_dir = _diagnostics_dir()
+    if not log_dir.is_dir():
+        return
+    logs = sorted(log_dir.glob('*.log'), key=lambda p: p.stat().st_mtime)
+    while len(logs) > max_logs:
+        oldest = logs.pop(0)
+        try:
+            oldest.unlink()
+        except OSError:
+            pass
+
+
+def _redact_home_paths(text):
+    home = str(Path.home())
+    return text.replace(home, '~')
 
 
 def _diagnostic_environment_lines():
@@ -630,14 +651,18 @@ def _diagnostic_environment_lines():
 
 
 class RunDiagnostics:
-    def __init__(self, prefix='run', path=None):
+    def __init__(self, prefix='run', path=None, redact=True):
         self.path = Path(path) if path is not None else _new_diagnostics_path(prefix)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._redact = redact
         self.path.write_text('', encoding='utf-8')
+        _enforce_log_retention()
 
     def write(self, msg):
         text = '' if msg is None else str(msg)
+        if self._redact:
+            text = _redact_home_paths(text)
         lines = text.splitlines() or ['']
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with self._lock:
@@ -2631,6 +2656,7 @@ class MainWindow(QMainWindow):
         _set_accessibility(self.btn_play_orig, "Play original", "Play the selected original file; disabled until audio is available.")
         _set_accessibility(self.btn_play_proc, "Play processed", "Play the selected processed file; disabled until output is available.")
         _set_accessibility(self.btn_open_log, "Open run log", "Open the latest persistent run log; disabled until a run starts.")
+        _set_accessibility(self.btn_clear_logs, "Clear logs", "Delete all persistent run logs from the log directory.")
         _set_accessibility(self.preset_combo, "Preset", "Choose the processing preset.")
         _set_accessibility(self.btn_save_preset, "Save preset", "Save current settings to a JSON preset file.")
         _set_accessibility(self.btn_load_preset, "Load preset", "Load settings from a JSON preset file.")
@@ -3116,6 +3142,17 @@ class MainWindow(QMainWindow):
         self.btn_open_log.setEnabled(False)
         self.btn_open_log.clicked.connect(self._open_run_log)
         actions.addWidget(self.btn_open_log)
+
+        self.btn_clear_logs = self._decorate_button(
+            QPushButton("Clear Logs"),
+            QStyle.StandardPixmap.SP_TrashIcon,
+        )
+        self.btn_clear_logs.setToolTip(
+            f"Delete all persistent run logs (keeps last {MAX_RETAINED_LOGS})"
+        )
+        self.btn_clear_logs.clicked.connect(self._clear_all_logs)
+        actions.addWidget(self.btn_clear_logs)
+
         lay.addLayout(actions)
         return panel
 
@@ -3453,6 +3490,21 @@ class MainWindow(QMainWindow):
             return
         if not _open_file(str(self._current_run_log.path)):
             self._log(f"Could not open run log: {self._current_run_log.path}")
+
+    def _clear_all_logs(self):
+        log_dir = _diagnostics_dir()
+        if not log_dir.is_dir():
+            self._log("No log directory found.")
+            return
+        logs = list(log_dir.glob('*.log'))
+        count = 0
+        for log_file in logs:
+            try:
+                log_file.unlink()
+                count += 1
+            except OSError:
+                pass
+        self._log(f"Cleared {count} log file(s).")
 
     # --- Preview / playback ---
     def _current_selected_item(self):

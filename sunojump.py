@@ -3766,7 +3766,8 @@ def cli_main():
     parser = argparse.ArgumentParser(
         description=f'{APP_NAME} v{VERSION} -- Audio fingerprint masking tool',
     )
-    parser.add_argument('-i', '--input', required=True, help='Input audio file or directory')
+    parser.add_argument('-i', '--input', required=True,
+                        help='Input audio file or directory')
     parser.add_argument('-o', '--output', default=None, help='Output file or directory')
     parser.add_argument('-p', '--preset', default='moderate',
                         choices=['gentle', 'moderate', 'aggressive', 'extreme'])
@@ -3951,7 +3952,11 @@ def cli_main():
 #  Entry Point
 # ============================================================
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and ('-i' in sys.argv or '--input' in sys.argv):
+    _cli_flags = {'-i', '--input', '-h', '--help', '--version'}
+    if len(sys.argv) > 1 and any(a in _cli_flags for a in sys.argv[1:]):
+        if '--version' in sys.argv:
+            print(f"{APP_NAME} v{VERSION}")
+            sys.exit(0)
         cli_main()
     else:
         app = QApplication(sys.argv)

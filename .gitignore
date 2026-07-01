@@ -13,6 +13,7 @@ CODEX_CHANGELOG.md
 *.exe
 SunoJump_Output/
 SunoJump-v*.zip
+tests/fixtures/*.wav
 
 
 # Markdown files local-only (except README)

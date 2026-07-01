@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "description": "License-safe generated test fixtures for SunoJump verifier and quality tests",
+  "generated_fixtures": [
+    {
+      "name": "tone_440hz_stereo_3s",
+      "description": "Stereo 440 Hz sine wave, 3 seconds, 44100 Hz, 16-bit",
+      "sample_rate": 44100,
+      "channels": 2,
+      "duration_sec": 3.0,
+      "generator": "sine",
+      "frequency_hz": 440.0,
+      "amplitude": 0.25,
+      "license": "generated"
+    },
+    {
+      "name": "chord_ceg_stereo_5s",
+      "description": "Stereo C-E-G chord (261.63, 329.63, 392.00 Hz), 5 seconds, 44100 Hz",
+      "sample_rate": 44100,
+      "channels": 2,
+      "duration_sec": 5.0,
+      "generator": "chord",
+      "frequencies_hz": [261.63, 329.63, 392.00],
+      "amplitude": 0.20,
+      "license": "generated"
+    },
+    {
+      "name": "sweep_20_8000_mono_4s",
+      "description": "Mono linear frequency sweep 20-8000 Hz, 4 seconds, 44100 Hz",
+      "sample_rate": 44100,
+      "channels": 1,
+      "duration_sec": 4.0,
+      "generator": "sweep",
+      "freq_start_hz": 20.0,
+      "freq_end_hz": 8000.0,
+      "amplitude": 0.25,
+      "license": "generated"
+    },
+    {
+      "name": "pink_noise_stereo_3s",
+      "description": "Stereo pink noise, 3 seconds, 44100 Hz",
+      "sample_rate": 44100,
+      "channels": 2,
+      "duration_sec": 3.0,
+      "generator": "pink_noise",
+      "amplitude": 0.15,
+      "license": "generated"
+    }
+  ],
+  "user_corpus": {
+    "env_var": "SUNOJUMP_TEST_CORPUS",
+    "description": "Optional directory of user-provided audio files for extended validation. Files here are not committed to the repository."
+  }
+}

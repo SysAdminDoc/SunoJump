@@ -4,7 +4,14 @@
 - **Release license compliance gate.** Added `tools/audit_licenses.py` that inventories all release dependency licenses, flags unreviewed copyleft packages, and blocks release packaging when license evidence is missing.
 - **License inventory export.** `--write-inventory` flag emits a machine-readable `license-inventory.json` for release verification.
 - **README legal section.** Documents GPL/LGPL runtime dependencies and source vs binary distribution strategy.
-- **Regression coverage.** Added license audit tests for lock coverage, copyleft detection, inventory generation, and distribution note enforcement.
+- **Python 3.11+ version guard.** Aligned documented support matrix with actual dependency requirements; added runtime guard that exits with a clear message on unsupported Python versions.
+- **ffmpeg encoder probe.** MP3/M4A export now validates that the required codec (`libmp3lame`/`aac`) is available before rendering, preventing wasted full-file renders. Diagnostics log detected encoder support.
+- **Segment-level replay sidecar.** Every output now writes a `.sidecar.json` with app version, input SHA-256, seed, enabled passes, params, dependency versions, and per-segment pitch/tempo/coupled decisions.
+- **Metadata strip reporting.** `_strip_metadata()` now inventories before/after tag families, logs removed and retained metadata, and surfaces a provenance disclaimer when strip fails.
+- **Preset schema versioning.** Saved presets include `schema_version`; unknown future versions fail with an actionable upgrade message; migration framework ready for future parameter changes.
+- **GUI session persistence.** Window geometry, output directory, output format, preset, and browse directories are saved via QSettings and restored on next launch.
+- **CLI `--help`/`--version`.** Both now work without launching the GUI or requiring `--input`.
+- **Regression coverage.** Added tests for license audit, Python version guard, ffmpeg encoder probe, sidecar trace, preset schema migration, and preset schema version.
 
 ## v1.5.16 (2026-06-30)
 - **Atomic final exports.** Final audio writes now target same-directory temporary files and promote with `os.replace()` only after the write, metadata strip, and cancellation checks succeed.

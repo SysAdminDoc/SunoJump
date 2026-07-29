@@ -29,6 +29,7 @@ from safe_audio import (
     inspect_audio_path,
     validate_libsndfile_version,
 )
+from verifiers import ConstellationVerifier, format_verifier_result
 
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
@@ -884,6 +885,7 @@ class AudioProcessor:
         self._seed = seed
         self._trace = {"passes": {}}
         self._decode_metadata = {}
+        self._verifier_results = []
 
     def cancel(self):
         self._cancel_event.set()
@@ -901,6 +903,7 @@ class AudioProcessor:
         """
         self.log(f"Loading {Path(input_path).name}...")
         self._trace = {"passes": {}}
+        self._verifier_results = []
 
         try:
             _preflight_audio_input(input_path, preview_seconds)
@@ -1103,12 +1106,13 @@ class AudioProcessor:
             self.log("  Very high sample-domain change -- audition output quality")
         self.log(f"  Scope: {EVIDENCE_NOTICE}")
 
-        if n >= int(sr * 5):
-            match = self._compute_constellation_match(orig_ch[:n], proc_ch[:n], sr)
-            self.log(
-                "Local landmark overlap [sunojump.constellation v1]: "
-                f"{match:.0f}% (experimental; no platform inference)"
-            )
+        verifier_result = ConstellationVerifier(self).score(
+            orig_ch[:n],
+            proc_ch[:n],
+            sr,
+        )
+        self._verifier_results = [verifier_result.to_dict()]
+        self.log(format_verifier_result(verifier_result))
 
         self._write_sidecar(input_path, output_path, sr, pass_names, strength)
 
@@ -1141,6 +1145,7 @@ class AudioProcessor:
                     "value": round(strength, 1),
                 },
             },
+            "verifiers": self._verifier_results,
             "params": {
                 k: v for k, v in self.params.items()
                 if not callable(v)
@@ -2115,15 +2120,6 @@ class AudioProcessor:
         diff_power = np.mean(diff ** 2) + 1e-12
         snr = 10.0 * np.log10(sig_power / diff_power)
         return max(0.0, min(100.0, (40.0 - snr) * 2.5))
-
-    def _compute_constellation_match(self, original, processed, sr):
-        """Estimate surviving constellation fingerprints using hash overlap."""
-        orig_hashes = self._constellation_hashes(original, sr)
-        proc_hashes = self._constellation_hashes(processed, sr)
-        if not orig_hashes or not proc_hashes:
-            return 0.0
-        overlap = len(orig_hashes & proc_hashes)
-        return float(np.clip((overlap / len(orig_hashes)) * 100.0, 0.0, 100.0))
 
     def _constellation_hashes(self, mono, sr, max_seconds=30.0):
         if len(mono) < int(sr * 2):

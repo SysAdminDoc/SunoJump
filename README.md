@@ -107,7 +107,7 @@ python tools/build_release.py
 - **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
 - **Atomic output saves** — writes final audio through same-folder temp files and promotes only completed artifacts
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
-- **Scoped local evidence** — reports `sunojump.signal_change v1` and experimental `sunojump.constellation v1` values without platform inference
+- **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
 - **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)
 - **Batch queue** — drag/drop multiple files, reorder them, and process them sequentially
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
@@ -191,6 +191,10 @@ After processing, SunoJump reports `sunojump.signal_change v1`, a normalized sam
 - **75-100%** — very high sample-domain change; audition output quality
 
 This metric is not calibrated to any external service or recognition system. Sidecars record the adapter name, version, unit, and scope.
+
+## Local Landmark Evidence
+
+`sunojump.constellation v1` compares up to 30 seconds of local landmark hashes. A measured result includes adapter/version, percentage, sample coverage, duration, and landmark counts. Silence, near-silence, clips shorter than two seconds, and inputs with too few landmarks report `unavailable` without a numeric value; adapter failures report `error`. These states appear identically in GUI/CLI logs and sidecar JSON and do not imply a platform outcome.
 
 ## Supported Formats
 

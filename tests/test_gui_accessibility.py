@@ -4,6 +4,7 @@ import unittest
 from PyQt6.QtWidgets import QApplication
 
 from sunojump import MainWindow
+import verifiers
 
 
 class GuiAccessibilityTests(unittest.TestCase):
@@ -56,6 +57,19 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertIn("Rights-owned audio only", text)
         self.assertIn("do not predict platform outcomes", text)
         self.assertIn("do not predict or guarantee", self.window.scope_label.toolTip())
+
+    def test_verifier_state_renders_verbatim_in_gui_session_log(self):
+        result = verifiers.VerifierResult(
+            adapter="sunojump.constellation",
+            adapter_version="1",
+            metric="landmark_overlap",
+            state=verifiers.VerifierState.UNAVAILABLE,
+            reason="input_too_short",
+            coverage={"compared_seconds": 1.0},
+        )
+        rendered = verifiers.format_verifier_result(result)
+        self.window._log(rendered)
+        self.assertIn(rendered, self.window.log_box.toPlainText())
 
     def test_tab_order_follows_visual_workflow(self):
         order = self.window._tab_order_widgets

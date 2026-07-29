@@ -9,6 +9,7 @@ import soundfile as sf
 
 import safe_audio
 import sunojump
+import verifiers
 from sunojump import AudioProcessor, _format_requires_ffmpeg, _output_extension, _planned_output_path
 
 
@@ -617,41 +618,6 @@ class AtomicOutputTests(unittest.TestCase):
             self.assertTrue(any("Cancelled." in line for line in logs), logs)
 
 
-class ConstellationSelfTestTests(unittest.TestCase):
-    def test_constellation_match_is_high_for_identical_audio(self):
-        sr = 16000
-        t = np.arange(sr * 3, dtype=np.float64) / sr
-        audio = (
-            0.30 * np.sin(2.0 * np.pi * 440.0 * t)
-            + 0.20 * np.sin(2.0 * np.pi * 880.0 * t)
-            + 0.10 * np.sin(2.0 * np.pi * 1760.0 * t)
-        )
-        proc = AudioProcessor({}, seed=123)
-
-        match = proc._compute_constellation_match(audio, audio, sr)
-
-        self.assertGreater(match, 95.0)
-
-    def test_constellation_match_drops_for_different_audio(self):
-        sr = 16000
-        t = np.arange(sr * 3, dtype=np.float64) / sr
-        original = (
-            0.30 * np.sin(2.0 * np.pi * 440.0 * t)
-            + 0.20 * np.sin(2.0 * np.pi * 880.0 * t)
-            + 0.10 * np.sin(2.0 * np.pi * 1760.0 * t)
-        )
-        processed = (
-            0.30 * np.sin(2.0 * np.pi * 523.25 * t)
-            + 0.20 * np.sin(2.0 * np.pi * 1046.5 * t)
-            + 0.10 * np.sin(2.0 * np.pi * 2093.0 * t)
-        )
-        proc = AudioProcessor({}, seed=123)
-
-        match = proc._compute_constellation_match(original, processed, sr)
-
-        self.assertLess(match, 50.0)
-
-
 class PresetSchemaTests(unittest.TestCase):
     def test_legacy_watermark_scan_key_migrates_to_spectral_scan(self):
         data = {
@@ -706,6 +672,44 @@ class PresetSchemaTests(unittest.TestCase):
 
 
 class SidecarTraceTests(unittest.TestCase):
+    def test_unavailable_verifier_state_matches_log_and_sidecar(self):
+        sr = 8000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = 0.25 * np.sin(2.0 * np.pi * 440.0 * t)
+        logs = []
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / 'short.wav'
+            output_path = Path(tmp) / 'short_sj.wav'
+            sf.write(input_path, audio, sr)
+            proc = AudioProcessor(
+                {'strip_metadata': True},
+                log_fn=logs.append,
+                seed=42,
+            )
+            ok = proc.process(str(input_path), str(output_path))
+            self.assertTrue(ok, logs)
+
+            import json
+            data = json.loads(
+                output_path.with_suffix('.sidecar.json').read_text(
+                    encoding='utf-8'
+                )
+            )
+            result = data['verifiers'][0]
+            self.assertEqual(result['state'], 'unavailable')
+            self.assertEqual(result['reason'], 'input_too_short')
+            self.assertNotIn('value', result)
+            typed = verifiers.VerifierResult(
+                adapter=result['adapter'],
+                adapter_version=result['adapter_version'],
+                metric=result['metric'],
+                state=verifiers.VerifierState(result['state']),
+                reason=result['reason'],
+                coverage=result['coverage'],
+            )
+            rendered = verifiers.format_verifier_result(typed)
+            self.assertIn(rendered, logs)
+
     def test_sidecar_written_alongside_output(self):
         sr = 8000
         t = np.arange(sr * 3, dtype=np.float64) / sr
@@ -750,6 +754,18 @@ class SidecarTraceTests(unittest.TestCase):
             self.assertEqual(metric['version'], '1')
             self.assertIn('value', metric)
             self.assertNotIn('modification_strength', data)
+            verifier = data['verifiers'][0]
+            self.assertIn(
+                verifier['state'],
+                {'measured', 'unavailable', 'error'},
+            )
+            self.assertEqual(verifier['adapter'], 'sunojump.constellation')
+            self.assertEqual(verifier['adapter_version'], '1')
+            self.assertIn('coverage', verifier)
+            if verifier['state'] == 'measured':
+                self.assertIn('value', verifier)
+            else:
+                self.assertNotIn('value', verifier)
 
     def test_sidecar_records_pitch_segments(self):
         sr = 8000

@@ -11,12 +11,24 @@ if sys.version_info < (3, 11):
     )
     sys.exit(1)
 
+if '--safe-decode-worker' in sys.argv:
+    from safe_audio import worker_cli_main
+    raise SystemExit(worker_cli_main(sys.argv[2:]))
+
 # --- Imports ---
 import os, json, argparse, tempfile, shutil, threading, hashlib
 import platform, traceback
 import subprocess
 from pathlib import Path
 from datetime import datetime
+from safe_audio import (
+    DecodeCancelled,
+    DecodeLimits,
+    MIN_LIBSNDFILE_VERSION,
+    decode_audio_isolated,
+    inspect_audio_path,
+    validate_libsndfile_version,
+)
 
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
@@ -92,6 +104,8 @@ MAX_DECODED_AUDIO_BYTES = 1024 ** 3
 MAX_AUDIO_CHANNELS = 8
 MAX_AUDIO_SAMPLE_RATE = 384000
 MAX_AUDIO_DURATION_SECONDS = 2 * 60 * 60
+MAX_DECODE_WORKER_MEMORY_BYTES = MAX_DECODED_AUDIO_BYTES + 512 * 1024 ** 2
+DECODE_TIMEOUT_SECONDS = 120.0
 
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
@@ -645,6 +659,7 @@ def _redact_home_paths(text):
 
 
 def _diagnostic_environment_lines():
+    native = _native_runtime_report()
     return [
         f"App: {APP_NAME} v{VERSION}",
         f"Python: {sys.version.replace(os.linesep, ' ')}",
@@ -654,6 +669,9 @@ def _diagnostic_environment_lines():
         f"numpy: {np.__version__}",
         f"scipy: {scipy.__version__}",
         f"soundfile: {getattr(sf, '__version__', 'unknown')}",
+        f"libsndfile: {native['libsndfile']}",
+        "Decode policy: isolated process; bounded header, time, memory, and output; "
+        "IRCAM/WAV IMA ADPCM disabled",
         f"mutagen: {getattr(mutagen, 'version_string', 'unknown')}",
         f"PyQt6: {PYQT_VERSION_STR}",
         f"Qt: {QT_VERSION_STR}",
@@ -769,75 +787,51 @@ def _humanize_bytes(n_bytes):
 
 
 def _preflight_audio_input(input_path, preview_seconds=None):
-    path = Path(input_path)
-    if path.suffix.lower() not in SUPPORTED_FORMATS:
-        raise ValueError(f"unsupported audio format: {path.suffix or '(none)'}")
+    del preview_seconds
+    return inspect_audio_path(
+        input_path,
+        max_input_bytes=MAX_INPUT_FILE_BYTES,
+    )
 
+
+def _decode_limits():
+    return DecodeLimits(
+        max_input_bytes=MAX_INPUT_FILE_BYTES,
+        max_decoded_bytes=MAX_DECODED_AUDIO_BYTES,
+        max_channels=MAX_AUDIO_CHANNELS,
+        max_sample_rate=MAX_AUDIO_SAMPLE_RATE,
+        max_duration_seconds=MAX_AUDIO_DURATION_SECONDS,
+        timeout_seconds=DECODE_TIMEOUT_SECONDS,
+        worker_memory_bytes=MAX_DECODE_WORKER_MEMORY_BYTES,
+    )
+
+
+def _native_runtime_report():
+    libsndfile_version = str(
+        getattr(sf, "__libsndfile_version__", "unknown")
+    )
     try:
-        stat = path.stat()
-    except OSError as e:
-        raise ValueError(f"cannot access input file: {e}") from e
-
-    if not path.is_file():
-        raise ValueError("input path is not a file")
-    if stat.st_size <= 0:
-        raise ValueError("empty audio file")
-    if stat.st_size > MAX_INPUT_FILE_BYTES:
-        raise ValueError(
-            "input file is too large "
-            f"({_humanize_bytes(stat.st_size)} > {_humanize_bytes(MAX_INPUT_FILE_BYTES)})"
-        )
-
-    try:
-        info = sf.info(str(path))
-    except Exception as e:
-        raise ValueError(f"unsupported or malformed audio file: {e}") from e
-
-    frames = int(getattr(info, 'frames', 0) or 0)
-    sr = int(getattr(info, 'samplerate', 0) or 0)
-    channels = int(getattr(info, 'channels', 0) or 0)
-    if frames <= 0:
-        raise ValueError("empty audio file")
-    if sr <= 0:
-        raise ValueError("invalid sample rate")
-    if sr > MAX_AUDIO_SAMPLE_RATE:
-        raise ValueError(
-            f"sample rate too high ({sr} Hz > {MAX_AUDIO_SAMPLE_RATE} Hz)"
-        )
-    if channels <= 0:
-        raise ValueError("invalid channel count")
-    if channels > MAX_AUDIO_CHANNELS:
-        raise ValueError(
-            f"too many channels ({channels} > {MAX_AUDIO_CHANNELS})"
-        )
-
-    duration = frames / float(sr)
-    preview_requested = preview_seconds is not None and preview_seconds > 0
-    if not preview_requested and duration > MAX_AUDIO_DURATION_SECONDS:
-        raise ValueError(
-            f"audio duration too long ({duration / 60.0:.1f} min > "
-            f"{MAX_AUDIO_DURATION_SECONDS / 60.0:.1f} min)"
-        )
-
-    read_frames = frames
-    if preview_requested:
-        read_frames = min(frames, max(1, int(preview_seconds * sr)))
-
-    decoded_bytes = read_frames * channels * np.dtype('float64').itemsize
-    if decoded_bytes > MAX_DECODED_AUDIO_BYTES:
-        raise ValueError(
-            "decoded audio would exceed memory guardrail "
-            f"({_humanize_bytes(decoded_bytes)} > "
-            f"{_humanize_bytes(MAX_DECODED_AUDIO_BYTES)})"
-        )
-
+        validate_libsndfile_version(libsndfile_version)
+        runtime_gate = "pass-with-contained-formats"
+    except ValueError as exc:
+        runtime_gate = f"fail: {exc}"
     return {
-        'frames': frames,
-        'samplerate': sr,
-        'channels': channels,
-        'duration': duration,
-        'read_frames': read_frames,
-        'decoded_bytes': decoded_bytes,
+        "soundfile": str(getattr(sf, "__version__", "unknown")),
+        "libsndfile": libsndfile_version,
+        "minimum_libsndfile": ".".join(
+            str(value) for value in MIN_LIBSNDFILE_VERSION
+        ),
+        "runtime_gate": runtime_gate,
+        "decode_isolation": "spawned-process",
+        "header_inspection_bytes": 1024 * 1024,
+        "decode_timeout_seconds": DECODE_TIMEOUT_SECONDS,
+        "decode_memory_bytes": MAX_DECODE_WORKER_MEMORY_BYTES,
+        "decode_output_bytes": MAX_DECODED_AUDIO_BYTES,
+        "blocked_native_formats": [
+            "IRCAM",
+            "WAV IMA ADPCM",
+            "WAV extensible IMA ADPCM",
+        ],
     }
 
 
@@ -859,6 +853,7 @@ class AudioProcessor:
         self._watermark_candidates = []
         self._seed = seed
         self._trace = {"passes": {}}
+        self._decode_metadata = {}
 
     def cancel(self):
         self._cancel_event.set()
@@ -878,21 +873,28 @@ class AudioProcessor:
         self._trace = {"passes": {}}
 
         try:
-            preflight = _preflight_audio_input(input_path, preview_seconds)
+            _preflight_audio_input(input_path, preview_seconds)
         except ValueError as e:
             self.log(f"  Error: {e}")
             return False
 
-        read_kwargs = {'dtype': 'float64'}
-        if preview_seconds and preview_seconds > 0:
-            read_kwargs['frames'] = preflight['read_frames']
-
         try:
-            audio, sr = sf.read(input_path, **read_kwargs)
-        except Exception as e:
-            self.log(f"  Error reading file: {e}")
-            self.log(traceback.format_exc().rstrip())
+            audio, sr, self._decode_metadata = decode_audio_isolated(
+                input_path,
+                preview_seconds,
+                _decode_limits(),
+                cancel_event=self._cancel_event,
+            )
+        except DecodeCancelled:
+            self.log("Cancelled.")
             return False
+        except ValueError as e:
+            self.log(f"  Error reading file: {e}")
+            return False
+        self.log(
+            "  Decoder: isolated "
+            f"libsndfile {self._decode_metadata.get('libsndfile_version', 'unknown')}"
+        )
 
         if audio.size == 0:
             self.log("  Error: empty audio file")
@@ -1112,8 +1114,11 @@ class AudioProcessor:
                 "numpy": np.__version__,
                 "scipy": scipy.__version__,
                 "soundfile": getattr(sf, '__version__', 'unknown'),
+                "libsndfile": getattr(sf, '__libsndfile_version__', 'unknown'),
+                "decode_policy": _native_runtime_report(),
                 "mutagen": getattr(mutagen, 'version_string', 'unknown'),
             },
+            "decode": self._decode_metadata,
             "passes": self._trace.get("passes", {}),
         }
         sidecar_path = Path(output_path).with_suffix('.sidecar.json')
@@ -4110,10 +4115,15 @@ def cli_main():
 #  Entry Point
 # ============================================================
 if __name__ == '__main__':
-    _cli_flags = {'-i', '--input', '-h', '--help', '--version'}
+    _cli_flags = {
+        '-i', '--input', '-h', '--help', '--version', '--native-runtime',
+    }
     if len(sys.argv) > 1 and any(a in _cli_flags for a in sys.argv[1:]):
         if '--version' in sys.argv:
             print(f"{APP_NAME} v{VERSION}")
+            sys.exit(0)
+        if '--native-runtime' in sys.argv:
+            print(json.dumps(_native_runtime_report(), sort_keys=True))
             sys.exit(0)
         cli_main()
     else:

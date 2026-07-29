@@ -97,7 +97,7 @@ python tools/build_release.py
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
 - **Accessible GUI controls** — primary controls and pass sliders expose screen-reader names, descriptions, and a tested focus order
 - **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available
-- **Input preflight guardrails** — validates headers, size, sample rate, channels, and decoded memory cost before full-file decode
+- **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
 - **Atomic output saves** — writes final audio through same-folder temp files and promotes only completed artifacts
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
 - **Detection-signature and constellation self-test logs** — reports heuristic AI-detection movement plus estimated landmark overlap remaining after processing
@@ -159,6 +159,7 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `--humanize` | Humanization amount (0.0-1.0) | preset |
 | `--reencode` | Lossy re-encode bitrate (96-320) | disabled |
 | `--seed` | Integer for deterministic random generator (same seed = same output) | random |
+| `--native-runtime` | Print machine-readable decoder version and containment policy, then exit | n/a |
 
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs.
 
@@ -187,6 +188,8 @@ Start with the default **Extreme** preset -- field-tested as the most reliable f
 ## Supported Formats
 
 **Input:** WAV, MP3, FLAC, OGG, AIFF, Opus
+
+For native-decoder safety, IRCAM payloads and WAV IMA ADPCM (including the extensible subtype) are not accepted. The file extension must match the detected container.
 
 **Output:** WAV (24-bit), FLAC, OGG Vorbis, MP3, M4A/AAC
 

@@ -35,7 +35,7 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.preset_combo,
             self.window.btn_save_preset,
             self.window.btn_load_preset,
-            self.window.watermark_scan_check,
+            self.window.spectral_scan_check,
             self.window.meta_check,
             self.window.format_combo,
             self.window.output_dir,
@@ -50,6 +50,12 @@ class GuiAccessibilityTests(unittest.TestCase):
         for row in self.window.param_rows.values():
             self._assert_accessible(row.check)
             self._assert_accessible(row.slider)
+
+    def test_visible_scope_disclaims_platform_outcomes(self):
+        text = self.window.scope_label.text()
+        self.assertIn("Rights-owned audio only", text)
+        self.assertIn("do not predict platform outcomes", text)
+        self.assertIn("do not predict or guarantee", self.window.scope_label.toolTip())
 
     def test_tab_order_follows_visual_workflow(self):
         order = self.window._tab_order_widgets

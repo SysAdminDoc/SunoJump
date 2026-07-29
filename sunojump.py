@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.6.1 - Audio fingerprint masking tool for Suno AI"""
+"""SunoJump v1.6.1 - local audio variation and evidence tool."""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -33,6 +33,25 @@ from safe_audio import (
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = 1
+SIGNAL_CHANGE_METRIC = {
+    "adapter": "sunojump.signal_change",
+    "version": "1",
+    "unit": "percent",
+    "scope": "sample-domain SNR-derived difference",
+}
+RIGHTS_ONLY_NOTICE = (
+    "Use only with audio you own or are authorized to modify."
+)
+EVIDENCE_NOTICE = (
+    "Local experimental metrics describe this render only; they do not "
+    "predict or guarantee any platform, recognition, or detector outcome."
+)
+EVIDENCE_CONTRACT = {
+    "rights_scope": "owned-or-authorized-audio-only",
+    "metric_scope": "local-render-evidence-only",
+    "platform_outcome_guaranteed": False,
+    "upload_or_resubmission_automation": False,
+}
 
 try:
     import numpy as np
@@ -114,7 +133,7 @@ ROLE_OUTPUT = Qt.ItemDataRole.UserRole + 1
 PRESETS = {
     'Gentle': {
         'strip_metadata': True,
-        'watermark_scan_enabled': True,
+        'spectral_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.10,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.10,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.10,
@@ -132,7 +151,7 @@ PRESETS = {
     },
     'Moderate': {
         'strip_metadata': True,
-        'watermark_scan_enabled': True,
+        'spectral_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.30,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.30,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.30,
@@ -150,7 +169,7 @@ PRESETS = {
     },
     'Aggressive': {
         'strip_metadata': True,
-        'watermark_scan_enabled': True,
+        'spectral_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.50,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.50,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.50,
@@ -168,7 +187,7 @@ PRESETS = {
     },
     'Extreme': {
         'strip_metadata': True,
-        'watermark_scan_enabled': True,
+        'spectral_scan_enabled': True,
         'spectral_enabled': True, 'spectral_strength': 0.70,
         'spectral_sub_bass_enabled': True, 'spectral_sub_bass_strength': 0.70,
         'spectral_low_mids_enabled': True, 'spectral_low_mids_strength': 0.70,
@@ -190,6 +209,15 @@ _PRESET_MIGRATIONS = {}
 
 
 def _migrate_preset(data):
+    params = data.get('params')
+    if isinstance(params, dict):
+        if (
+            'watermark_scan_enabled' in params
+            and 'spectral_scan_enabled' not in params
+        ):
+            params['spectral_scan_enabled'] = params.pop(
+                'watermark_scan_enabled'
+            )
     schema = data.get('schema_version', 0)
     if schema > PRESET_SCHEMA_VERSION:
         raise ValueError(
@@ -235,7 +263,7 @@ SPECTRAL_BANDS = (
     ('spectral_presence', 2500.0, 6000.0, 0.24),
     ('spectral_air', 10000.0, None, 0.40),
 )
-WATERMARK_SCAN_MAX_CANDIDATES = 5
+SPECTRAL_SCAN_MAX_CANDIDATES = 5
 DYNAMIC_EQ_BANDS = (
     (60.0, 180.0, 1.2),
     (180.0, 700.0, 1.0),
@@ -703,6 +731,8 @@ class RunDiagnostics:
 
     def write_header(self, mode, inputs, output_dir, params, preset_name=None, seed=None):
         self.write(f"{APP_NAME} v{VERSION} run started")
+        self.write(f"Rights scope: {RIGHTS_ONLY_NOTICE}")
+        self.write(f"Evidence scope: {EVIDENCE_NOTICE}")
         self.write(f"Mode: {mode}")
         self.write(f"Preset: {preset_name or 'Custom'}")
         self.write(f"Seed: {seed if seed is not None else 'random'}")
@@ -850,7 +880,7 @@ class AudioProcessor:
         self.progress = progress_fn or (lambda v: None)
         self.rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
         self._cancel_event = cancel_event or threading.Event()
-        self._watermark_candidates = []
+        self._spectral_candidates = []
         self._seed = seed
         self._trace = {"passes": {}}
         self._decode_metadata = {}
@@ -923,8 +953,11 @@ class AudioProcessor:
         if self.params.get('strip_metadata', True):
             pass_names.append('Metadata Strip')
         if self.params.get('spectral_enabled'):
-            if self.params.get('watermark_scan_enabled', True):
-                pass_names.append('Watermark Band Scan')
+            if self.params.get(
+                'spectral_scan_enabled',
+                self.params.get('watermark_scan_enabled', True),
+            ):
+                pass_names.append('Narrowband Candidate Scan')
             pass_names.append('Spectral Perturbation')
         if self.params.get('dynamic_eq_enabled'):
             pass_names.append('Dynamic EQ')
@@ -964,10 +997,10 @@ class AudioProcessor:
             try:
                 if name == 'Metadata Strip':
                     pass  # applied on save
-                elif name == 'Watermark Band Scan':
-                    self._watermark_candidates = self._scan_watermark_bands(audio, sr)
-                    if self._watermark_candidates:
-                        bands = self._format_watermark_candidates(self._watermark_candidates)
+                elif name == 'Narrowband Candidate Scan':
+                    self._spectral_candidates = self._scan_spectral_candidates(audio, sr)
+                    if self._spectral_candidates:
+                        bands = self._format_spectral_candidates(self._spectral_candidates)
                         self.log(f"    Candidate bands: {bands}")
                     else:
                         self.log("    Candidate bands: none")
@@ -1048,38 +1081,34 @@ class AudioProcessor:
         finally:
             _remove_file_silent(tmp_output)
 
-        # Modification strength
+        # Sample-domain signal-change metric
         self.progress(96)
         orig_ch = original[:, 0]
         proc_ch = audio[:, 0]
         n = min(len(orig_ch), len(proc_ch))
-        strength = self._compute_strength(orig_ch[:n], proc_ch[:n])
+        strength = self._compute_signal_change(orig_ch[:n], proc_ch[:n])
 
-        self.log(f"Modification strength: {strength:.0f}%")
+        metric_label = (
+            f"{SIGNAL_CHANGE_METRIC['adapter']} "
+            f"v{SIGNAL_CHANGE_METRIC['version']}"
+        )
+        self.log(f"Signal change [{metric_label}]: {strength:.0f}%")
         if strength < 25:
-            self.log("  Light -- may not be sufficient")
+            self.log("  Low sample-domain change")
         elif strength < 50:
-            self.log("  Moderate -- likely effective")
+            self.log("  Moderate sample-domain change")
         elif strength < 75:
-            self.log("  Strong -- highly likely effective")
+            self.log("  High sample-domain change")
         else:
-            self.log("  Extreme -- verify audio quality")
+            self.log("  Very high sample-domain change -- audition output quality")
+        self.log(f"  Scope: {EVIDENCE_NOTICE}")
 
-        # Detection-risk signature (heuristic): lower after processing = more
-        # natural-looking, less likely to trip AI-detection classifiers. This
-        # is a directional indicator, not a guarantee against any specific
-        # detector. Skipped for very short inputs where features are unstable.
         if n >= int(sr * 5):
-            pre_risk = self._compute_detection_risk(orig_ch[:n], sr)
-            post_risk = self._compute_detection_risk(proc_ch[:n], sr)
-            delta = pre_risk - post_risk
-            arrow = "down" if delta > 0 else "up" if delta < 0 else "flat"
-            self.log(
-                f"Detection signature: {pre_risk:.0f}% -> {post_risk:.0f}% "
-                f"({arrow} {abs(delta):.0f}%)"
-            )
             match = self._compute_constellation_match(orig_ch[:n], proc_ch[:n], sr)
-            self.log(f"Constellation match: 100% -> {match:.0f}% landmarks")
+            self.log(
+                "Local landmark overlap [sunojump.constellation v1]: "
+                f"{match:.0f}% (experimental; no platform inference)"
+            )
 
         self._write_sidecar(input_path, output_path, sr, pass_names, strength)
 
@@ -1105,7 +1134,13 @@ class AudioProcessor:
             "output_file": Path(output_path).name,
             "sample_rate": sr,
             "enabled_passes": pass_names,
-            "modification_strength": round(strength, 1),
+            "evidence_contract": EVIDENCE_CONTRACT,
+            "metrics": {
+                "signal_change": {
+                    **SIGNAL_CHANGE_METRIC,
+                    "value": round(strength, 1),
+                },
+            },
             "params": {
                 k: v for k, v in self.params.items()
                 if not callable(v)
@@ -1201,8 +1236,8 @@ class AudioProcessor:
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # --- Watermark-band scan pre-pass ---
-    def _scan_watermark_bands(self, audio, sr):
+    # --- Narrowband spectral candidate scan pre-pass ---
+    def _scan_spectral_candidates(self, audio, sr):
         if audio.shape[0] < 1024:
             return []
 
@@ -1246,7 +1281,7 @@ class AudioProcessor:
 
         candidates = []
         for idx in np.argsort(score)[::-1]:
-            if len(candidates) >= WATERMARK_SCAN_MAX_CANDIDATES:
+            if len(candidates) >= SPECTRAL_SCAN_MAX_CANDIDATES:
                 break
             if not np.isfinite(score[idx]) or score[idx] <= 2.0:
                 break
@@ -1271,7 +1306,7 @@ class AudioProcessor:
 
         return candidates
 
-    def _format_watermark_candidates(self, candidates):
+    def _format_spectral_candidates(self, candidates):
         labels = []
         for cand in candidates:
             center = cand['center_hz']
@@ -1283,10 +1318,7 @@ class AudioProcessor:
 
     # --- Spectral perturbation (non-uniform across segments) ---
     def _spectral_perturb(self, audio, sr):
-        """Process in 3-second segments so the perturbation varies across the
-        track. Each segment gets an independent random perturbation, which
-        breaks detectors that look for consistent spectral signatures across
-        the whole file (the hallmark of many AI music outputs)."""
+        """Vary perturbation across independently randomized track segments."""
         strength = self.params.get('spectral_strength', 0.3)
         n = audio.shape[0]
         base_seg_samples = int(3.0 * sr)
@@ -1374,7 +1406,7 @@ class AudioProcessor:
             ],
         )
         if scan_strength > 0.0:
-            for cand in self._watermark_candidates:
+            for cand in self._spectral_candidates:
                 band_mask = (f >= cand['low_hz']) & (f <= cand['high_hz'])
                 if np.any(band_mask):
                     depth = min(0.55, 0.30 + cand['score'] * 0.01)
@@ -1499,7 +1531,7 @@ class AudioProcessor:
         unrelated ways. This coupled path keeps every segment's start/end
         aligned, then applies a small in-segment timing warp and pitch shift
         from the same random control value so beats stay anchored while the
-        fingerprint still varies across the track.
+        rendered signal still varies across the track.
         """
         max_st = self.params.get('pitch_range', 0.8)
         max_var = self.params.get('tempo_range', 0.05)
@@ -2074,8 +2106,8 @@ class AudioProcessor:
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # --- Strength metric ---
-    def _compute_strength(self, original, processed):
+    # --- Sample-domain signal-change metric ---
+    def _compute_signal_change(self, original, processed):
         sig_power = np.mean(original ** 2)
         if sig_power < 1e-12:
             return 0.0  # silence in, silence out
@@ -2083,87 +2115,6 @@ class AudioProcessor:
         diff_power = np.mean(diff ** 2) + 1e-12
         snr = 10.0 * np.log10(sig_power / diff_power)
         return max(0.0, min(100.0, (40.0 - snr) * 2.5))
-
-    # --- Detection risk heuristic ---
-    def _compute_detection_risk(self, mono, sr):
-        """Heuristic 0-100 score of how AI-generated the audio looks based on
-        feature patterns common AI-music detectors exploit. This is a
-        directional indicator, not a classifier trained on any specific
-        detector's ground truth.
-
-        Features combined:
-          1. Spectral regularity -- AI output tends to have abnormally low
-             frame-to-frame variance in its magnitude spectrum.
-          2. High-frequency rolloff -- Many AI generators cut hard at ~16 kHz.
-          3. Phase evolution -- Synthetic audio often has more predictable
-             phase trajectories than natural recordings.
-          4. Short-term dynamic variance -- AI output is often too "even".
-        """
-        if len(mono) < sr:
-            return 50.0  # insufficient data -- neutral score
-
-        nperseg = _nperseg_for(len(mono))
-        if nperseg == 0:
-            return 50.0
-
-        _, _, Zxx = signal.stft(
-            mono, sr, nperseg=nperseg, noverlap=nperseg // 2,
-        )
-        mag = np.abs(Zxx) + 1e-10
-        log_mag = np.log(mag)
-
-        # 1. Spectral regularity: low variance -> looks synthetic
-        per_bin_var = np.var(log_mag, axis=1)
-        mean_variance = float(np.mean(per_bin_var))
-        # Natural music: variance roughly 0.5-2.0. AI: often 0.1-0.4.
-        # Map: variance 0.1 -> 90 (risky), 1.5+ -> 10 (natural)
-        regularity_score = np.clip(100.0 - mean_variance * 55.0, 0.0, 100.0)
-
-        # 2. High-frequency rolloff ratio
-        freqs_per_bin = (sr / 2.0) / max(1, mag.shape[0] - 1)
-        bin_16k = int(16000.0 / freqs_per_bin)
-        bin_20k = int(20000.0 / freqs_per_bin)
-        energy_total = float(np.mean(mag))
-        if energy_total > 1e-10 and bin_20k > bin_16k and bin_20k < mag.shape[0]:
-            energy_16_20 = float(np.mean(mag[bin_16k:bin_20k]))
-            ratio = energy_16_20 / (energy_total + 1e-10)
-            # Natural music: 0.02-0.10. AI (hard-cut at 16k): near zero.
-            rolloff_score = np.clip(90.0 - ratio * 1200.0, 0.0, 100.0)
-        else:
-            rolloff_score = 40.0  # low sample rate, can't measure
-
-        # 3. Phase evolution variance
-        # Natural audio: phase differences have high entropy. AI: more coherent.
-        phase = np.angle(Zxx)
-        phase_diff = np.diff(phase, axis=1)
-        # Wrap phase differences to [-pi, pi]
-        phase_diff = np.mod(phase_diff + np.pi, 2 * np.pi) - np.pi
-        phase_entropy = float(np.std(phase_diff))
-        # Natural: phase_entropy ~1.5-1.8. AI: ~1.0-1.3.
-        phase_score = np.clip(150.0 - phase_entropy * 90.0, 0.0, 100.0)
-
-        # 4. Short-term dynamic variance
-        frame_size = 1024
-        n_frames = len(mono) // frame_size
-        if n_frames >= 8:
-            frames = mono[:n_frames * frame_size].reshape(n_frames, frame_size)
-            rms_vals = np.sqrt(np.mean(frames ** 2, axis=1) + 1e-12)
-            # Coefficient of variation (more robust than raw variance)
-            cov = float(np.std(rms_vals) / (np.mean(rms_vals) + 1e-12))
-            # Natural: cov 0.3-0.8. AI: often 0.1-0.3.
-            dynamic_score = np.clip(110.0 - cov * 180.0, 0.0, 100.0)
-        else:
-            dynamic_score = 40.0
-
-        # Weighted blend. Weights derived from which features most strongly
-        # correlate with AI-detector outputs in informal testing.
-        total = (
-            0.30 * regularity_score
-            + 0.25 * rolloff_score
-            + 0.20 * phase_score
-            + 0.25 * dynamic_score
-        )
-        return float(np.clip(total, 0.0, 100.0))
 
     def _compute_constellation_match(self, original, processed, sr):
         """Estimate surviving constellation fingerprints using hash overlap."""
@@ -2663,6 +2614,11 @@ class MainWindow(QMainWindow):
 
     def _configure_accessibility(self):
         _set_accessibility(
+            self.scope_label,
+            "Usage and evidence scope",
+            f"{RIGHTS_ONLY_NOTICE} {EVIDENCE_NOTICE}",
+        )
+        _set_accessibility(
             self.file_list,
             "Audio queue",
             "Drop audio files, select queued files, and reorder the batch.",
@@ -2679,7 +2635,11 @@ class MainWindow(QMainWindow):
         _set_accessibility(self.preset_combo, "Preset", "Choose the processing preset.")
         _set_accessibility(self.btn_save_preset, "Save preset", "Save current settings to a JSON preset file.")
         _set_accessibility(self.btn_load_preset, "Load preset", "Load settings from a JSON preset file.")
-        _set_accessibility(self.watermark_scan_check, "Watermark scan", "Toggle automatic watermark-band scanning before spectral perturbation.")
+        _set_accessibility(
+            self.spectral_scan_check,
+            "Narrowband candidate scan",
+            "Toggle local narrowband candidate scanning before spectral perturbation.",
+        )
         _set_accessibility(self.meta_check, "Metadata strip", "Toggle metadata stripping on saved output files.")
         _set_accessibility(
             self.format_combo,
@@ -2720,7 +2680,7 @@ class MainWindow(QMainWindow):
             self.preset_combo,
             self.btn_save_preset,
             self.btn_load_preset,
-            self.watermark_scan_check,
+            self.spectral_scan_check,
             self.meta_check,
         ]
         for row in self.param_rows.values():
@@ -2784,10 +2744,14 @@ class MainWindow(QMainWindow):
         brand_col.setSpacing(1)
         title = QLabel(APP_NAME)
         title.setObjectName("appTitle")
-        subtitle = QLabel("Audio fingerprint masking studio")
-        subtitle.setObjectName("appSubtitle")
+        self.scope_label = QLabel(
+            "Rights-owned audio only\n"
+            "Local metrics do not predict platform outcomes"
+        )
+        self.scope_label.setObjectName("appSubtitle")
+        self.scope_label.setToolTip(EVIDENCE_NOTICE)
         brand_col.addWidget(title)
-        brand_col.addWidget(subtitle)
+        brand_col.addWidget(self.scope_label)
         lay.addLayout(brand_col, 1)
 
         self.queue_status_label = QLabel("0 files")
@@ -2929,10 +2893,10 @@ class MainWindow(QMainWindow):
 
         toggle_row = QHBoxLayout()
         toggle_row.setSpacing(16)
-        self.watermark_scan_check = QCheckBox("Watermark Scan")
-        self.watermark_scan_check.setChecked(True)
-        self.watermark_scan_check.stateChanged.connect(lambda _: self._on_param_changed())
-        toggle_row.addWidget(self.watermark_scan_check)
+        self.spectral_scan_check = QCheckBox("Narrowband Scan")
+        self.spectral_scan_check.setChecked(True)
+        self.spectral_scan_check.stateChanged.connect(lambda _: self._on_param_changed())
+        toggle_row.addWidget(self.spectral_scan_check)
 
         self.meta_check = QCheckBox("Metadata Strip")
         self.meta_check.setChecked(True)
@@ -3267,7 +3231,12 @@ class MainWindow(QMainWindow):
         try:
             p = PRESETS[name]
             self.meta_check.setChecked(p.get('strip_metadata', True))
-            self.watermark_scan_check.setChecked(p.get('watermark_scan_enabled', True))
+            self.spectral_scan_check.setChecked(
+                p.get(
+                    'spectral_scan_enabled',
+                    p.get('watermark_scan_enabled', True),
+                )
+            )
             for key, row in self.param_rows.items():
                 if key in p:
                     row.set_value(p[key])
@@ -3332,8 +3301,18 @@ class MainWindow(QMainWindow):
             try:
                 if 'strip_metadata' in params:
                     self.meta_check.setChecked(bool(params['strip_metadata']))
-                if 'watermark_scan_enabled' in params:
-                    self.watermark_scan_check.setChecked(bool(params['watermark_scan_enabled']))
+                if (
+                    'spectral_scan_enabled' in params
+                    or 'watermark_scan_enabled' in params
+                ):
+                    self.spectral_scan_check.setChecked(
+                        bool(
+                            params.get(
+                                'spectral_scan_enabled',
+                                params.get('watermark_scan_enabled'),
+                            )
+                        )
+                    )
                 for key, row in self.param_rows.items():
                     if key in params:
                         try:
@@ -3356,7 +3335,7 @@ class MainWindow(QMainWindow):
     def _get_params(self):
         params = {
             'strip_metadata': self.meta_check.isChecked(),
-            'watermark_scan_enabled': self.watermark_scan_check.isChecked(),
+            'spectral_scan_enabled': self.spectral_scan_check.isChecked(),
             'output_format': self.format_combo.currentText().lower(),
         }
         for key, row in self.param_rows.items():
@@ -3411,7 +3390,7 @@ class MainWindow(QMainWindow):
         self.btn_clear.setEnabled(enabled)
         self.btn_save_preset.setEnabled(enabled)
         self.btn_load_preset.setEnabled(enabled)
-        self.watermark_scan_check.setEnabled(enabled)
+        self.spectral_scan_check.setEnabled(enabled)
         self.meta_check.setEnabled(enabled)
 
     def _on_process(self):
@@ -3925,7 +3904,11 @@ def _clamp(value, lo, hi, name):
 
 def cli_main():
     parser = argparse.ArgumentParser(
-        description=f'{APP_NAME} v{VERSION} -- Audio fingerprint masking tool',
+        description=(
+            f'{APP_NAME} v{VERSION} -- rights-owned audio variation '
+            'and local evidence'
+        ),
+        epilog=EVIDENCE_NOTICE,
     )
     parser.add_argument('-i', '--input', required=True,
                         help='Input audio file or directory')
@@ -3937,8 +3920,13 @@ def cli_main():
                         dest='out_format')
     parser.add_argument('--preset-file', default=None,
                         help='Path to JSON preset file (overrides -p/--preset)')
-    parser.add_argument('--no-watermark-scan', action='store_true',
-                        help='Disable automatic watermark-band scan pre-pass')
+    parser.add_argument(
+        '--no-spectral-scan',
+        '--no-watermark-scan',
+        action='store_true',
+        dest='no_spectral_scan',
+        help='Disable the local narrowband candidate scan pre-pass',
+    )
     parser.add_argument('--spectral', type=float, help='Spectral perturbation (0.0-1.0)')
     parser.add_argument('--spectral-sub-bass', type=float,
                         help='Sub-bass spectral perturbation (0.0-1.0)')
@@ -3993,9 +3981,20 @@ def cli_main():
             loaded = data.get('params', data) if isinstance(data, dict) else {}
             if not isinstance(loaded, dict):
                 raise ValueError("preset file missing params block")
+            if (
+                'watermark_scan_enabled' in loaded
+                and 'spectral_scan_enabled' not in loaded
+            ):
+                loaded['spectral_scan_enabled'] = loaded.pop(
+                    'watermark_scan_enabled'
+                )
             # Only accept known keys to avoid poisoning
             known = (
-                {'strip_metadata', 'watermark_scan_enabled'}
+                {
+                    'strip_metadata',
+                    'spectral_scan_enabled',
+                    'watermark_scan_enabled',
+                }
                 | {d[0] for d in PARAM_DEFS}
                 | {d[7] for d in PARAM_DEFS}
             )
@@ -4008,8 +4007,8 @@ def cli_main():
             print(f"Warning: could not load preset file: {e}")
 
     # Override with CLI args (validated)
-    if args.no_watermark_scan:
-        params['watermark_scan_enabled'] = False
+    if args.no_spectral_scan:
+        params['spectral_scan_enabled'] = False
     if args.spectral is not None:
         params['spectral_strength'] = _clamp(args.spectral, 0.0, 1.0, 'spectral')
     if args.spectral_sub_bass is not None:
@@ -4080,6 +4079,8 @@ def cli_main():
         run_log.write(msg)
 
     print(f"{APP_NAME} v{VERSION}")
+    print(RIGHTS_ONLY_NOTICE)
+    print(EVIDENCE_NOTICE)
     print(f"Preset: {preset_name} | Format: {args.out_format.upper()} | Files: {len(files)}")
     print(f"Run log: {run_log.path}\n")
     run_log.write_header('cli', files, out_dir, params, preset_name, args.seed)

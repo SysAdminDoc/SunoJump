@@ -8,21 +8,28 @@
 
 # SunoJump
 
-Audio fingerprint masking tool. Transforms audio files through a multi-pass processing pipeline to alter their acoustic fingerprint while preserving audible quality. Designed for creators who need to re-upload their own Suno-generated music as templates when detection systems produce false positives.
+Local-first audio variation and evidence tool for material you own or are authorized to modify. SunoJump applies a seedable transform pipeline, supports preview and comparison, and records local signal-change evidence so you can audit each render.
 
 <img width="1844" height="1375" alt="SunoJump main window" src="screenshot.png" />
 
 
 ## How It Works
 
-SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based transforms** — each segment of the audio gets slightly different processing parameters, breaking the constellation patterns that fingerprinting systems rely on.
+SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based transforms**. Each segment can receive different processing parameters, producing controlled spectral, temporal, phase, stereo, noise, dynamics, and codec variation.
+
+### Use and Evidence Contract
+
+- Use SunoJump only with audio you own or are authorized to modify.
+- Built-in metrics are experimental, local, adapter/version-scoped measurements of the current input and output.
+- A signal-change or landmark-overlap value does not predict or guarantee any platform, recognition, moderation, or detector outcome.
+- SunoJump does not upload or resubmit audio, call platform APIs, or optimize against a platform response.
 
 ### Processing Pipeline
 
 | # | Pass | What It Does |
 |---|------|-------------|
-| 1 | **Metadata Strip** | Removes all embedded tags, IDs, and hidden metadata |
-| 2 | **Spectral Perturbation** | Scans candidate watermark bands, then perturbs frequency magnitudes with per-band controls and randomized STFT window sweeps |
+| 1 | **Metadata Strip** | Removes tags recognized by Mutagen; signed provenance may be affected |
+| 2 | **Spectral Perturbation** | Scans stable narrowband candidates, then perturbs frequency magnitudes with per-band controls and randomized STFT window sweeps |
 | 3 | **Dynamic EQ** | Time-varying multiband EQ with LUFS-like gain matching |
 | 4 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
 | 5 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
@@ -31,11 +38,11 @@ SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based
 | 8 | **Noise Injection** | Adds masking-aware shaped pink noise below local spectral thresholds |
 | 9 | **Dynamics Modification** | Per-frame random gain variation to break statistical patterns |
 | 10 | **Humanization** | Wow/flutter, dynamic breathing, micro noise floor |
-| 11 | **Lossy Re-encode** | MP3 encode/decode cycle to degrade fine watermark detail (requires ffmpeg) |
+| 11 | **Lossy Re-encode** | Controlled MP3 encode/decode round trip (requires ffmpeg) |
 
 ### Key Differentiator: Non-Uniform Processing
 
-Unlike tools that apply flat transforms across the entire track, SunoJump splits audio into variable-length segments and applies **different transform parameters to each segment**. This breaks the relative timing and frequency relationships between spectral peaks — the exact features that constellation-based fingerprinting depends on.
+Unlike a flat whole-track transform, SunoJump splits audio into variable-length segments and applies **different transform parameters to each segment**. Preview, comparison, run logs, and sidecars make those changes inspectable.
 
 ## Installation
 
@@ -86,10 +93,10 @@ python tools/build_release.py
 - **11-pass audio processing pipeline** — metadata strip, spectral perturbation, dynamic EQ, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
 - **LUFS-preserving Dynamic EQ** — reshapes band energy without silently changing perceived loudness
 - **Psychoacoustic noise shaping** — keeps injected pink noise lower in quiet regions and under louder spectral masks
-- **Watermark-band scan pre-pass** — auto-detects stable narrowband candidates per file and targets them during spectral perturbation
+- **Narrowband candidate scan** — locates stable spectral candidates per file and targets them during spectral perturbation
 - **STFT window sweeps** — varies 1024/2048/4096-point windows across randomized spectral segments
 - **Per-band spectral controls** — tune sub-bass, low-mids, presence, and air perturbation independently
-- **Coupled non-uniform pitch/tempo processing** — breaks constellation fingerprint patterns while keeping segment boundaries beat-aligned
+- **Coupled non-uniform pitch/tempo processing** — varies pitch and timing together while keeping segment boundaries aligned
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
 - **Per-pass toggles and strength sliders** — fine-grained control
 - **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing
@@ -100,13 +107,13 @@ python tools/build_release.py
 - **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
 - **Atomic output saves** — writes final audio through same-folder temp files and promotes only completed artifacts
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
-- **Detection-signature and constellation self-test logs** — reports heuristic AI-detection movement plus estimated landmark overlap remaining after processing
+- **Scoped local evidence** — reports `sunojump.signal_change v1` and experimental `sunojump.constellation v1` values without platform inference
 - **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)
-- **Batch processing** — drag/drop multiple files, reorder them, process in parallel
+- **Batch queue** — drag/drop multiple files, reorder them, and process them sequentially
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
-- **Chunked long-audio processing** — bounded memory for songs > 1 minute
+- **Guarded in-memory processing** — input size/decode limits are enforced; the Humanization pass processes long audio in chunks
 - **Open Output** — one-click to output folder in your file manager
-- **Modification strength metric** — know how much you've changed before uploading
+- **Versioned signal-change metric** — inspect a sample-domain difference value with explicit scope
 
 ## Usage
 
@@ -143,7 +150,7 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
 | `-f, --format` | wav, flac, ogg, mp3, m4a (mp3/m4a require ffmpeg) | wav |
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
-| `--no-watermark-scan` | Disable automatic watermark-band scan pre-pass | enabled |
+| `--no-spectral-scan`, `--no-watermark-scan` | Disable the local narrowband candidate scan (`--no-watermark-scan` is retained for compatibility) | enabled |
 | `--spectral` | Spectral perturbation (0.0-1.0) | preset |
 | `--spectral-sub-bass` | Sub-bass spectral perturbation (0.0-1.0) | preset |
 | `--spectral-low-mids` | Low-mids spectral perturbation (0.0-1.0) | preset |
@@ -167,23 +174,23 @@ Use `Save...` in the GUI to export the current settings, then pass the resulting
 
 | Preset | Pitch | Spectral | Phase | Noise | Use Case |
 |--------|-------|----------|-------|-------|----------|
-| **Gentle** | 0.3 st | 0.10 | 0.10 | -60 dB | Minimal change, preserve quality |
-| **Moderate** | 0.8 st | 0.30 | 0.30 | -50 dB | Good balance of masking vs quality |
-| **Aggressive** | 1.5 st | 0.50 | 0.50 | -45 dB | Strong masking, slight quality trade-off |
-| **Extreme (default, recommended)** | 3.0 st | 0.70 | 0.70 | -40 dB | Highest bypass success rate -- tested and confirmed |
+| **Gentle** | 0.3 st | 0.10 | 0.10 | -60 dB | Lowest transform intensity |
+| **Moderate** | 0.8 st | 0.30 | 0.30 | -50 dB | Moderate transform intensity |
+| **Aggressive** | 1.5 st | 0.50 | 0.50 | -45 dB | High transform intensity |
+| **Extreme (default)** | 3.0 st | 0.70 | 0.70 | -40 dB | Highest transform intensity; audition before use |
 
-> **Recommendation:** Start with **Extreme**. Real-world testing against Suno's detection has shown it to deliver the most consistent bypass results. The lighter presets are included for cases where audio fidelity is the priority, but for re-uploading your own songs as templates, Extreme is the proven winner.
+Preset names describe transform intensity, not effectiveness. Use Preview or Compare Presets and choose the lowest intensity that meets your audible and analytical goals.
 
-## Modification Strength
+## Signal Change Metric
 
-After processing, SunoJump reports a **modification strength** percentage:
+After processing, SunoJump reports `sunojump.signal_change v1`, a normalized sample-domain difference derived from signal-to-difference ratio:
 
-- **0-25%** — Light: may not be sufficient for detection bypass
-- **25-50%** — Moderate: likely effective
-- **50-75%** — Strong: highly likely effective
-- **75-100%** — Extreme: verify audio quality hasn't degraded too much
+- **0-25%** — low sample-domain change
+- **25-50%** — moderate sample-domain change
+- **50-75%** — high sample-domain change
+- **75-100%** — very high sample-domain change; audition output quality
 
-Start with the default **Extreme** preset -- field-tested as the most reliable for bypassing Suno's detection.
+This metric is not calibrated to any external service or recognition system. Sidecars record the adapter name, version, unit, and scope.
 
 ## Supported Formats
 

@@ -109,7 +109,7 @@ class SpectralBandTests(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(out)))
 
 
-class WatermarkScanTests(unittest.TestCase):
+class SpectralCandidateScanTests(unittest.TestCase):
     def test_scan_detects_stable_high_frequency_candidate(self):
         sr = 48000
         rng = np.random.default_rng(123)
@@ -117,9 +117,9 @@ class WatermarkScanTests(unittest.TestCase):
         tone = 0.45 * np.sin(2.0 * np.pi * 12000.0 * t)
         noise = rng.normal(0.0, 0.01, len(t))
         audio = np.column_stack([tone + noise, tone + noise])
-        proc = AudioProcessor({'watermark_scan_enabled': True}, seed=123)
+        proc = AudioProcessor({'spectral_scan_enabled': True}, seed=123)
 
-        candidates = proc._scan_watermark_bands(audio, sr)
+        candidates = proc._scan_spectral_candidates(audio, sr)
 
         self.assertTrue(
             any(abs(c['center_hz'] - 12000.0) < 80.0 for c in candidates),
@@ -136,7 +136,7 @@ class WatermarkScanTests(unittest.TestCase):
             'spectral_presence_enabled': False,
             'spectral_air_enabled': False,
         }, seed=123)
-        proc._watermark_candidates = [{
+        proc._spectral_candidates = [{
             'center_hz': 12000.0,
             'low_hz': 11800.0,
             'high_hz': 12200.0,
@@ -209,7 +209,7 @@ class AudioPreflightTests(unittest.TestCase):
         return AudioProcessor({
             'strip_metadata': False,
             'spectral_enabled': True,
-            'watermark_scan_enabled': False,
+            'spectral_scan_enabled': False,
             'spectral_strength': 0.05,
         }, log_fn=logs.append, seed=123)
 
@@ -324,7 +324,7 @@ class FailClosedProcessingTests(unittest.TestCase):
             proc = AudioProcessor({
                 'strip_metadata': False,
                 'spectral_enabled': True,
-                'watermark_scan_enabled': False,
+                'spectral_scan_enabled': False,
             }, log_fn=logs.append, seed=123)
 
             def fail_spectral(_audio, _sr):
@@ -653,6 +653,15 @@ class ConstellationSelfTestTests(unittest.TestCase):
 
 
 class PresetSchemaTests(unittest.TestCase):
+    def test_legacy_watermark_scan_key_migrates_to_spectral_scan(self):
+        data = {
+            'schema_version': sunojump.PRESET_SCHEMA_VERSION,
+            'params': {'watermark_scan_enabled': False},
+        }
+        result = sunojump._migrate_preset(data)
+        self.assertFalse(result['params']['spectral_scan_enabled'])
+        self.assertNotIn('watermark_scan_enabled', result['params'])
+
     def test_current_schema_passes_migration(self):
         data = {
             'name': 'Test',
@@ -733,6 +742,14 @@ class SidecarTraceTests(unittest.TestCase):
             self.assertIn('environment', data)
             self.assertIn('passes', data)
             self.assertTrue(len(data['passes']) > 0, "no pass traces recorded")
+            self.assertFalse(
+                data['evidence_contract']['platform_outcome_guaranteed']
+            )
+            metric = data['metrics']['signal_change']
+            self.assertEqual(metric['adapter'], 'sunojump.signal_change')
+            self.assertEqual(metric['version'], '1')
+            self.assertIn('value', metric)
+            self.assertNotIn('modification_strength', data)
 
     def test_sidecar_records_pitch_segments(self):
         sr = 8000

@@ -16,7 +16,7 @@ if '--safe-decode-worker' in sys.argv:
     raise SystemExit(worker_cli_main(sys.argv[2:]))
 
 # --- Imports ---
-import os, json, argparse, tempfile, shutil, threading, hashlib
+import os, json, argparse, tempfile, shutil, threading, hashlib, time
 import platform, traceback
 import subprocess
 from pathlib import Path
@@ -28,6 +28,15 @@ from safe_audio import (
     decode_audio_isolated,
     inspect_audio_path,
     validate_libsndfile_version,
+)
+from render_results import (
+    BatchResult,
+    OutputValidation,
+    RenderErrorCode,
+    RenderResult,
+    RenderState,
+    format_batch_result,
+    format_render_result,
 )
 from verifiers import ConstellationVerifier, format_verifier_result
 
@@ -809,6 +818,207 @@ def _remove_file_silent(path):
         pass
 
 
+OUTPUT_VALIDATION_BLOCK_FRAMES = 65536
+OUTPUT_VALIDATION_TIMEOUT_SECONDS = 120
+OUTPUT_SILENCE_PEAK = 1e-7
+
+
+class OutputValidationError(ValueError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def _sha256_file(path):
+    hasher = hashlib.sha256()
+    try:
+        with open(path, 'rb') as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b''):
+                hasher.update(block)
+    except OSError as exc:
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_HASH_FAILED,
+            f"cannot hash {Path(path).name}: {exc}",
+        ) from exc
+    return hasher.hexdigest()
+
+
+def _validate_output_mapping(input_path, output_path, fmt):
+    input_real = os.path.normcase(os.path.realpath(os.path.abspath(input_path)))
+    output_real = os.path.normcase(os.path.realpath(os.path.abspath(output_path)))
+    same_existing_file = False
+    try:
+        same_existing_file = os.path.samefile(input_path, output_path)
+    except (FileNotFoundError, OSError):
+        pass
+    if input_real == output_real or same_existing_file:
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_MAPPING_INVALID,
+            "input and output resolve to the same file",
+        )
+    expected_ext = _output_extension(fmt)
+    actual_ext = Path(output_path).suffix.lower()
+    if actual_ext != expected_ext:
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_MAPPING_INVALID,
+            f"{fmt.upper()} output must use the {expected_ext} extension",
+        )
+
+
+def _decode_ffmpeg_output_for_validation(encoded_path):
+    validation_path = _make_atomic_output_temp(
+        str(Path(encoded_path).with_suffix('.validation.wav'))
+    )
+    try:
+        result = subprocess.run(
+            [
+                'ffmpeg', '-y', '-loglevel', 'error',
+                '-i', encoded_path,
+                '-map', '0:a:0',
+                '-c:a', 'pcm_f32le',
+                validation_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=OUTPUT_VALIDATION_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or 'ffmpeg decode failed').strip()
+            raise OutputValidationError(
+                RenderErrorCode.OUTPUT_DECODE_FAILED,
+                f"encoded output cannot be decoded: {detail}",
+            )
+        return validation_path
+    except subprocess.TimeoutExpired as exc:
+        _remove_file_silent(validation_path)
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_DECODE_FAILED,
+            "encoded-output validation timed out",
+        ) from exc
+    except (FileNotFoundError, OSError) as exc:
+        _remove_file_silent(validation_path)
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_DECODE_FAILED,
+            f"encoded-output validation could not start: {exc}",
+        ) from exc
+    except Exception:
+        _remove_file_silent(validation_path)
+        raise
+
+
+def _inspect_generated_audio(path):
+    peak = 0.0
+    frames = 0
+    try:
+        with sf.SoundFile(path, mode='r') as handle:
+            sample_rate = int(handle.samplerate)
+            channels = int(handle.channels)
+            while True:
+                block = handle.read(
+                    OUTPUT_VALIDATION_BLOCK_FRAMES,
+                    dtype='float32',
+                    always_2d=True,
+                )
+                if not len(block):
+                    break
+                if not np.all(np.isfinite(block)):
+                    raise OutputValidationError(
+                        RenderErrorCode.OUTPUT_NONFINITE,
+                        "decoded output contains non-finite samples",
+                    )
+                frames += int(block.shape[0])
+                peak = max(peak, float(np.max(np.abs(block))))
+    except OutputValidationError:
+        raise
+    except Exception as exc:
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_DECODE_FAILED,
+            f"output decode failed: {exc}",
+        ) from exc
+    return sample_rate, channels, frames, peak
+
+
+def _validate_render_output(
+    input_path,
+    encoded_path,
+    output_path,
+    fmt,
+    expected_sample_rate,
+    expected_channels,
+    expected_frames,
+):
+    _validate_output_mapping(input_path, output_path, fmt)
+    try:
+        output_bytes = os.path.getsize(encoded_path)
+    except OSError as exc:
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_DECODE_FAILED,
+            f"cannot inspect encoded output: {exc}",
+        ) from exc
+    if output_bytes <= 0:
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_DECODE_FAILED,
+            "encoded output is empty",
+        )
+
+    decoded_path = encoded_path
+    decoder = "soundfile"
+    validation_temp = None
+    if _format_requires_ffmpeg(fmt):
+        validation_temp = _decode_ffmpeg_output_for_validation(encoded_path)
+        decoded_path = validation_temp
+        decoder = "ffmpeg+soundfile"
+    try:
+        sample_rate, channels, frames, peak = _inspect_generated_audio(decoded_path)
+    finally:
+        _remove_file_silent(validation_temp)
+
+    if sample_rate != int(expected_sample_rate):
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_SAMPLE_RATE_MISMATCH,
+            f"output sample rate {sample_rate} does not match {expected_sample_rate}",
+        )
+    if channels != int(expected_channels):
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_CHANNEL_MISMATCH,
+            f"output channels {channels} do not match {expected_channels}",
+        )
+    frame_tolerance = (
+        max(2048, int(expected_sample_rate * 0.05))
+        if _format_requires_ffmpeg(fmt)
+        else 1
+    )
+    if abs(frames - int(expected_frames)) > frame_tolerance:
+        expected_duration = expected_frames / float(expected_sample_rate)
+        actual_duration = frames / float(sample_rate)
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_DURATION_MISMATCH,
+            f"output duration {actual_duration:.6f}s does not match "
+            f"{expected_duration:.6f}s",
+        )
+    if peak < OUTPUT_SILENCE_PEAK:
+        raise OutputValidationError(
+            RenderErrorCode.OUTPUT_SILENT,
+            f"output peak {peak:.3e} is below the non-silent threshold",
+        )
+
+    input_hash = _sha256_file(input_path)
+    output_hash = _sha256_file(encoded_path)
+    return OutputValidation(
+        input_sha256=input_hash,
+        output_sha256=output_hash,
+        output_bytes=output_bytes,
+        sample_rate_hz=sample_rate,
+        channels=channels,
+        frames=frames,
+        duration_seconds=frames / float(sample_rate),
+        peak=peak,
+        hashes_distinct=input_hash != output_hash,
+        decoder=decoder,
+    )
+
+
 def _humanize_bytes(n_bytes):
     value = float(n_bytes)
     for suffix in ('B', 'KB', 'MB', 'GB'):
@@ -901,15 +1111,38 @@ class AudioProcessor:
         input are loaded and processed. This keeps render time short enough
         for interactive preset A/B auditioning.
         """
+        started_at = time.monotonic()
+        input_path = str(input_path)
+        output_path = str(output_path)
+        fmt = self.params.get('output_format', 'wav').lower()
+
+        def finish(state, error_code=None, message="", validation=None):
+            usable = state in {RenderState.SUCCEEDED, RenderState.PARTIAL}
+            return RenderResult(
+                state=state,
+                input_path=input_path,
+                output_path=output_path if usable else None,
+                error_code=error_code,
+                message=message,
+                elapsed_seconds=time.monotonic() - started_at,
+                validation=validation if usable else None,
+            )
+
         self.log(f"Loading {Path(input_path).name}...")
         self._trace = {"passes": {}}
         self._verifier_results = []
 
         try:
+            _validate_output_mapping(input_path, output_path, fmt)
+        except OutputValidationError as exc:
+            self.log(f"  Output mapping error: {exc}")
+            return finish(RenderState.FAILED, exc.code, str(exc))
+
+        try:
             _preflight_audio_input(input_path, preview_seconds)
         except ValueError as e:
             self.log(f"  Error: {e}")
-            return False
+            return finish(RenderState.FAILED, RenderErrorCode.INVALID_INPUT, str(e))
 
         try:
             audio, sr, self._decode_metadata = decode_audio_isolated(
@@ -920,10 +1153,14 @@ class AudioProcessor:
             )
         except DecodeCancelled:
             self.log("Cancelled.")
-            return False
+            return finish(
+                RenderState.CANCELLED,
+                RenderErrorCode.CANCELLED,
+                "decode cancelled",
+            )
         except ValueError as e:
             self.log(f"  Error reading file: {e}")
-            return False
+            return finish(RenderState.FAILED, RenderErrorCode.DECODE_FAILED, str(e))
         self.log(
             "  Decoder: isolated "
             f"libsndfile {self._decode_metadata.get('libsndfile_version', 'unknown')}"
@@ -931,7 +1168,11 @@ class AudioProcessor:
 
         if audio.size == 0:
             self.log("  Error: empty audio file")
-            return False
+            return finish(
+                RenderState.FAILED,
+                RenderErrorCode.EMPTY_AUDIO,
+                "empty audio file",
+            )
 
         # Trim to preview length if requested
         if preview_seconds and preview_seconds > 0:
@@ -987,12 +1228,20 @@ class AudioProcessor:
         total = len(pass_names)
         if total == 0:
             self.log("No passes enabled.")
-            return False
+            return finish(
+                RenderState.FAILED,
+                RenderErrorCode.NO_PASSES_ENABLED,
+                "no passes enabled",
+            )
 
         for i, name in enumerate(pass_names):
             if self._is_cancelled():
                 self.log("Cancelled.")
-                return False
+                return finish(
+                    RenderState.CANCELLED,
+                    RenderErrorCode.CANCELLED,
+                    "cancelled before pass execution completed",
+                )
 
             self.log(f"  Pass {i+1}/{total}: {name}...")
             self.progress(int((i / total) * 90))
@@ -1032,34 +1281,88 @@ class AudioProcessor:
             except Exception as e:
                 self.log(f"    Error: {name} failed ({e}); render aborted")
                 self.log(traceback.format_exc().rstrip())
-                return False
+                return finish(
+                    RenderState.FAILED,
+                    RenderErrorCode.PASS_FAILED,
+                    f"{name}: {e}",
+                )
 
         audio = np.clip(audio, -1.0, 1.0)
 
-        # Save
+        # Compute local evidence before the output commit point.
+        self.progress(90)
+        orig_ch = original[:, 0]
+        proc_ch = audio[:, 0]
+        n = min(len(orig_ch), len(proc_ch))
+        try:
+            strength = self._compute_signal_change(orig_ch[:n], proc_ch[:n])
+            metric_label = (
+                f"{SIGNAL_CHANGE_METRIC['adapter']} "
+                f"v{SIGNAL_CHANGE_METRIC['version']}"
+            )
+            self.log(f"Signal change [{metric_label}]: {strength:.0f}%")
+            if strength < 25:
+                self.log("  Low sample-domain change")
+            elif strength < 50:
+                self.log("  Moderate sample-domain change")
+            elif strength < 75:
+                self.log("  High sample-domain change")
+            else:
+                self.log("  Very high sample-domain change -- audition output quality")
+            self.log(f"  Scope: {EVIDENCE_NOTICE}")
+
+            verifier_result = ConstellationVerifier(self).score(
+                orig_ch[:n],
+                proc_ch[:n],
+                sr,
+            )
+            self._verifier_results = [verifier_result.to_dict()]
+            self.log(format_verifier_result(verifier_result))
+        except Exception as exc:
+            self.log(f"  Evidence error: {exc}")
+            self.log(traceback.format_exc().rstrip())
+            return finish(
+                RenderState.FAILED,
+                RenderErrorCode.UNEXPECTED,
+                f"evidence computation failed: {exc}",
+            )
+
+        # Encode to a same-directory temp file, validate it, then promote.
         self.log(f"Saving {Path(output_path).name}...")
         self.progress(92)
 
         save_audio = audio[:, 0] if mono else audio
-        fmt = self.params.get('output_format', 'wav').lower()
         tmp_output = None
+        validation = None
         try:
             if self._is_cancelled():
                 self.log("Cancelled.")
-                return False
+                return finish(
+                    RenderState.CANCELLED,
+                    RenderErrorCode.CANCELLED,
+                    "cancelled before output encoding",
+                )
             tmp_output = _make_atomic_output_temp(output_path)
             if _format_requires_ffmpeg(fmt):
                 if not _check_ffmpeg():
-                    self.log(
-                        f"  Save error: {fmt.upper()} export requires ffmpeg in PATH"
+                    message = f"{fmt.upper()} export requires ffmpeg in PATH"
+                    self.log(f"  Save error: {message}")
+                    return finish(
+                        RenderState.FAILED,
+                        RenderErrorCode.ENCODER_UNAVAILABLE,
+                        message,
                     )
-                    return False
                 if not _ffmpeg_encoder_available(fmt):
                     encoder = FFMPEG_FORMAT_ENCODERS.get(fmt, fmt)
-                    self.log(
-                        f"  Save error: ffmpeg lacks {encoder} encoder for {fmt.upper()} export"
+                    message = (
+                        f"ffmpeg lacks {encoder} encoder for {fmt.upper()} export"
                     )
-                    return False
+                    self.log(f"  Save error: {message}")
+                    return finish(
+                        RenderState.FAILED,
+                        RenderErrorCode.ENCODER_UNAVAILABLE,
+                        message,
+                    )
                 self._export_with_ffmpeg(save_audio, sr, tmp_output, fmt)
             elif fmt == 'flac':
                 sf.write(tmp_output, save_audio, sr, format='FLAC')
@@ -1071,71 +1374,87 @@ class AudioProcessor:
             if self.params.get('strip_metadata', True):
                 self._strip_metadata(tmp_output)
 
+            self.progress(96)
+            validation = _validate_render_output(
+                input_path=input_path,
+                encoded_path=tmp_output,
+                output_path=output_path,
+                fmt=fmt,
+                expected_sample_rate=sr,
+                expected_channels=1 if mono else int(audio.shape[1]),
+                expected_frames=int(audio.shape[0]),
+            )
+            self.log(
+                "  Output validated: "
+                f"{validation.frames} frames, {validation.sample_rate_hz} Hz, "
+                f"{validation.channels} channel(s), "
+                f"sha256:{validation.output_sha256[:12]}"
+            )
+
             if self._is_cancelled():
                 self.log("Cancelled.")
-                return False
+                return finish(
+                    RenderState.CANCELLED,
+                    RenderErrorCode.CANCELLED,
+                    "cancelled before validated output promotion",
+                )
 
             os.replace(tmp_output, output_path)
             tmp_output = None
+        except OutputValidationError as exc:
+            self.log(f"  Output validation failed [{exc.code.value}]: {exc}")
+            return finish(RenderState.FAILED, exc.code, str(exc))
         except Exception as e:
             self.log(f"  Save error: {e}")
             self.log(traceback.format_exc().rstrip())
-            return False
+            return finish(
+                RenderState.FAILED,
+                RenderErrorCode.OUTPUT_WRITE_FAILED,
+                str(e),
+            )
         finally:
             _remove_file_silent(tmp_output)
 
-        # Sample-domain signal-change metric
-        self.progress(96)
-        orig_ch = original[:, 0]
-        proc_ch = audio[:, 0]
-        n = min(len(orig_ch), len(proc_ch))
-        strength = self._compute_signal_change(orig_ch[:n], proc_ch[:n])
-
-        metric_label = (
-            f"{SIGNAL_CHANGE_METRIC['adapter']} "
-            f"v{SIGNAL_CHANGE_METRIC['version']}"
-        )
-        self.log(f"Signal change [{metric_label}]: {strength:.0f}%")
-        if strength < 25:
-            self.log("  Low sample-domain change")
-        elif strength < 50:
-            self.log("  Moderate sample-domain change")
-        elif strength < 75:
-            self.log("  High sample-domain change")
-        else:
-            self.log("  Very high sample-domain change -- audition output quality")
-        self.log(f"  Scope: {EVIDENCE_NOTICE}")
-
-        verifier_result = ConstellationVerifier(self).score(
-            orig_ch[:n],
-            proc_ch[:n],
+        self.progress(99)
+        if not self._write_sidecar(
+            input_path,
+            output_path,
             sr,
-        )
-        self._verifier_results = [verifier_result.to_dict()]
-        self.log(format_verifier_result(verifier_result))
-
-        self._write_sidecar(input_path, output_path, sr, pass_names, strength)
+            pass_names,
+            strength,
+            validation,
+        ):
+            return finish(
+                RenderState.PARTIAL,
+                RenderErrorCode.SIDECAR_WRITE_FAILED,
+                "validated audio was promoted, but its sidecar could not be written",
+                validation,
+            )
 
         self.progress(100)
-        return True
+        return finish(
+            RenderState.SUCCEEDED,
+            validation=validation,
+        )
 
-    def _write_sidecar(self, input_path, output_path, sr, pass_names, strength):
-        try:
-            hasher = hashlib.sha256()
-            with open(input_path, 'rb') as f:
-                for block in iter(lambda: f.read(65536), b''):
-                    hasher.update(block)
-            input_hash = hasher.hexdigest()
-        except OSError:
-            input_hash = None
-
+    def _write_sidecar(
+        self,
+        input_path,
+        output_path,
+        sr,
+        pass_names,
+        strength,
+        validation,
+    ):
         sidecar = {
             "sunojump_version": VERSION,
             "schema_version": PRESET_SCHEMA_VERSION,
             "seed": self._seed,
             "input_file": Path(input_path).name,
-            "input_sha256": input_hash,
+            "input_sha256": validation.input_sha256,
             "output_file": Path(output_path).name,
+            "output_sha256": validation.output_sha256,
+            "output_validation": validation.to_dict(),
             "sample_rate": sr,
             "enabled_passes": pass_names,
             "evidence_contract": EVIDENCE_CONTRACT,
@@ -1168,8 +1487,10 @@ class AudioProcessor:
                 encoding='utf-8',
             )
             self.log(f"Sidecar written: {sidecar_path.name}")
-        except OSError as e:
+            return True
+        except Exception as e:
             self.log(f"  Warning: sidecar write failed: {e}")
+            return False
 
     def _trace_segments(self, pass_name, segments):
         self._trace["passes"][pass_name] = {
@@ -2181,10 +2502,10 @@ class ProcessWorker(QThread):
     progress_signal = pyqtSignal(int)
     # file_started(row_index) - fired just before processing each file
     file_started = pyqtSignal(int)
-    # file_done(row_index, success, output_path_or_empty)
-    file_done = pyqtSignal(int, bool, str)
-    # all_done(total_seconds)
-    all_done = pyqtSignal(float)
+    # file_done(row_index, RenderResult)
+    file_done = pyqtSignal(int, object)
+    # all_done(BatchResult)
+    all_done = pyqtSignal(object)
 
     def __init__(self, files, params, output_dir):
         super().__init__()
@@ -2194,27 +2515,53 @@ class ProcessWorker(QThread):
         self._cancel_event = threading.Event()
 
     def run(self):
-        import time as _time
+        t_start = time.monotonic()
+        results = []
         try:
             os.makedirs(self.output_dir, exist_ok=True)
         except OSError as e:
-            # Report and emit all_done so the UI doesn't stay stuck on "processing"
-            self.log_signal.emit(f"Cannot create output directory: {e}")
-            self.all_done.emit(0.0)
+            message = f"cannot create output directory: {e}"
+            self.log_signal.emit(message.capitalize())
+            for idx, filepath in enumerate(self.files):
+                result = RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=str(filepath),
+                    error_code=RenderErrorCode.OUTPUT_DIR_UNAVAILABLE,
+                    message=message,
+                )
+                results.append(result)
+                self.file_done.emit(idx, result)
+                self.log_signal.emit(format_render_result(result))
+            self.all_done.emit(
+                BatchResult.from_results(
+                    results,
+                    time.monotonic() - t_start,
+                )
+            )
             return
         n_files = len(self.files)
-        t_start = _time.time()
         used_outputs = set()
 
         for idx, filepath in enumerate(self.files):
             if self._cancel_event.is_set():
+                for cancelled_idx in range(idx, n_files):
+                    result = RenderResult(
+                        state=RenderState.CANCELLED,
+                        input_path=str(self.files[cancelled_idx]),
+                        error_code=RenderErrorCode.CANCELLED,
+                        message="batch cancelled before this job started",
+                    )
+                    results.append(result)
+                    self.file_done.emit(cancelled_idx, result)
+                    self.log_signal.emit(format_render_result(result))
                 break
 
             self.file_started.emit(idx)
 
             # Map per-file progress (0-100) to batch progress
             def batch_progress(v, _idx=idx, _n=n_files):
-                self.progress_signal.emit((_idx * 100 + v) // _n)
+                mapped = (_idx * 100 + int(v)) // max(1, _n)
+                self.progress_signal.emit(min(99, mapped))
 
             processor = AudioProcessor(
                 self.params,
@@ -2223,29 +2570,37 @@ class ProcessWorker(QThread):
                 cancel_event=self._cancel_event,
             )
 
-            fmt = self.params.get('output_format', 'wav').lower()
-            ext = _output_extension(fmt)
-            out_path, renamed = _planned_output_path(
-                filepath, self.output_dir, ext, used_outputs,
-            )
-
             self.log_signal.emit(f"\n[{idx+1}/{n_files}] {Path(filepath).name}")
-            if renamed:
-                self.log_signal.emit(
-                    f"Output name collision avoided: {Path(out_path).name}",
-                )
-            self.log_signal.emit(f"Output path: {out_path}")
             try:
-                ok = processor.process(filepath, out_path)
+                fmt = self.params.get('output_format', 'wav').lower()
+                ext = _output_extension(fmt)
+                out_path, renamed = _planned_output_path(
+                    filepath, self.output_dir, ext, used_outputs,
+                )
+                if renamed:
+                    self.log_signal.emit(
+                        f"Output name collision avoided: {Path(out_path).name}",
+                    )
+                self.log_signal.emit(f"Output path: {out_path}")
+                result = processor.process(filepath, out_path)
+                if not isinstance(result, RenderResult):
+                    raise TypeError("processor returned an untyped result")
             except Exception as e:
                 self.log_signal.emit(f"Unexpected render failure: {e}")
                 self.log_signal.emit(traceback.format_exc().rstrip())
-                ok = False
-            self.log_signal.emit("Result: success" if ok else "Result: failed")
+                result = RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=str(filepath),
+                    error_code=RenderErrorCode.UNEXPECTED,
+                    message=str(e),
+                )
+            results.append(result)
+            self.log_signal.emit(format_render_result(result))
+            self.file_done.emit(idx, result)
 
-            self.file_done.emit(idx, ok, out_path if ok else "")
-
-        self.all_done.emit(_time.time() - t_start)
+        self.all_done.emit(
+            BatchResult.from_results(results, time.monotonic() - t_start)
+        )
 
     def cancel(self):
         self._cancel_event.set()
@@ -2298,7 +2653,13 @@ class PreviewWorker(QThread):
         )
         self.log_signal.emit(f"Preview output path: {out_path}")
         try:
-            ok = processor.process(self.input_path, out_path, preview_seconds=self.duration_sec)
+            result = processor.process(
+                self.input_path,
+                out_path,
+                preview_seconds=self.duration_sec,
+            )
+            ok = result.usable_output
+            self.log_signal.emit(format_render_result(result))
         except Exception as e:
             self.log_signal.emit(f"Preview failed unexpectedly: {e}")
             self.log_signal.emit(traceback.format_exc().rstrip())
@@ -2352,7 +2713,8 @@ class PresetCompareWorker(QThread):
 
             # Map single-render progress (0-100) to overall (0-100)
             def sub_progress(v, _i=i, _n=n_presets):
-                self.progress_signal.emit((_i * 100 + v) // _n)
+                mapped = (_i * 100 + int(v)) // _n
+                self.progress_signal.emit(min(99, mapped))
 
             params = dict(PRESETS[name])
             params['output_format'] = 'wav'
@@ -2370,9 +2732,11 @@ class PresetCompareWorker(QThread):
                 cancel_event=self._cancel_event,
             )
             try:
-                ok = proc.process(
+                result = proc.process(
                     self.input_path, out_path, preview_seconds=self.duration_sec,
                 )
+                ok = result.usable_output
+                self.log_signal.emit(f"  {format_render_result(result)}")
             except Exception as e:
                 self.log_signal.emit(f"  Compare {name} failed unexpectedly: {e}")
                 self.log_signal.emit(traceback.format_exc().rstrip())
@@ -2383,7 +2747,8 @@ class PresetCompareWorker(QThread):
             else:
                 self.preset_done.emit(name, False, "")
 
-        self.progress_signal.emit(100)
+        if len(results) == n_presets and not self._cancel_event.is_set():
+            self.progress_signal.emit(100)
         self.all_done.emit(results)
 
     def cancel(self):
@@ -3434,28 +3799,54 @@ class MainWindow(QMainWindow):
             name = Path(item.data(ROLE_INPUT)).name
             item.setText(f"RUNNING  {name}")
 
-    def _on_file_done(self, idx, ok, out_path):
+    def _on_file_done(self, idx, result):
+        if not isinstance(result, RenderResult):
+            self._log("Ignored untyped worker result.")
+            return
         if 0 <= idx < self.file_list.count():
             item = self.file_list.item(idx)
             name = Path(item.data(ROLE_INPUT)).name
-            if ok:
-                item.setText(f"DONE     {name} -> {Path(out_path).name}")
-                item.setData(ROLE_OUTPUT, out_path)
-            else:
-                item.setText(f"FAILED   {name}")
+            if result.state is RenderState.SUCCEEDED:
+                item.setText(
+                    f"DONE      {name} -> {Path(result.output_path).name}"
+                )
+                item.setData(ROLE_OUTPUT, result.output_path)
+            elif result.state is RenderState.PARTIAL:
+                item.setText(
+                    f"PARTIAL   {name} -> {Path(result.output_path).name}"
+                )
+                item.setData(ROLE_OUTPUT, result.output_path)
+            elif result.state is RenderState.CANCELLED:
+                item.setText(f"CANCELLED {name}")
                 item.setData(ROLE_OUTPUT, None)
+            else:
+                item.setText(f"FAILED    {name}")
+                item.setData(ROLE_OUTPUT, None)
+            detail = format_render_result(result)
+            item.setToolTip(detail)
+            item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, detail)
         self._update_preview_ui()
 
-    def _on_all_done(self, total_seconds=0.0):
+    def _on_all_done(self, result):
         self._set_processing_ui(False)
-        self.progress.setValue(100)
-        self._set_render_state("Complete")
-        if total_seconds > 0.01:
-            mins, secs = divmod(total_seconds, 60)
-            timing = f" ({int(mins)}m {secs:.1f}s)" if mins else f" ({total_seconds:.1f}s)"
+        if not isinstance(result, BatchResult):
+            self.progress.setValue(min(self.progress.value(), 99))
+            self._set_render_state("Failed")
+            self._log("\nBatch failed: worker returned an untyped outcome.")
+            return
+        if result.state is RenderState.SUCCEEDED:
+            self.progress.setValue(100)
+            self._set_render_state("Complete")
+        elif result.state is RenderState.PARTIAL:
+            self.progress.setValue(min(self.progress.value(), 99))
+            self._set_render_state("Partial")
+        elif result.state is RenderState.CANCELLED:
+            self.progress.setValue(min(self.progress.value(), 99))
+            self._set_render_state("Cancelled")
         else:
-            timing = ""
-        self._log(f"\nAll done.{timing}")
+            self.progress.setValue(min(self.progress.value(), 99))
+            self._set_render_state("Failed")
+        self._log(f"\n{format_batch_result(result)}")
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -4064,7 +4455,26 @@ def cli_main():
         sys.exit(1)
 
     out_dir = args.output or DEFAULT_OUTPUT
-    os.makedirs(out_dir, exist_ok=True)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as exc:
+        message = f"cannot create output directory: {exc}"
+        results = [
+            RenderResult(
+                state=RenderState.FAILED,
+                input_path=filepath,
+                error_code=RenderErrorCode.OUTPUT_DIR_UNAVAILABLE,
+                message=message,
+            )
+            for filepath in files
+        ]
+        for result in results:
+            print(format_render_result(result), file=sys.stderr)
+        print(
+            format_batch_result(BatchResult.from_results(results, 0.0)),
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     ext = _output_extension(args.out_format)
 
@@ -4081,30 +4491,54 @@ def cli_main():
     print(f"Run log: {run_log.path}\n")
     run_log.write_header('cli', files, out_dir, params, preset_name, args.seed)
 
-    fail_count = 0
+    started_at = time.monotonic()
+    results = []
     used_outputs = set()
     for filepath in files:
-        out_path, renamed = _planned_output_path(filepath, out_dir, ext, used_outputs)
-        if renamed:
-            cli_log(f"Output name collision avoided: {Path(out_path).name}")
-        cli_log(f"Output path: {out_path}")
-
-        proc = AudioProcessor(params, log_fn=cli_log, progress_fn=lambda v: None,
-                              seed=args.seed)
         try:
-            ok = proc.process(filepath, out_path)
+            out_path, renamed = _planned_output_path(
+                filepath,
+                out_dir,
+                ext,
+                used_outputs,
+            )
+            if renamed:
+                cli_log(f"Output name collision avoided: {Path(out_path).name}")
+            cli_log(f"Output path: {out_path}")
+
+            proc = AudioProcessor(
+                params,
+                log_fn=cli_log,
+                progress_fn=lambda v: None,
+                seed=args.seed,
+            )
+            result = proc.process(filepath, out_path)
+            if not isinstance(result, RenderResult):
+                raise TypeError("processor returned an untyped result")
         except Exception as e:
             cli_log(f"Unexpected render failure: {e}")
             cli_log(traceback.format_exc().rstrip())
-            ok = False
-        if not ok:
-            fail_count += 1
-        cli_log("Result: success" if ok else "Result: failed")
+            result = RenderResult(
+                state=RenderState.FAILED,
+                input_path=str(filepath),
+                error_code=RenderErrorCode.UNEXPECTED,
+                message=str(e),
+            )
+        results.append(result)
+        cli_log(format_render_result(result))
         cli_log("---")
 
-    cli_log(f"\nDone. Output: {out_dir}")
-    if fail_count:
-        cli_log(f"{fail_count} file(s) failed.")
+    batch_result = BatchResult.from_results(
+        results,
+        time.monotonic() - started_at,
+    )
+    cli_log(f"\n{format_batch_result(batch_result)}")
+    cli_log(f"Output directory: {out_dir}")
+    if batch_result.state is RenderState.SUCCEEDED:
+        return
+    if any(result.usable_output for result in batch_result.results):
+        sys.exit(1)
+    else:
         sys.exit(2)
 
 

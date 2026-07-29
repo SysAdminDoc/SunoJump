@@ -336,6 +336,11 @@ class FailClosedProcessingTests(unittest.TestCase):
             ok = proc.process(str(input_path), str(output_path))
 
             self.assertFalse(ok)
+            self.assertEqual(ok.state, sunojump.RenderState.FAILED)
+            self.assertEqual(
+                ok.error_code,
+                sunojump.RenderErrorCode.PASS_FAILED,
+            )
             self.assertFalse(output_path.exists())
             self.assertTrue(
                 any("Spectral Perturbation failed" in line for line in logs),
@@ -535,6 +540,10 @@ class AtomicOutputTests(unittest.TestCase):
                 sunojump.sf.write = old_write
 
             self.assertFalse(ok)
+            self.assertEqual(
+                ok.error_code,
+                sunojump.RenderErrorCode.OUTPUT_WRITE_FAILED,
+            )
             self.assertFalse(output_path.exists())
             self.assertEqual([], self._leftovers(tmp, input_path))
             self.assertTrue(
@@ -580,6 +589,10 @@ class AtomicOutputTests(unittest.TestCase):
                 sunojump.subprocess.run = old_run
 
             self.assertFalse(ok)
+            self.assertEqual(
+                ok.error_code,
+                sunojump.RenderErrorCode.OUTPUT_WRITE_FAILED,
+            )
             self.assertFalse(output_path.exists())
             self.assertEqual([], self._leftovers(tmp, input_path))
             self.assertTrue(any("synthetic encoder failure" in line for line in logs), logs)
@@ -613,6 +626,11 @@ class AtomicOutputTests(unittest.TestCase):
                 sunojump.sf.write = old_write
 
             self.assertFalse(ok)
+            self.assertEqual(ok.state, sunojump.RenderState.CANCELLED)
+            self.assertEqual(
+                ok.error_code,
+                sunojump.RenderErrorCode.CANCELLED,
+            )
             self.assertFalse(output_path.exists())
             self.assertEqual([], self._leftovers(tmp, input_path))
             self.assertTrue(any("Cancelled." in line for line in logs), logs)
@@ -662,8 +680,14 @@ class PresetSchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             input_path = Path(tmp) / 'input.wav'
             output_path = Path(tmp) / 'output.wav'
-            sf.write(input_path, np.zeros(8000, dtype=np.float64), 8000)
-            proc.process(str(input_path), str(output_path))
+            t = np.arange(8000, dtype=np.float64) / 8000
+            sf.write(
+                input_path,
+                0.25 * np.sin(2.0 * np.pi * 440.0 * t),
+                8000,
+            )
+            result = proc.process(str(input_path), str(output_path))
+            self.assertEqual(result.state, sunojump.RenderState.SUCCEEDED)
             import json
             sidecar = json.loads(
                 output_path.with_suffix('.sidecar.json').read_text(encoding='utf-8')
@@ -688,6 +712,7 @@ class SidecarTraceTests(unittest.TestCase):
             )
             ok = proc.process(str(input_path), str(output_path))
             self.assertTrue(ok, logs)
+            self.assertEqual(ok.state, sunojump.RenderState.SUCCEEDED)
 
             import json
             data = json.loads(
@@ -741,6 +766,13 @@ class SidecarTraceTests(unittest.TestCase):
             self.assertEqual(data['seed'], 42)
             self.assertIn('input_sha256', data)
             self.assertIsNotNone(data['input_sha256'])
+            self.assertEqual(data['output_sha256'], ok.validation.output_sha256)
+            self.assertEqual(
+                data['output_validation']['output_sha256'],
+                ok.validation.output_sha256,
+            )
+            self.assertEqual(data['output_validation']['frames'], len(audio))
+            self.assertEqual(data['output_validation']['channels'], 2)
             self.assertIn('enabled_passes', data)
             self.assertIn('params', data)
             self.assertIn('environment', data)

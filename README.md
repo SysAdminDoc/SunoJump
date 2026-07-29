@@ -105,9 +105,10 @@ python tools/build_release.py
 - **Accessible GUI controls** — primary controls and pass sliders expose screen-reader names, descriptions, and a tested focus order
 - **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available
 - **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
-- **Atomic output saves** — writes final audio through same-folder temp files and promotes only completed artifacts
+- **Validated atomic output saves** — decodes same-folder temporary renders and checks finite/non-silent samples, duration, rate, channels, path mapping, and SHA-256 before promotion
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
 - **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
+- **Truthful terminal states** — jobs and batches report `succeeded`, `partial`, `failed`, or `cancelled` with stable error codes; only an all-success batch reaches 100%
 - **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)
 - **Batch queue** — drag/drop multiple files, reorder them, and process them sequentially
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
@@ -169,6 +170,8 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `--native-runtime` | Print machine-readable decoder version and containment policy, then exit | n/a |
 
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs.
+
+CLI exit status is `0` only when every job succeeds, `1` when a batch has a usable output but is partial, and `2` when no job produces a usable output. Human-readable per-file and batch summaries include stable error codes. Sidecars include the validated output shape, peak, decoder, byte count, input/output SHA-256 hashes, and whether those hashes differ.
 
 ## Presets
 

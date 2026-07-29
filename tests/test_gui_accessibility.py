@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 import unittest
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
-from sunojump import MainWindow
+from render_results import (
+    BatchResult,
+    OutputValidation,
+    RenderErrorCode,
+    RenderResult,
+    RenderState,
+)
+from sunojump import MainWindow, ROLE_INPUT, ROLE_OUTPUT
 import verifiers
 
 
@@ -70,6 +77,113 @@ class GuiAccessibilityTests(unittest.TestCase):
         rendered = verifiers.format_verifier_result(result)
         self.window._log(rendered)
         self.assertIn(rendered, self.window.log_box.toPlainText())
+
+    @staticmethod
+    def _validated_output():
+        return OutputValidation(
+            input_sha256="a" * 64,
+            output_sha256="b" * 64,
+            output_bytes=100,
+            sample_rate_hz=8000,
+            channels=1,
+            frames=8000,
+            duration_seconds=1.0,
+            peak=0.25,
+            hashes_distinct=True,
+            decoder="soundfile",
+        )
+
+    def test_file_rows_render_typed_terminal_states(self):
+        item = QListWidgetItem("song.wav")
+        item.setData(ROLE_INPUT, "song.wav")
+        self.window.file_list.addItem(item)
+        cases = (
+            (
+                RenderResult(
+                    state=RenderState.SUCCEEDED,
+                    input_path="song.wav",
+                    output_path="song_sj.wav",
+                    validation=self._validated_output(),
+                ),
+                "DONE",
+                "song_sj.wav",
+            ),
+            (
+                RenderResult(
+                    state=RenderState.PARTIAL,
+                    input_path="song.wav",
+                    output_path="song_sj.wav",
+                    error_code=RenderErrorCode.SIDECAR_WRITE_FAILED,
+                    validation=self._validated_output(),
+                ),
+                "PARTIAL",
+                "song_sj.wav",
+            ),
+            (
+                RenderResult(
+                    state=RenderState.FAILED,
+                    input_path="song.wav",
+                    error_code=RenderErrorCode.DECODE_FAILED,
+                ),
+                "FAILED",
+                None,
+            ),
+            (
+                RenderResult(
+                    state=RenderState.CANCELLED,
+                    input_path="song.wav",
+                    error_code=RenderErrorCode.CANCELLED,
+                ),
+                "CANCELLED",
+                None,
+            ),
+        )
+        for result, label, output in cases:
+            with self.subTest(state=result.state):
+                self.window._on_file_done(0, result)
+                self.assertTrue(item.text().startswith(label), item.text())
+                self.assertEqual(item.data(ROLE_OUTPUT), output)
+                self.assertIn(result.state.value, item.toolTip())
+
+    def test_batch_failure_and_cancellation_never_show_complete_or_100(self):
+        failed = RenderResult(
+            state=RenderState.FAILED,
+            input_path="bad.wav",
+            error_code=RenderErrorCode.DECODE_FAILED,
+        )
+        cancelled = RenderResult(
+            state=RenderState.CANCELLED,
+            input_path="later.wav",
+            error_code=RenderErrorCode.CANCELLED,
+        )
+        for result, expected_label in (
+            (BatchResult.from_results([failed], 1.0), "Failed"),
+            (BatchResult.from_results([cancelled], 1.0), "Cancelled"),
+        ):
+            with self.subTest(state=result.state):
+                self.window.progress.setValue(73)
+                self.window._on_all_done(result)
+                self.assertEqual(
+                    self.window.render_status_label.text(),
+                    expected_label,
+                )
+                self.assertLess(self.window.progress.value(), 100)
+                self.assertNotEqual(
+                    self.window.render_status_label.text(),
+                    "Complete",
+                )
+
+    def test_only_succeeded_batch_sets_complete_and_100(self):
+        succeeded = RenderResult(
+            state=RenderState.SUCCEEDED,
+            input_path="song.wav",
+            output_path="song_sj.wav",
+            validation=self._validated_output(),
+        )
+        self.window.progress.setValue(99)
+        self.window._on_all_done(BatchResult.from_results([succeeded], 1.0))
+        self.assertEqual(self.window.render_status_label.text(), "Complete")
+        self.assertEqual(self.window.progress.value(), 100)
 
     def test_tab_order_follows_visual_workflow(self):
         order = self.window._tab_order_widgets

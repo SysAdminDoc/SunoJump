@@ -169,6 +169,23 @@ class CliConfigurationTests(unittest.TestCase):
         self.assertIn("invalid configuration", stderr.getvalue())
         self.assertFalse(output.exists())
 
+    def test_negative_seed_exits_before_input_or_output_access(self):
+        stderr = io.StringIO()
+        argv = [
+            "sunojump.py",
+            "--input",
+            "missing.wav",
+            "--seed",
+            "-1",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            with redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as context:
+                    sunojump.cli_main()
+
+        self.assertEqual(context.exception.code, 2)
+        self.assertIn("--seed must be a non-negative integer", stderr.getvalue())
+
 
 class CustomSessionTests(unittest.TestCase):
     @classmethod

@@ -103,11 +103,11 @@ The gate fails on a missing, stale, or wrong-version executable; undeclared bund
 - **Accessible GUI controls** — primary controls and pass sliders expose screen-reader names, descriptions, and a tested focus order
 - **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available
 - **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
-- **Validated atomic output saves** — decodes same-folder temporary renders and checks finite/non-silent samples, duration, rate, channels, path mapping, and SHA-256 before promotion
+- **Transactional output saves** — reserves collision-free names across processes, validates same-folder temporary renders, and atomically publishes without replacing an existing audio or sidecar destination
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
 - **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
 - **Truthful terminal states** — jobs and batches report `succeeded`, `partial`, `failed`, or `cancelled` with stable error codes; only an all-success batch reaches 100%
-- **Reproducible output** — optional `--seed` for bit-identical runs (useful for testing and diffing)
+- **Replayable output evidence** — every render displays its effective seed; WAV/FLAC same-environment replays are byte-tested, while sidecars name exact muxer/codec dependencies when bytes are build-sensitive
 - **Batch queue** — drag/drop multiple files, reorder them, and process them sequentially
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
 - **Guarded in-memory processing** — input size/decode limits are enforced; the Humanization pass processes long audio in chunks
@@ -166,14 +166,14 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 | `--dynamics` | Dynamics amount (0.0-1.0) | preset |
 | `--humanize` | Humanization amount (0.0-1.0) | preset |
 | `--reencode` | Lossy re-encode bitrate (96-320) | disabled |
-| `--seed` | Integer for deterministic random generator (same seed = same output) | random |
+| `--seed` | Non-negative integer for deterministic output; the effective per-file seed is always displayed | generated per file |
 | `--native-runtime` | Print machine-readable decoder version and containment policy, then exit | n/a |
 
 Every numeric override enables its corresponding pass. To disable one, use `--disable-pass` with a name shown by `--help`; combining a pass's numeric value with its disable flag is rejected. Values and preset files are validated strictly—unknown keys, wrong types, non-finite numbers, future schemas, and out-of-range values exit before an output directory or file is created.
 
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs. Legacy partial presets are migrated and completed from the documented Moderate defaults; saved Custom sessions persist the full validated configuration rather than only the word `Custom`.
 
-CLI exit status is `0` only when every job succeeds, `1` when a batch has a usable output but is partial, and `2` when no job produces a usable output. Human-readable per-file and batch summaries include stable error codes. Sidecars include the validated output shape, peak, decoder, byte count, input/output SHA-256 hashes, and whether those hashes differ.
+CLI exit status is `0` only when every job succeeds, `1` when a batch has a usable output but is partial, and `2` when no job produces a usable output. Human-readable per-file and batch summaries include stable error codes, the effective seed, and sidecar hash. Each independently versioned sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
 
 ## Presets
 

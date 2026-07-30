@@ -17,6 +17,7 @@ if '--safe-decode-worker' in sys.argv:
 
 # --- Imports ---
 import os, json, argparse, copy, tempfile, shutil, threading, hashlib, time
+import secrets
 import platform, traceback
 import subprocess
 from pathlib import Path
@@ -51,6 +52,9 @@ from verifiers import ConstellationVerifier, format_verifier_result
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
+SIDECAR_SCHEMA_VERSION = 1
+SIDECAR_SCHEMA_ID = "com.sunojump.replay-evidence"
+SIDECAR_AUDIO_TAG = "SUNOJUMP_SIDECAR_PAYLOAD_SHA256"
 SIGNAL_CHANGE_METRIC = {
     "adapter": "sunojump.signal_change",
     "version": "1",
@@ -78,6 +82,7 @@ try:
     from scipy import signal
     import mutagen
     from mutagen import File as MutagenFile
+    from mutagen.id3 import TXXX
 except ImportError as e:
     missing = getattr(e, 'name', None) or str(e)
     print(f"ERROR: Missing required Python dependency: {missing}", file=sys.stderr)
@@ -687,6 +692,7 @@ def _nperseg_for(length):
 
 _ffmpeg_available = None
 _ffmpeg_encoders: dict | None = None
+_ffmpeg_version = None
 
 def _check_ffmpeg():
     """Check ffmpeg availability once, cache result."""
@@ -700,6 +706,29 @@ def _check_ffmpeg():
         except (FileNotFoundError, subprocess.CalledProcessError):
             _ffmpeg_available = False
     return _ffmpeg_available
+
+
+def _ffmpeg_version_line():
+    global _ffmpeg_version
+    if _ffmpeg_version is not None:
+        return _ffmpeg_version
+    if not _check_ffmpeg():
+        _ffmpeg_version = "unavailable"
+        return _ffmpeg_version
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-version'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        _ffmpeg_version = (
+            (result.stdout or result.stderr or "unknown").splitlines()[0].strip()
+            or "unknown"
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        _ffmpeg_version = "unavailable"
+    return _ffmpeg_version
 
 
 FFMPEG_FORMAT_ENCODERS = {
@@ -858,7 +887,11 @@ class RunDiagnostics:
         self.write(f"Evidence scope: {EVIDENCE_NOTICE}")
         self.write(f"Mode: {mode}")
         self.write(f"Preset: {preset_name or 'Custom'}")
-        self.write(f"Seed: {seed if seed is not None else 'random'}")
+        if seed is None:
+            seed_text = "generated per file; effective seed is logged with each result"
+        else:
+            seed_text = str(seed)
+        self.write(f"Seed: {seed_text}")
         self.write(f"Output dir: {output_dir}")
         for i, input_path in enumerate(inputs, start=1):
             self.write(f"Input {i}: {input_path}")
@@ -873,18 +906,155 @@ def _norm_output_path(path):
     return os.path.normcase(os.path.abspath(path))
 
 
+def _sidecar_path_for_output(output_path):
+    return Path(output_path).with_suffix('.sidecar.json')
+
+
+def _reservation_path_for_output(output_path):
+    path = Path(output_path)
+    return path.with_name(f".{path.name}.sunojump-reservation")
+
+
+def _output_candidate_is_occupied(candidate, used_paths):
+    normalized = _norm_output_path(candidate)
+    return (
+        normalized in used_paths
+        or os.path.lexists(candidate)
+        or os.path.lexists(_sidecar_path_for_output(candidate))
+        or os.path.lexists(_reservation_path_for_output(candidate))
+    )
+
+
 def _planned_output_path(input_path, output_dir, ext, used_paths=None):
-    """Return a collision-free output path for an input file."""
+    """Return an unreserved collision-free output path for compatibility."""
     used_paths = used_paths if used_paths is not None else set()
     stem = Path(input_path).stem
     base = os.path.join(output_dir, f"{stem}_sj{ext}")
     candidate = base
     counter = 2
-    while _norm_output_path(candidate) in used_paths or os.path.exists(candidate):
+    while _output_candidate_is_occupied(candidate, used_paths):
         candidate = os.path.join(output_dir, f"{stem}_sj_{counter}{ext}")
         counter += 1
     used_paths.add(_norm_output_path(candidate))
     return candidate, candidate != base
+
+
+def _promote_file_no_replace(source_path, destination_path):
+    """Atomically publish *source_path* without replacing an existing path."""
+    source_path = os.path.abspath(source_path)
+    destination_path = os.path.abspath(destination_path)
+    try:
+        os.link(source_path, destination_path)
+    except FileExistsError:
+        raise
+    except OSError as link_error:
+        if os.name != 'nt':
+            raise OSError(
+                "destination filesystem cannot atomically publish without "
+                f"replacement: {link_error}"
+            ) from link_error
+        try:
+            os.rename(source_path, destination_path)
+            return
+        except FileExistsError:
+            raise
+        except OSError as rename_error:
+            raise OSError(
+                "destination filesystem cannot atomically publish without "
+                f"replacement: {rename_error}"
+            ) from rename_error
+    _remove_file_silent(source_path)
+    _fsync_directory(os.path.dirname(destination_path) or os.getcwd())
+
+
+class OutputReservation:
+    """Cross-process ownership marker for one audio/sidecar destination pair."""
+
+    def __init__(self, output_path, marker_path, token, renamed):
+        self.output_path = str(output_path)
+        self.marker_path = str(marker_path)
+        self.token = token
+        self.renamed = bool(renamed)
+        self._released = False
+
+    def _owns_marker(self):
+        try:
+            return Path(self.marker_path).read_text(
+                encoding='utf-8',
+            ).strip() == self.token
+        except OSError:
+            return False
+
+    def promote(self, source_path):
+        if self._released or not self._owns_marker():
+            raise RuntimeError("output reservation ownership was lost")
+        _promote_file_no_replace(source_path, self.output_path)
+
+    def release(self):
+        if self._released:
+            return
+        try:
+            if self._owns_marker():
+                os.remove(self.marker_path)
+        except FileNotFoundError:
+            pass
+        finally:
+            self._released = True
+
+
+def _reserve_output_path(input_path, output_dir, ext, used_paths=None):
+    """Reserve a collision-free audio/sidecar destination across processes."""
+    used_paths = used_paths if used_paths is not None else set()
+    stem = Path(input_path).stem
+    base = os.path.join(output_dir, f"{stem}_sj{ext}")
+    counter = 1
+    while True:
+        candidate = (
+            base
+            if counter == 1
+            else os.path.join(output_dir, f"{stem}_sj_{counter}{ext}")
+        )
+        counter += 1
+        if _output_candidate_is_occupied(candidate, used_paths):
+            continue
+
+        marker = _reservation_path_for_output(candidate)
+        token = secrets.token_hex(32)
+        try:
+            fd = os.open(
+                marker,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            continue
+        try:
+            os.write(fd, token.encode('ascii'))
+            os.fsync(fd)
+        except Exception:
+            os.close(fd)
+            _remove_file_silent(marker)
+            raise
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        reservation = OutputReservation(
+            candidate,
+            marker,
+            token,
+            candidate != base,
+        )
+        if (
+            os.path.lexists(candidate)
+            or os.path.lexists(_sidecar_path_for_output(candidate))
+        ):
+            reservation.release()
+            continue
+        used_paths.add(_norm_output_path(candidate))
+        return reservation
 
 
 def _output_extension(fmt):
@@ -929,6 +1099,138 @@ def _remove_file_silent(path):
         pass
     except OSError:
         pass
+
+
+def _fsync_file(path):
+    with open(path, 'r+b') as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path):
+    if os.name == 'nt':
+        return
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _canonical_payload_sha256(payload):
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=False,
+        default=str,
+    ).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _sidecar_binding_payload(sidecar_core):
+    return {
+        key: value
+        for key, value in sidecar_core.items()
+        if key != "output_file"
+    }
+
+
+def _read_audio_sidecar_binding(path):
+    audio_file = MutagenFile(path)
+    if audio_file is None or audio_file.tags is None:
+        return None
+    tags = audio_file.tags
+    module_name = type(tags).__module__
+    if hasattr(tags, 'getall') and hasattr(tags, 'add'):
+        for frame in tags.getall('TXXX'):
+            if str(getattr(frame, 'desc', '')) == SIDECAR_AUDIO_TAG:
+                values = getattr(frame, 'text', [])
+                return str(values[0]) if values else None
+        return None
+    if module_name.startswith('mutagen.mp4'):
+        values = tags.get(
+            f'----:com.sunojump:{SIDECAR_AUDIO_TAG.lower()}',
+            [],
+        )
+        if not values:
+            return None
+        value = values[0]
+        return value.decode('ascii') if isinstance(value, bytes) else str(value)
+    for key in tags.keys():
+        if str(key).upper() == SIDECAR_AUDIO_TAG:
+            value = tags[key]
+            if isinstance(value, (list, tuple)):
+                return str(value[0]) if value else None
+            return str(value)
+    return None
+
+
+def _write_audio_sidecar_binding(path, payload_sha256):
+    audio_file = MutagenFile(path)
+    if audio_file is None:
+        raise ValueError("encoded output has no supported metadata container")
+    if audio_file.tags is None:
+        audio_file.add_tags()
+    tags = audio_file.tags
+    module_name = type(tags).__module__
+    if hasattr(tags, 'getall') and hasattr(tags, 'add'):
+        tags.delall(f'TXXX:{SIDECAR_AUDIO_TAG}')
+        tags.add(TXXX(
+            encoding=3,
+            desc=SIDECAR_AUDIO_TAG,
+            text=[payload_sha256],
+        ))
+    elif module_name.startswith('mutagen.mp4'):
+        tags[f'----:com.sunojump:{SIDECAR_AUDIO_TAG.lower()}'] = [
+            payload_sha256.encode('ascii')
+        ]
+    else:
+        tags[SIDECAR_AUDIO_TAG] = payload_sha256
+    audio_file.save()
+    if _read_audio_sidecar_binding(path) != payload_sha256:
+        raise ValueError("audio-sidecar binding could not be verified")
+
+
+def _write_json_atomic_no_replace(path, payload):
+    destination = os.path.abspath(path)
+    directory = os.path.dirname(destination) or os.getcwd()
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{Path(destination).stem}.",
+        suffix=".tmp.json",
+        dir=directory,
+    )
+    try:
+        descriptor = fd
+        fd = None
+        with os.fdopen(
+            descriptor,
+            'w',
+            encoding='utf-8',
+            newline='\n',
+        ) as handle:
+            json.dump(
+                payload,
+                handle,
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        _promote_file_no_replace(temp_path, destination)
+        temp_path = None
+        _fsync_directory(directory)
+        return _sha256_file(destination)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        _remove_file_silent(temp_path)
 
 
 OUTPUT_VALIDATION_BLOCK_FRAMES = 65536
@@ -1178,6 +1480,7 @@ def _native_runtime_report():
         "mutagen": str(getattr(mutagen, "version_string", "unknown")),
         "pyqt6": str(PYQT_VERSION_STR),
         "qt6": str(QT_VERSION_STR),
+        "ffmpeg": _ffmpeg_version_line(),
         "minimum_libsndfile": ".".join(
             str(value) for value in MIN_LIBSNDFILE_VERSION
         ),
@@ -1208,13 +1511,36 @@ class AudioProcessor:
         self.params = params
         self.log = log_fn or print
         self.progress = progress_fn or (lambda v: None)
-        self.rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+        if seed is None:
+            seed = secrets.randbits(64)
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise ValueError("seed must be a non-negative integer")
+        self._seed = seed
+        self.rng = np.random.default_rng(self._seed)
         self._cancel_event = cancel_event or threading.Event()
         self._spectral_candidates = []
-        self._seed = seed
-        self._trace = {"passes": {}}
+        self._trace = self._new_trace()
         self._decode_metadata = {}
         self._verifier_results = []
+
+    def _new_trace(self):
+        return {
+            "rng": {
+                "algorithm": type(self.rng.bit_generator).__name__,
+                "seed": self._seed,
+            },
+            "passes": {},
+        }
+
+    def _trace_random(self, pass_name, distributions, **details):
+        trace = self._trace["passes"].setdefault(pass_name, {})
+        trace.update({
+            "rng_algorithm": type(self.rng.bit_generator).__name__,
+            "effective_seed": self._seed,
+            "distributions": distributions,
+            **details,
+        })
+        return trace
 
     def cancel(self):
         self._cancel_event.set()
@@ -1235,7 +1561,14 @@ class AudioProcessor:
         output_path = str(output_path)
         fmt = self.params.get('output_format', 'wav').lower()
 
-        def finish(state, error_code=None, message="", validation=None):
+        def finish(
+            state,
+            error_code=None,
+            message="",
+            validation=None,
+            sidecar_path=None,
+            sidecar_sha256=None,
+        ):
             usable = state in {RenderState.SUCCEEDED, RenderState.PARTIAL}
             return RenderResult(
                 state=state,
@@ -1245,14 +1578,29 @@ class AudioProcessor:
                 message=message,
                 elapsed_seconds=time.monotonic() - started_at,
                 validation=validation if usable else None,
+                effective_seed=self._seed,
+                sidecar_path=sidecar_path if usable else None,
+                sidecar_sha256=sidecar_sha256 if usable else None,
             )
 
-        self.log(f"Loading {Path(input_path).name}...")
-        self._trace = {"passes": {}}
+        self.rng = np.random.default_rng(self._seed)
+        self._trace = self._new_trace()
         self._verifier_results = []
+        self.log(f"Loading {Path(input_path).name}...")
+        self.log(f"  Effective seed: {self._seed}")
 
         try:
             _validate_output_mapping(input_path, output_path, fmt)
+            if os.path.lexists(output_path):
+                raise OutputValidationError(
+                    RenderErrorCode.OUTPUT_WRITE_FAILED,
+                    "destination already exists; it will not be replaced",
+                )
+            if os.path.lexists(_sidecar_path_for_output(output_path)):
+                raise OutputValidationError(
+                    RenderErrorCode.OUTPUT_WRITE_FAILED,
+                    "sidecar destination already exists; it will not be replaced",
+                )
         except OutputValidationError as exc:
             self.log(f"  Output mapping error: {exc}")
             return finish(RenderState.FAILED, exc.code, str(exc))
@@ -1453,6 +1801,8 @@ class AudioProcessor:
         save_audio = audio[:, 0] if mono else audio
         tmp_output = None
         validation = None
+        sidecar_core = None
+        sidecar_payload_sha256 = None
         try:
             if self._is_cancelled():
                 self.log("Cancelled.")
@@ -1493,6 +1843,33 @@ class AudioProcessor:
             if self.params.get('strip_metadata', True):
                 self._strip_metadata(tmp_output)
 
+            pre_binding_validation = _validate_render_output(
+                input_path=input_path,
+                encoded_path=tmp_output,
+                output_path=output_path,
+                fmt=fmt,
+                expected_sample_rate=sr,
+                expected_channels=1 if mono else int(audio.shape[1]),
+                expected_frames=int(audio.shape[0]),
+            )
+            sidecar_core = self._build_sidecar_core(
+                input_path,
+                output_path,
+                sr,
+                pass_names,
+                strength,
+                pre_binding_validation.input_sha256,
+                fmt,
+            )
+            sidecar_payload_sha256 = _canonical_payload_sha256(
+                _sidecar_binding_payload(sidecar_core)
+            )
+            _write_audio_sidecar_binding(
+                tmp_output,
+                sidecar_payload_sha256,
+            )
+            _fsync_file(tmp_output)
+
             self.progress(96)
             validation = _validate_render_output(
                 input_path=input_path,
@@ -1509,6 +1886,10 @@ class AudioProcessor:
                 f"{validation.channels} channel(s), "
                 f"sha256:{validation.output_sha256[:12]}"
             )
+            self.log(
+                "  Replay evidence bound: "
+                f"sidecar payload sha256:{sidecar_payload_sha256[:12]}"
+            )
 
             if self._is_cancelled():
                 self.log("Cancelled.")
@@ -1518,7 +1899,7 @@ class AudioProcessor:
                     "cancelled before validated output promotion",
                 )
 
-            os.replace(tmp_output, output_path)
+            _promote_file_no_replace(tmp_output, output_path)
             tmp_output = None
         except OutputValidationError as exc:
             self.log(f"  Output validation failed [{exc.code.value}]: {exc}")
@@ -1535,14 +1916,13 @@ class AudioProcessor:
             _remove_file_silent(tmp_output)
 
         self.progress(99)
-        if not self._write_sidecar(
-            input_path,
+        sidecar_evidence = self._write_sidecar(
             output_path,
-            sr,
-            pass_names,
-            strength,
             validation,
-        ):
+            sidecar_core,
+            sidecar_payload_sha256,
+        )
+        if not sidecar_evidence:
             return finish(
                 RenderState.PARTIAL,
                 RenderErrorCode.SIDECAR_WRITE_FAILED,
@@ -1554,26 +1934,67 @@ class AudioProcessor:
         return finish(
             RenderState.SUCCEEDED,
             validation=validation,
+            sidecar_path=sidecar_evidence["path"],
+            sidecar_sha256=sidecar_evidence["sha256"],
         )
 
-    def _write_sidecar(
+    def _replay_report(self, fmt):
+        nondeterministic_dependencies = []
+        if fmt == 'ogg':
+            nondeterministic_dependencies.append({
+                "dependency": "libsndfile/libvorbis Ogg muxer",
+                "reason": (
+                    "Ogg stream serial numbers are generated per encode, so "
+                    "container bytes can differ with identical decoded audio"
+                ),
+            })
+        if self.params.get('reencode_enabled'):
+            nondeterministic_dependencies.append({
+                "dependency": "ffmpeg/libmp3lame",
+                "reason": (
+                    "the lossy intermediate depends on the exact ffmpeg and "
+                    "libmp3lame build"
+                ),
+            })
+        if _format_requires_ffmpeg(fmt):
+            encoder = FFMPEG_FORMAT_ENCODERS.get(fmt, fmt)
+            nondeterministic_dependencies.append({
+                "dependency": f"ffmpeg/{encoder}",
+                "reason": (
+                    "container and codec bytes depend on the exact ffmpeg "
+                    "encoder build"
+                ),
+            })
+        return {
+            "status": (
+                "dependency_sensitive"
+                if nondeterministic_dependencies
+                else "byte_reproducible_same_environment"
+            ),
+            "effective_seed": self._seed,
+            "rng_algorithm": type(self.rng.bit_generator).__name__,
+            "required_environment": _native_runtime_report(),
+            "nondeterministic_dependencies": nondeterministic_dependencies,
+        }
+
+    def _build_sidecar_core(
         self,
         input_path,
         output_path,
         sr,
         pass_names,
         strength,
-        validation,
+        input_sha256,
+        fmt,
     ):
-        sidecar = {
+        return {
+            "schema_id": SIDECAR_SCHEMA_ID,
+            "schema_version": SIDECAR_SCHEMA_VERSION,
             "sunojump_version": VERSION,
-            "schema_version": PRESET_SCHEMA_VERSION,
             "seed": self._seed,
             "input_file": Path(input_path).name,
-            "input_sha256": validation.input_sha256,
+            "input_sha256": input_sha256,
             "output_file": Path(output_path).name,
-            "output_sha256": validation.output_sha256,
-            "output_validation": validation.to_dict(),
             "sample_rate": sr,
             "enabled_passes": pass_names,
             "evidence_contract": EVIDENCE_CONTRACT,
@@ -1595,27 +2016,64 @@ class AudioProcessor:
                 "libsndfile": getattr(sf, '__libsndfile_version__', 'unknown'),
                 "decode_policy": _native_runtime_report(),
                 "mutagen": getattr(mutagen, 'version_string', 'unknown'),
+                "ffmpeg": _ffmpeg_version_line(),
             },
             "decode": self._decode_metadata,
+            "rng": self._trace.get("rng", {}),
             "passes": self._trace.get("passes", {}),
+            "replay": self._replay_report(fmt),
         }
-        sidecar_path = Path(output_path).with_suffix('.sidecar.json')
+
+    def _write_sidecar(
+        self,
+        output_path,
+        validation,
+        sidecar_core,
+        sidecar_payload_sha256,
+    ):
+        sidecar = {
+            **sidecar_core,
+            "output_sha256": validation.output_sha256,
+            "output_validation": validation.to_dict(),
+            "binding": {
+                "algorithm": "sha256",
+                "audio_file_sha256": validation.output_sha256,
+                "audio_tag": SIDECAR_AUDIO_TAG,
+                "sidecar_payload_sha256": sidecar_payload_sha256,
+                "sidecar_payload_scope": (
+                    "canonical-json-sidecar-core-excluding-output-file"
+                ),
+            },
+        }
+        sidecar_path = _sidecar_path_for_output(output_path)
         try:
-            sidecar_path.write_text(
-                json.dumps(sidecar, indent=2, default=str) + "\n",
-                encoding='utf-8',
+            sidecar_sha256 = _write_json_atomic_no_replace(
+                sidecar_path,
+                sidecar,
             )
-            self.log(f"Sidecar written: {sidecar_path.name}")
-            return True
+            self.log(
+                f"Sidecar written atomically: {sidecar_path.name} "
+                f"(sha256:{sidecar_sha256[:12]})"
+            )
+            return {
+                "path": str(sidecar_path),
+                "sha256": sidecar_sha256,
+            }
         except Exception as e:
             self.log(f"  Warning: sidecar write failed: {e}")
             return False
 
     def _trace_segments(self, pass_name, segments):
-        self._trace["passes"][pass_name] = {
+        trace = self._trace["passes"].get(pass_name)
+        if trace is None:
+            trace = self._trace_random(
+                pass_name,
+                ["uniform segment control or factor"],
+            )
+        trace.update({
             "segment_count": len(segments),
             "segments": segments,
-        }
+        })
 
     # --- Metadata ---
     def _strip_metadata(self, filepath):
@@ -1768,10 +2226,31 @@ class AudioProcessor:
         n = audio.shape[0]
         base_seg_samples = int(3.0 * sr)
         overlap = int(0.1 * sr)
+        trace = self._trace_random(
+            "spectral_perturbation",
+            [
+                "uniform segment duration 2.4-3.6 seconds",
+                "uniform STFT window choice from 1024/2048/4096",
+                "normal magnitude multiplier",
+                "uniform band magnitude multiplier",
+            ],
+            strength=float(strength),
+            channels=int(audio.shape[1]),
+            segment_overlap_samples=overlap,
+            candidate_bands=copy.deepcopy(self._spectral_candidates),
+        )
+        segments = []
 
         # Short audio: single pass (no segmentation benefit)
         if n <= base_seg_samples:
             nperseg = self._choose_spectral_window(n)
+            segments.append({
+                "start": 0,
+                "end": int(n),
+                "nperseg": int(nperseg),
+            })
+            trace["segment_count"] = 1
+            trace["segments"] = segments
             result = np.zeros_like(audio)
             for ch in range(audio.shape[1]):
                 result[:, ch] = self._spectral_perturb_ch(
@@ -1788,6 +2267,11 @@ class AudioProcessor:
             chunk = audio[pos:end]
             clen = end - pos
             nperseg = self._choose_spectral_window(clen)
+            segments.append({
+                "start": int(pos),
+                "end": int(end),
+                "nperseg": int(nperseg),
+            })
 
             processed = np.zeros_like(chunk)
             for ch in range(chunk.shape[1]):
@@ -1808,6 +2292,8 @@ class AudioProcessor:
             pos += max(1, clen - overlap)
 
         weights = np.maximum(weights, 1e-8)
+        trace["segment_count"] = len(segments)
+        trace["segments"] = segments
         return result / weights[:, np.newaxis]
 
     def _choose_spectral_window(self, length):
@@ -1883,6 +2369,21 @@ class AudioProcessor:
     # --- Dynamic EQ with loudness-preserving gain staging ---
     def _dynamic_eq(self, audio, sr):
         amount = self.params.get('dynamic_eq_amount', 0.2)
+        self._trace_random(
+            "dynamic_eq",
+            ["normal per-band STFT-frame jitter, median filtered"],
+            amount=float(amount),
+            channels=int(audio.shape[1]),
+            nperseg=int(_nperseg_for(audio.shape[0])),
+            bands=[
+                {
+                    "low_hz": low_hz,
+                    "high_hz": high_hz,
+                    "max_db": max_db,
+                }
+                for low_hz, high_hz, max_db in DYNAMIC_EQ_BANDS
+            ],
+        )
         if amount < 0.001:
             return audio
 
@@ -1980,6 +2481,14 @@ class AudioProcessor:
         """
         max_st = self.params.get('pitch_range', 0.8)
         max_var = self.params.get('tempo_range', 0.05)
+        self._trace_random(
+            "coupled_pitch_tempo",
+            ["uniform segment control -1.0 to 1.0 with 0.15 floor"],
+            pitch_range_semitones=float(max_st),
+            tempo_range=float(max_var),
+            segment_seconds=2.5,
+            overlap_seconds=0.12,
+        )
         if max_st < 0.001 and max_var < 0.001:
             return audio
 
@@ -2083,6 +2592,13 @@ class AudioProcessor:
         audible warble that plain time-warping causes at large shifts (>1 st).
         """
         max_st = self.params.get('pitch_range', 0.8)
+        self._trace_random(
+            "pitch_microshift",
+            ["uniform pitch shift within configured semitone range"],
+            pitch_range_semitones=float(max_st),
+            segment_seconds=2.5,
+            overlap_seconds=0.12,
+        )
         if max_st < 0.001:
             return audio
 
@@ -2248,6 +2764,12 @@ class AudioProcessor:
     # --- Non-uniform tempo micro-variation ---
     def _tempo_microvar(self, audio, sr):
         max_var = self.params.get('tempo_range', 0.05)
+        self._trace_random(
+            "tempo_microvar",
+            ["uniform per-segment tempo factor within configured range"],
+            tempo_range=float(max_var),
+            segment_seconds=2.5,
+        )
         if max_var < 0.001:
             return audio
 
@@ -2290,6 +2812,13 @@ class AudioProcessor:
     # --- Phase scrambling ---
     def _phase_scramble(self, audio, sr):
         amount = self.params.get('phase_amount', 0.3)
+        self._trace_random(
+            "phase_scramble",
+            ["uniform phase offset -pi to pi per STFT bin/frame"],
+            amount=float(amount),
+            channels=int(audio.shape[1]),
+            nperseg=int(_nperseg_for(audio.shape[0])),
+        )
         result = np.zeros_like(audio)
         for ch in range(audio.shape[1]):
             result[:, ch] = self._phase_scramble_ch(audio[:, ch], sr, amount)
@@ -2323,6 +2852,13 @@ class AudioProcessor:
         if audio.shape[1] < 2:
             return audio
         shift = self.params.get('stereo_shift', 0.1)
+        self._trace_random(
+            "stereo_manipulation",
+            ["normal side-channel noise"],
+            shift=float(shift),
+            noise_standard_deviation=float(shift * 0.01),
+            samples=int(audio.shape[0]),
+        )
 
         left = audio[:, 0].copy()
         right = audio[:, 1].copy()
@@ -2341,6 +2877,14 @@ class AudioProcessor:
     def _inject_noise(self, audio, sr):
         level_db = self.params.get('noise_level', -50.0)
         level_lin = 10.0 ** (level_db / 20.0)
+        self._trace_random(
+            "noise_injection",
+            ["normal white noise transformed by 1/sqrt(f) pink-noise filter"],
+            level_db=float(level_db),
+            channels=int(audio.shape[1]),
+            samples_per_channel=int(audio.shape[0]),
+            masking="STFT energy threshold plus 30ms envelope",
+        )
 
         result = audio.copy()
         for ch in range(result.shape[1]):
@@ -2422,6 +2966,15 @@ class AudioProcessor:
         amount = self.params.get('dynamics_amount', 0.2)
         frame_size = max(1, int(0.03 * sr))
         n_frames = max(1, (audio.shape[0] + frame_size - 1) // frame_size)
+        self._trace_random(
+            "dynamics_modification",
+            ["uniform frame gain"],
+            amount=float(amount),
+            frame_size_samples=int(frame_size),
+            frame_count=int(n_frames),
+            gain_min=float(1.0 - amount * 0.15),
+            gain_max=float(1.0 + amount * 0.15),
+        )
 
         gains = 1.0 + self.rng.uniform(-amount * 0.15, amount * 0.15, n_frames)
 
@@ -2440,12 +2993,28 @@ class AudioProcessor:
         mod_freq = self.rng.uniform(0.5, 3.0)
         phase0 = self.rng.uniform(0, 2.0 * np.pi)
         breath_freq = self.rng.uniform(0.1, 0.5)
+        chunk = max(sr, int(self._HUMANIZE_CHUNK_SEC * sr))
+        self._trace_random(
+            "humanization",
+            [
+                "uniform modulation frequency 0.5-3.0 Hz",
+                "uniform initial phase 0-2pi",
+                "uniform breathing frequency 0.1-0.5 Hz",
+                "normal micro-noise",
+            ],
+            amount=float(amount),
+            modulation_frequency_hz=round(float(mod_freq), 9),
+            initial_phase_radians=round(float(phase0), 9),
+            breathing_frequency_hz=round(float(breath_freq), 9),
+            micro_noise_standard_deviation=float(amount * 0.0008),
+            chunk_samples=int(chunk),
+            chunk_count=int(max(1, (n + chunk - 1) // chunk)),
+        )
         w1 = 2.0 * np.pi * mod_freq / sr
         w2 = 2.0 * np.pi * mod_freq * 2.7 / sr
         wb = 2.0 * np.pi * breath_freq / sr
         phase1 = phase0 * 1.3
 
-        chunk = max(sr, int(self._HUMANIZE_CHUNK_SEC * sr))
         # For short audio, one pass; for long audio, chunked
         if n <= chunk:
             return self._humanize_chunk(audio, 0, n, w1, w2, wb, phase0, phase1, amount, sr)
@@ -2505,6 +3074,14 @@ class AudioProcessor:
     # --- Lossy re-encode ---
     def _lossy_reencode(self, audio, sr, mono):
         bitrate = int(self.params.get('reencode_bitrate', 192))
+        self._trace_random(
+            "lossy_reencode",
+            [],
+            bitrate_kbps=bitrate,
+            codec="libmp3lame",
+            ffmpeg=_ffmpeg_version_line(),
+            replay="dependency_sensitive",
+        )
 
         if not _check_ffmpeg():
             raise RuntimeError("ffmpeg not found")
@@ -2632,6 +3209,7 @@ class ProcessWorker(QThread):
         self.params = params
         self.output_dir = output_dir
         self._cancel_event = threading.Event()
+        self.seeds = [secrets.randbits(64) for _ in files]
 
     def run(self):
         t_start = time.monotonic()
@@ -2647,6 +3225,7 @@ class ProcessWorker(QThread):
                     input_path=str(filepath),
                     error_code=RenderErrorCode.OUTPUT_DIR_UNAVAILABLE,
                     message=message,
+                    effective_seed=self.seeds[idx],
                 )
                 results.append(result)
                 self.file_done.emit(idx, result)
@@ -2669,6 +3248,7 @@ class ProcessWorker(QThread):
                         input_path=str(self.files[cancelled_idx]),
                         error_code=RenderErrorCode.CANCELLED,
                         message="batch cancelled before this job started",
+                        effective_seed=self.seeds[cancelled_idx],
                     )
                     results.append(result)
                     self.file_done.emit(cancelled_idx, result)
@@ -2687,16 +3267,19 @@ class ProcessWorker(QThread):
                 log_fn=lambda msg: self.log_signal.emit(msg),
                 progress_fn=batch_progress,
                 cancel_event=self._cancel_event,
+                seed=self.seeds[idx],
             )
 
             self.log_signal.emit(f"\n[{idx+1}/{n_files}] {Path(filepath).name}")
+            reservation = None
             try:
                 fmt = self.params.get('output_format', 'wav').lower()
                 ext = _output_extension(fmt)
-                out_path, renamed = _planned_output_path(
+                reservation = _reserve_output_path(
                     filepath, self.output_dir, ext, used_outputs,
                 )
-                if renamed:
+                out_path = reservation.output_path
+                if reservation.renamed:
                     self.log_signal.emit(
                         f"Output name collision avoided: {Path(out_path).name}",
                     )
@@ -2712,7 +3295,11 @@ class ProcessWorker(QThread):
                     input_path=str(filepath),
                     error_code=RenderErrorCode.UNEXPECTED,
                     message=str(e),
+                    effective_seed=self.seeds[idx],
                 )
+            finally:
+                if reservation is not None:
+                    reservation.release()
             results.append(result)
             self.log_signal.emit(format_render_result(result))
             self.file_done.emit(idx, result)
@@ -4650,6 +5237,8 @@ def _apply_cli_overrides(params, args):
 def cli_main():
     parser = _build_cli_parser()
     args = parser.parse_args()
+    if args.seed is not None and args.seed < 0:
+        parser.error("--seed must be a non-negative integer")
 
     # Start with built-in preset
     preset_name = args.preset.capitalize()
@@ -4722,6 +5311,10 @@ def cli_main():
         print("No supported audio files found.")
         sys.exit(1)
 
+    effective_seeds = [
+        args.seed if args.seed is not None else secrets.randbits(64)
+        for _ in files
+    ]
     out_dir = args.output or DEFAULT_OUTPUT
     try:
         os.makedirs(out_dir, exist_ok=True)
@@ -4733,8 +5326,9 @@ def cli_main():
                 input_path=filepath,
                 error_code=RenderErrorCode.OUTPUT_DIR_UNAVAILABLE,
                 message=message,
+                effective_seed=effective_seed,
             )
-            for filepath in files
+            for filepath, effective_seed in zip(files, effective_seeds)
         ]
         for result in results:
             print(format_render_result(result), file=sys.stderr)
@@ -4757,20 +5351,30 @@ def cli_main():
     print(EVIDENCE_NOTICE)
     print(f"Preset: {preset_name} | Format: {args.out_format.upper()} | Files: {len(files)}")
     print(f"Run log: {run_log.path}\n")
-    run_log.write_header('cli', files, out_dir, params, preset_name, args.seed)
+    run_log.write_header(
+        'cli',
+        files,
+        out_dir,
+        params,
+        preset_name,
+        args.seed if args.seed is not None else "generated per file",
+    )
 
     started_at = time.monotonic()
     results = []
     used_outputs = set()
-    for filepath in files:
+    for file_index, filepath in enumerate(files):
+        effective_seed = effective_seeds[file_index]
+        reservation = None
         try:
-            out_path, renamed = _planned_output_path(
+            reservation = _reserve_output_path(
                 filepath,
                 out_dir,
                 ext,
                 used_outputs,
             )
-            if renamed:
+            out_path = reservation.output_path
+            if reservation.renamed:
                 cli_log(f"Output name collision avoided: {Path(out_path).name}")
             cli_log(f"Output path: {out_path}")
 
@@ -4778,7 +5382,7 @@ def cli_main():
                 params,
                 log_fn=cli_log,
                 progress_fn=lambda v: None,
-                seed=args.seed,
+                seed=effective_seed,
             )
             result = proc.process(filepath, out_path)
             if not isinstance(result, RenderResult):
@@ -4791,7 +5395,11 @@ def cli_main():
                 input_path=str(filepath),
                 error_code=RenderErrorCode.UNEXPECTED,
                 message=str(e),
+                effective_seed=effective_seed,
             )
+        finally:
+            if reservation is not None:
+                reservation.release()
         results.append(result)
         cli_log(format_render_result(result))
         cli_log("---")

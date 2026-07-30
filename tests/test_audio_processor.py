@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from concurrent.futures import ProcessPoolExecutor
+import json
 import threading
 import tempfile
 import unittest
@@ -11,6 +13,20 @@ import safe_audio
 import sunojump
 import verifiers
 from sunojump import AudioProcessor, _format_requires_ffmpeg, _output_extension, _planned_output_path
+
+
+def _reserve_output_in_child(input_path, output_dir):
+    reservation = sunojump._reserve_output_path(
+        input_path,
+        output_dir,
+        '.wav',
+    )
+    return (
+        reservation.output_path,
+        reservation.marker_path,
+        reservation.token,
+        reservation.renamed,
+    )
 
 
 class CoupledPitchTempoTests(unittest.TestCase):
@@ -380,6 +396,78 @@ class OutputPathTests(unittest.TestCase):
 
             self.assertEqual(Path(path).name, 'song_sj_2.wav')
             self.assertTrue(renamed)
+
+    def test_reservations_are_unique_across_processes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            input_path = out_dir / 'song.wav'
+            with ProcessPoolExecutor(max_workers=4) as executor:
+                futures = [
+                    executor.submit(
+                        _reserve_output_in_child,
+                        str(input_path),
+                        str(out_dir),
+                    )
+                    for _ in range(4)
+                ]
+                reservations = [future.result(timeout=30) for future in futures]
+
+            output_paths = [entry[0] for entry in reservations]
+            self.assertEqual(len(output_paths), len(set(output_paths)))
+            self.assertEqual(
+                {Path(path).name for path in output_paths},
+                {
+                    'song_sj.wav',
+                    'song_sj_2.wav',
+                    'song_sj_3.wav',
+                    'song_sj_4.wav',
+                },
+            )
+            for output_path, marker_path, token, renamed in reservations:
+                reservation = sunojump.OutputReservation(
+                    output_path,
+                    marker_path,
+                    token,
+                    renamed,
+                )
+                reservation.release()
+                self.assertFalse(Path(marker_path).exists())
+
+    def test_atomic_promotion_never_replaces_an_existing_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / '.render.tmp.wav'
+            destination = Path(tmp) / 'render.wav'
+            source.write_bytes(b'new bytes')
+            destination.write_bytes(b'original bytes')
+
+            with self.assertRaises(FileExistsError):
+                sunojump._promote_file_no_replace(source, destination)
+
+            self.assertEqual(destination.read_bytes(), b'original bytes')
+            self.assertEqual(source.read_bytes(), b'new bytes')
+
+    def test_atomic_sidecar_write_preserves_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar_path = Path(tmp) / 'render.sidecar.json'
+            sidecar_path.write_text(
+                '{"owner":"operator"}\n',
+                encoding='utf-8',
+            )
+
+            with self.assertRaises(FileExistsError):
+                sunojump._write_json_atomic_no_replace(
+                    sidecar_path,
+                    {"owner": "sunojump"},
+                )
+
+            self.assertEqual(
+                sidecar_path.read_text(encoding='utf-8'),
+                '{"owner":"operator"}\n',
+            )
+            self.assertEqual(
+                list(Path(tmp).glob('*.tmp.json')),
+                [],
+            )
 
 
 class OutputFormatTests(unittest.TestCase):
@@ -762,8 +850,13 @@ class SidecarTraceTests(unittest.TestCase):
             import json
             data = json.loads(sidecar_path.read_text(encoding='utf-8'))
             self.assertEqual(data['sunojump_version'], sunojump.VERSION)
-            self.assertEqual(data['schema_version'], 1)
+            self.assertEqual(data['schema_id'], sunojump.SIDECAR_SCHEMA_ID)
+            self.assertEqual(
+                data['schema_version'],
+                sunojump.SIDECAR_SCHEMA_VERSION,
+            )
             self.assertEqual(data['seed'], 42)
+            self.assertEqual(ok.effective_seed, 42)
             self.assertIn('input_sha256', data)
             self.assertIsNotNone(data['input_sha256'])
             self.assertEqual(data['output_sha256'], ok.validation.output_sha256)
@@ -798,6 +891,200 @@ class SidecarTraceTests(unittest.TestCase):
                 self.assertIn('value', verifier)
             else:
                 self.assertNotIn('value', verifier)
+            self.assertEqual(ok.sidecar_path, str(sidecar_path))
+            self.assertEqual(
+                ok.sidecar_sha256,
+                sunojump._sha256_file(sidecar_path),
+            )
+            binding = data['binding']
+            self.assertEqual(
+                binding['audio_file_sha256'],
+                ok.validation.output_sha256,
+            )
+            self.assertEqual(
+                sunojump._read_audio_sidecar_binding(output_path),
+                binding['sidecar_payload_sha256'],
+            )
+            self.assertEqual(
+                binding['sidecar_payload_sha256'],
+                sunojump._canonical_payload_sha256(
+                    sunojump._sidecar_binding_payload({
+                        key: value
+                        for key, value in data.items()
+                        if key not in {
+                            'output_sha256',
+                            'output_validation',
+                            'binding',
+                        }
+                    })
+                ),
+            )
+
+    def test_replay_reports_byte_stability_or_exact_dependency(self):
+        sr = 8000
+        t = np.arange(sr * 2, dtype=np.float64) / sr
+        audio = np.column_stack([
+            0.25 * np.sin(2.0 * np.pi * 220.0 * t),
+            0.25 * np.sin(2.0 * np.pi * 330.0 * t),
+        ])
+        params = {
+            'strip_metadata': True,
+            'spectral_enabled': True,
+            'spectral_scan_enabled': False,
+            'spectral_strength': 0.2,
+            'noise_enabled': True,
+            'noise_level': -55.0,
+            'humanize_enabled': True,
+            'humanize_amount': 0.2,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            input_path = temp_path / 'input.wav'
+            sf.write(input_path, audio, sr)
+
+            for output_format in ('wav', 'flac'):
+                with self.subTest(output_format=output_format):
+                    run_params = {
+                        **params,
+                        'output_format': output_format,
+                    }
+                    first_path = temp_path / f'first_{output_format}.{output_format}'
+                    second_path = temp_path / f'second_{output_format}.{output_format}'
+                    first = AudioProcessor(
+                        run_params,
+                        log_fn=lambda _: None,
+                        seed=20260729,
+                    ).process(input_path, first_path)
+                    second = AudioProcessor(
+                        run_params,
+                        log_fn=lambda _: None,
+                        seed=20260729,
+                    ).process(input_path, second_path)
+
+                    self.assertEqual(
+                        first.state,
+                        sunojump.RenderState.SUCCEEDED,
+                    )
+                    self.assertEqual(
+                        second.state,
+                        sunojump.RenderState.SUCCEEDED,
+                    )
+                    self.assertEqual(
+                        first.validation.output_sha256,
+                        second.validation.output_sha256,
+                    )
+                    self.assertEqual(
+                        first_path.read_bytes(),
+                        second_path.read_bytes(),
+                    )
+                    sidecar = json.loads(
+                        first_path.with_suffix('.sidecar.json').read_text(
+                            encoding='utf-8',
+                        )
+                    )
+                    self.assertEqual(
+                        sidecar['replay']['status'],
+                        'byte_reproducible_same_environment',
+                    )
+                    self.assertEqual(
+                        sidecar['replay']['nondeterministic_dependencies'],
+                        [],
+                    )
+
+            ogg_path = temp_path / 'dependency_sensitive.ogg'
+            ogg_result = AudioProcessor(
+                {
+                    **params,
+                    'output_format': 'ogg',
+                },
+                log_fn=lambda _: None,
+                seed=20260729,
+            ).process(input_path, ogg_path)
+            self.assertEqual(
+                ogg_result.state,
+                sunojump.RenderState.SUCCEEDED,
+            )
+            ogg_sidecar = json.loads(
+                ogg_path.with_suffix('.sidecar.json').read_text(
+                    encoding='utf-8',
+                )
+            )
+            self.assertEqual(
+                ogg_sidecar['replay']['status'],
+                'dependency_sensitive',
+            )
+            dependencies = ogg_sidecar['replay'][
+                'nondeterministic_dependencies'
+            ]
+            self.assertEqual(
+                dependencies[0]['dependency'],
+                'libsndfile/libvorbis Ogg muxer',
+            )
+            self.assertIn('stream serial', dependencies[0]['reason'])
+
+    def test_sidecar_traces_every_enabled_stochastic_pass(self):
+        sr = 8000
+        t = np.arange(sr, dtype=np.float64) / sr
+        audio = np.column_stack([
+            0.20 * np.sin(2.0 * np.pi * 220.0 * t),
+            0.20 * np.sin(2.0 * np.pi * 330.0 * t),
+        ])
+        params = {
+            'strip_metadata': False,
+            'spectral_enabled': True,
+            'spectral_scan_enabled': False,
+            'spectral_strength': 0.2,
+            'dynamic_eq_enabled': True,
+            'dynamic_eq_amount': 0.2,
+            'pitch_enabled': True,
+            'pitch_range': 0.5,
+            'tempo_enabled': True,
+            'tempo_range': 0.02,
+            'phase_enabled': True,
+            'phase_amount': 0.2,
+            'stereo_enabled': True,
+            'stereo_shift': 0.1,
+            'noise_enabled': True,
+            'noise_level': -55.0,
+            'dynamics_enabled': True,
+            'dynamics_amount': 0.2,
+            'humanize_enabled': True,
+            'humanize_amount': 0.2,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            input_path = temp_path / 'input.wav'
+            output_path = temp_path / 'output.wav'
+            sf.write(input_path, audio, sr)
+
+            result = AudioProcessor(
+                params,
+                log_fn=lambda _: None,
+                seed=7,
+            ).process(input_path, output_path)
+
+            self.assertEqual(result.state, sunojump.RenderState.SUCCEEDED)
+            data = json.loads(
+                output_path.with_suffix('.sidecar.json').read_text(
+                    encoding='utf-8',
+                )
+            )
+            expected = {
+                'spectral_perturbation',
+                'dynamic_eq',
+                'coupled_pitch_tempo',
+                'phase_scramble',
+                'stereo_manipulation',
+                'noise_injection',
+                'dynamics_modification',
+                'humanization',
+            }
+            self.assertTrue(expected.issubset(data['passes']), data['passes'])
+            for pass_name in expected:
+                trace = data['passes'][pass_name]
+                self.assertEqual(trace['effective_seed'], 7)
+                self.assertEqual(trace['rng_algorithm'], data['rng']['algorithm'])
+                self.assertIn('distributions', trace)
 
     def test_sidecar_records_pitch_segments(self):
         sr = 8000

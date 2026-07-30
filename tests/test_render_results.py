@@ -124,10 +124,30 @@ class RenderResultContractTests(unittest.TestCase):
             error_code=RenderErrorCode.SIDECAR_WRITE_FAILED,
             message="sidecar unavailable",
             validation=_validation(),
+            effective_seed=42,
         )
         rendered = format_render_result(result)
         self.assertIn("Result: partial [sidecar_write_failed]", rendered)
         self.assertIn("sha256:bbbbbbbbbbbb", rendered)
+        self.assertIn("seed:42", rendered)
+
+    def test_success_serializes_sidecar_evidence(self):
+        result = RenderResult(
+            state=RenderState.SUCCEEDED,
+            input_path="input.wav",
+            output_path="output.wav",
+            validation=_validation(),
+            effective_seed=42,
+            sidecar_path="output.sidecar.json",
+            sidecar_sha256="c" * 64,
+        )
+
+        payload = result.to_dict()
+
+        self.assertEqual(payload["effective_seed"], 42)
+        self.assertEqual(payload["sidecar_path"], "output.sidecar.json")
+        self.assertEqual(payload["sidecar_sha256"], "c" * 64)
+        self.assertIn("sidecar:cccccccccccc", format_render_result(result))
 
 
 class OutputValidationTests(unittest.TestCase):
@@ -166,6 +186,28 @@ class OutputValidationTests(unittest.TestCase):
         self.assertGreater(result.peak, 0.24)
         self.assertTrue(result.hashes_distinct)
         self.assertEqual(len(result.output_sha256), 64)
+
+    def test_processor_never_replaces_an_existing_destination(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.wav"
+            output_path = temp_path / "output.wav"
+            sf.write(input_path, self._tone(), 8000)
+            output_path.write_bytes(b"operator-owned output")
+            before_hash = sunojump._sha256_file(output_path)
+
+            result = sunojump.AudioProcessor(
+                {"strip_metadata": True},
+                seed=1,
+            ).process(str(input_path), str(output_path))
+
+            self.assertEqual(result.state, RenderState.FAILED)
+            self.assertEqual(
+                result.error_code,
+                RenderErrorCode.OUTPUT_WRITE_FAILED,
+            )
+            self.assertEqual(sunojump._sha256_file(output_path), before_hash)
+            self.assertEqual(output_path.read_bytes(), b"operator-owned output")
 
     def test_same_input_and_output_path_is_rejected_before_render(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -412,6 +454,9 @@ class ProcessWorkerOutcomeTests(unittest.TestCase):
                 for _, result in jobs
             )
         )
+        self.assertTrue(
+            all(result.effective_seed is not None for _, result in jobs)
+        )
         self.assertEqual(batches[0].state, RenderState.FAILED)
         self.assertEqual(batches[0].counts["failed"], 2)
 
@@ -435,6 +480,9 @@ class ProcessWorkerOutcomeTests(unittest.TestCase):
         self.assertEqual(len(jobs), 2)
         self.assertTrue(
             all(result.state is RenderState.CANCELLED for _, result in jobs)
+        )
+        self.assertTrue(
+            all(result.effective_seed is not None for _, result in jobs)
         )
         self.assertEqual(batches[0].state, RenderState.CANCELLED)
         self.assertNotIn(100, progress)

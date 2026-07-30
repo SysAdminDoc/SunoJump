@@ -98,6 +98,9 @@ class RenderResult:
     message: str = ""
     elapsed_seconds: float = 0.0
     validation: OutputValidation | None = None
+    effective_seed: int | None = None
+    sidecar_path: str | None = None
+    sidecar_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, RenderState):
@@ -120,6 +123,25 @@ class RenderResult:
                 raise ValueError("failed/cancelled render cannot expose an output")
         if not math.isfinite(self.elapsed_seconds) or self.elapsed_seconds < 0:
             raise ValueError("elapsed time cannot be negative")
+        if (
+            self.effective_seed is not None
+            and (
+                isinstance(self.effective_seed, bool)
+                or not isinstance(self.effective_seed, int)
+                or self.effective_seed < 0
+            )
+        ):
+            raise ValueError("effective seed must be a non-negative integer")
+        if (self.sidecar_path is None) != (self.sidecar_sha256 is None):
+            raise ValueError("sidecar path and hash must be supplied together")
+        if self.sidecar_sha256 is not None:
+            if (
+                len(self.sidecar_sha256) != 64
+                or any(ch not in "0123456789abcdef" for ch in self.sidecar_sha256)
+            ):
+                raise ValueError("sidecar_sha256 must be a lowercase SHA-256 digest")
+            if not self.usable_output:
+                raise ValueError("failed/cancelled render cannot expose a sidecar")
 
     @property
     def usable_output(self) -> bool:
@@ -143,6 +165,11 @@ class RenderResult:
             payload["message"] = self.message
         if self.validation is not None:
             payload["validation"] = self.validation.to_dict()
+        if self.effective_seed is not None:
+            payload["effective_seed"] = self.effective_seed
+        if self.sidecar_path is not None:
+            payload["sidecar_path"] = self.sidecar_path
+            payload["sidecar_sha256"] = self.sidecar_sha256
         return payload
 
 
@@ -210,6 +237,10 @@ def format_render_result(result: RenderResult) -> str:
         text += f" — {result.message}"
     if result.validation is not None:
         text += f" — sha256:{result.validation.output_sha256[:12]}"
+    if result.effective_seed is not None:
+        text += f" — seed:{result.effective_seed}"
+    if result.sidecar_sha256 is not None:
+        text += f" — sidecar:{result.sidecar_sha256[:12]}"
     return text
 
 

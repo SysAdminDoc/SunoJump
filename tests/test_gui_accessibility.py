@@ -104,6 +104,7 @@ class GuiAccessibilityTests(unittest.TestCase):
                     input_path="song.wav",
                     output_path="song_sj.wav",
                     validation=self._validated_output(),
+                    effective_seed=42,
                 ),
                 "DONE",
                 "song_sj.wav",
@@ -144,6 +145,8 @@ class GuiAccessibilityTests(unittest.TestCase):
                 self.assertTrue(item.text().startswith(label), item.text())
                 self.assertEqual(item.data(ROLE_OUTPUT), output)
                 self.assertIn(result.state.value, item.toolTip())
+                if result.effective_seed is not None:
+                    self.assertIn("seed:42", item.toolTip())
 
     def test_batch_failure_and_cancellation_never_show_complete_or_100(self):
         failed = RenderResult(

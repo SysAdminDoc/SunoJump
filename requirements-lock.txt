@@ -1,12 +1,13 @@
-# Release-verified dependency lock for SunoJump desktop builds.
-# Install with:
-#   python -m pip install -r requirements-lock.txt
-cffi==2.0.0
-mutagen==1.48.1
-numpy==2.2.6
-pycparser==3.0
-PyQt6==6.11.0
-PyQt6-Qt6==6.11.1
-PyQt6_sip==13.11.1
-scipy==1.17.1
-soundfile==0.14.0
+# Hashed Windows x64 / CPython 3.12 runtime lock for unsigned releases.
+# Install only with:
+#   python -m pip install --require-hashes --only-binary=:all: -r requirements-lock.txt
+cffi==2.0.0 --hash=sha256:da68248800ad6320861f129cd9c1bf96ca849a2771a59e0344e88681905916f5
+mutagen==1.48.1 --hash=sha256:4f077fe87d3fc7fba259aa63d8c026b18382ca6a42ef37c61e16f1b1b5b82fe7
+numpy==2.2.6 --hash=sha256:c1f9540be57940698ed329904db803cf7a402f3fc200bfe599334c9bd84a40b2
+pycparser==3.0 --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+PyQt6==6.11.0 --hash=sha256:bd11b459c54dca068e988a42cf838303334f0d441b9d16d92ae6719fcb5ac6ba
+PyQt6-Qt6==6.11.1 --hash=sha256:7486c80512e823f2d3087e67f854f0556b345f4368040a853c8dc4d30fd3fe69
+PyQt6_sip==13.11.1 --hash=sha256:1d1c67179c1924b28e3d7f04585639e7a7c0946f62390efc6ccf2a6206e595d3
+scipy==1.17.1 --hash=sha256:41b71f4a3a4cab9d366cd9065b288efc4d4f3c0b37a91a8e0947fb5bd7f31d87
+soundfile==0.14.0 --hash=sha256:299491d3499460fb1b74bb4bd78b57ffc2d243a5fafa7b6ec1b264875c78453e
+typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

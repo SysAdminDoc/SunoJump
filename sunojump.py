@@ -1057,8 +1057,14 @@ def _native_runtime_report():
     except ValueError as exc:
         runtime_gate = f"fail: {exc}"
     return {
+        "python": platform.python_version(),
+        "numpy": str(np.__version__),
+        "scipy": str(scipy.__version__),
         "soundfile": str(getattr(sf, "__version__", "unknown")),
         "libsndfile": libsndfile_version,
+        "mutagen": str(getattr(mutagen, "version_string", "unknown")),
+        "pyqt6": str(PYQT_VERSION_STR),
+        "qt6": str(QT_VERSION_STR),
         "minimum_libsndfile": ".".join(
             str(value) for value in MIN_LIBSNDFILE_VERSION
         ),
@@ -4334,6 +4340,17 @@ def cli_main():
     parser.add_argument('--reencode', type=int, help='Lossy re-encode bitrate (96-320)')
     parser.add_argument('--seed', type=int, default=None,
                         help='Random seed for reproducible output (same seed = same bytes)')
+    parser.add_argument(
+        '--version',
+        action='version',
+        version=f'{APP_NAME} v{VERSION}',
+        help='Print the application version and exit',
+    )
+    parser.add_argument(
+        '--native-runtime',
+        action='store_true',
+        help='Print machine-readable native dependency versions and exit',
+    )
     args = parser.parse_args()
 
     # Start with built-in preset

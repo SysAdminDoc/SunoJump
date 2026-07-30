@@ -1,8 +1,4 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_submodules
-
-hiddenimports = []
-hiddenimports += collect_submodules('PyQt6.QtMultimedia')
 
 
 a = Analysis(
@@ -10,11 +6,27 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=hiddenimports,
+    hiddenimports=['PyQt6.QtMultimedia'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['runtime_hooks/freeze_support.py'],
-    excludes=[],
+    excludes=[
+        '_distutils_hack',
+        'IPython',
+        'cupy',
+        'lark',
+        'matplotlib',
+        'numba',
+        'pandas',
+        'playwright',
+        'pytest',
+        'scipy._lib.array_api_compat.cupy',
+        'scipy._lib.array_api_compat.torch',
+        'setuptools',
+        'torch',
+        'webview',
+        'yt_dlp',
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -30,10 +42,11 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=True,
+    hide_console='hide-early',
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

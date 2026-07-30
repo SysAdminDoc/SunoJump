@@ -70,23 +70,21 @@ Install Python dependencies before running from source; the packaged executable 
 
 ### Release Dependency Audit
 ```bash
-# Optional: install the release-verified dependency set
-python -m pip install -r requirements-lock.txt
-
 # Install local audit tooling, then scan the release lock
 python -m pip install -r requirements-dev.txt
 python tools/audit_dependencies.py
+python tools/audit_licenses.py
 ```
 
-### Release Verification
-Each release includes `SHA256SUMS` and a CycloneDX SBOM (`sbom.cdx.json`). Verify a downloaded executable:
-```bash
-# Check the SHA-256 digest
-sha256sum -c SHA256SUMS
+### Reproducing and Verifying the Windows Release
 
-# Generate release artifacts locally
+On Windows x64 with CPython 3.12, the release command creates a temporary virtual environment, installs only the exact wheels in the two hashed locks, builds an unsigned one-file executable, and proves its CLI, fixture-render, and foreground-GUI paths:
+
+```bash
 python tools/build_release.py
 ```
+
+The gate fails on a missing, stale, or wrong-version executable; undeclared bundled packages; incomplete license/source records; or failed smoke tests. It does not perform code signing. `dist/` receives the executable, `SHA256SUMS`, CycloneDX 1.7 SBOM, actual PyInstaller inventory, native-version report, license notices/source routing, build provenance, both locks, and the corresponding source archive. Use `sha256sum -c SHA256SUMS` from inside the downloaded artifact directory to verify the set.
 
 ## Features
 
@@ -213,15 +211,15 @@ SunoJump's own source code is MIT-licensed. Runtime dependencies include copylef
 
 | Package | License | Notes |
 |---------|---------|-------|
-| PyQt6 | GPL-3.0-only | GUI toolkit; users install via pip |
-| mutagen | GPL-2.0-or-later | Metadata tag library; users install via pip |
-| PyQt6-Qt6 | LGPL-3.0 | Qt runtime; dynamically linked |
+| PyQt6 | GPL-3.0-only | Bundled GUI toolkit |
+| mutagen | GPL-2.0-or-later | Bundled metadata tag library |
+| PyQt6-Qt6 | LGPL-3.0-only | Bundled shared Qt runtime |
 
 **Source installs:** users install dependencies themselves via `pip install -r requirements.txt`. SunoJump source is MIT.
 
 **Binary releases (PyInstaller):** the combined executable bundles GPL-licensed components. The binary as a whole must comply with GPL-3.0 terms. Source code is always available in this repository.
 
-Run `python tools/audit_licenses.py` to verify the license inventory for all release dependencies. The audit gate blocks release packaging when unreviewed licenses appear.
+Run `python tools/audit_licenses.py` to verify the reviewed runtime inventory. Release packaging also inventories the frozen executable and fails if build-only, undeclared, or unreviewed components appear.
 
 ## License
 

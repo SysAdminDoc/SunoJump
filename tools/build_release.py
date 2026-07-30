@@ -52,6 +52,7 @@ FORBIDDEN_BUNDLE_NAMES = {
     "yt_dlp",
 }
 REQUIRED_SOURCE_FILES = {
+    Path("config_schema.py"),
     Path("requirements-build-lock.txt"),
     Path("render_results.py"),
     Path("safe_audio.py"),

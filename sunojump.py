@@ -16,11 +16,19 @@ if '--safe-decode-worker' in sys.argv:
     raise SystemExit(worker_cli_main(sys.argv[2:]))
 
 # --- Imports ---
-import os, json, argparse, tempfile, shutil, threading, hashlib, time
+import os, json, argparse, copy, tempfile, shutil, threading, hashlib, time
 import platform, traceback
 import subprocess
 from pathlib import Path
 from datetime import datetime
+from config_schema import (
+    CONFIG_SCHEMA_VERSION,
+    NUMBER_FIELDS,
+    NUMBER_FIELDS_BY_KEY,
+    ConfigurationError,
+    default_render_config,
+    validate_render_config,
+)
 from safe_audio import (
     DecodeCancelled,
     DecodeLimits,
@@ -42,7 +50,7 @@ from verifiers import ConstellationVerifier, format_verifier_result
 
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
-PRESET_SCHEMA_VERSION = 1
+PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 SIGNAL_CHANGE_METRIC = {
     "adapter": "sunojump.signal_change",
     "version": "1",
@@ -214,12 +222,41 @@ PRESETS = {
         'reencode_enabled': True, 'reencode_bitrate': 128,
     },
 }
+PRESETS = {
+    name: validate_render_config(
+        params,
+        require_complete=True,
+        allow_output_format=False,
+    )
+    for name, params in PRESETS.items()
+}
+_CONFIG_DEFAULTS = default_render_config()
+if PRESETS["Moderate"] != _CONFIG_DEFAULTS:
+    raise RuntimeError("Moderate preset must match configuration defaults")
 
 _PRESET_MIGRATIONS = {}
+_PRESET_DOCUMENT_KEYS = {
+    "name",
+    "version",
+    "schema_version",
+    "params",
+}
 
 
 def _migrate_preset(data):
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            f"preset must be an object, not {type(data).__name__}"
+        )
+    data = copy.deepcopy(data)
+    schema = data.get('schema_version', 0)
+    if type(schema) is not int or schema < 0:
+        raise ConfigurationError(
+            "schema_version must be a non-negative integer"
+        )
     params = data.get('params')
+    if params is not None and not isinstance(params, dict):
+        raise ConfigurationError("preset params must be an object")
     if isinstance(params, dict):
         if (
             'watermark_scan_enabled' in params
@@ -228,9 +265,15 @@ def _migrate_preset(data):
             params['spectral_scan_enabled'] = params.pop(
                 'watermark_scan_enabled'
             )
-    schema = data.get('schema_version', 0)
+    elif (
+        'watermark_scan_enabled' in data
+        and 'spectral_scan_enabled' not in data
+    ):
+        data['spectral_scan_enabled'] = data.pop(
+            'watermark_scan_enabled'
+        )
     if schema > PRESET_SCHEMA_VERSION:
-        raise ValueError(
+        raise ConfigurationError(
             f"Preset requires schema version {schema} but this SunoJump "
             f"(v{VERSION}) supports up to version {PRESET_SCHEMA_VERSION}. "
             f"Update SunoJump to load this preset."
@@ -245,22 +288,92 @@ def _migrate_preset(data):
     return data
 
 
+def _validate_preset_document(data):
+    migrated = _migrate_preset(data)
+    if "params" in migrated:
+        unknown_document_keys = sorted(
+            set(migrated) - _PRESET_DOCUMENT_KEYS
+        )
+        if unknown_document_keys:
+            raise ConfigurationError(
+                "unknown preset document key(s): "
+                + ", ".join(unknown_document_keys)
+            )
+        raw_params = migrated["params"]
+    else:
+        raw_params = {
+            key: value
+            for key, value in migrated.items()
+            if key not in {"name", "version", "schema_version"}
+        }
+        if not raw_params:
+            raise ConfigurationError("preset file is missing params")
+
+    name = migrated.get("name", "Custom")
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigurationError("preset name must be a non-empty string")
+    source_version = migrated.get("version")
+    if source_version is not None and not isinstance(source_version, str):
+        raise ConfigurationError("preset version must be a string")
+    params = validate_render_config(
+        raw_params,
+        base=_CONFIG_DEFAULTS,
+        require_complete=True,
+        allow_output_format=False,
+    )
+    return {
+        "name": name.strip(),
+        **({"version": source_version} if source_version is not None else {}),
+        "schema_version": PRESET_SCHEMA_VERSION,
+        "params": params,
+    }
+
+
+def _create_preset_document(name, params):
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigurationError("preset name must be a non-empty string")
+    validated = validate_render_config(
+        params,
+        require_complete=True,
+        allow_output_format=False,
+    )
+    return {
+        "name": name.strip(),
+        "version": VERSION,
+        "schema_version": PRESET_SCHEMA_VERSION,
+        "params": validated,
+    }
+
+
+_PARAM_UI = {
+    "spectral_strength": ("Spectral Perturbation", "", 2, 1.0),
+    "spectral_sub_bass_strength": ("Sub-Bass Spectral", "", 2, 1.0),
+    "spectral_low_mids_strength": ("Low-Mids Spectral", "", 2, 1.0),
+    "spectral_presence_strength": ("Presence Spectral", "", 2, 1.0),
+    "spectral_air_strength": ("Air Spectral", "", 2, 1.0),
+    "dynamic_eq_amount": ("Dynamic EQ", "", 2, 1.0),
+    "pitch_range": ("Pitch Micro-Shift", " st", 1, 1.0),
+    "tempo_range": ("Tempo Micro-Variation", "%", 1, 100.0),
+    "phase_amount": ("Phase Scrambling", "", 2, 1.0),
+    "stereo_shift": ("Stereo Manipulation", "", 2, 1.0),
+    "noise_level": ("Noise Injection", " dB", 0, 1.0),
+    "dynamics_amount": ("Dynamics Modification", "", 2, 1.0),
+    "humanize_amount": ("Humanization", "", 2, 1.0),
+    "reencode_bitrate": ("Lossy Re-encode", " kbps", 0, 1.0),
+}
 PARAM_DEFS = [
-    # (key, label, min, max, default, suffix, decimals, enabled_key, display_factor)
-    ('spectral_strength', 'Spectral Perturbation', 0.0, 1.0, 0.30, '', 2, 'spectral_enabled', 1.0),
-    ('spectral_sub_bass_strength', 'Sub-Bass Spectral', 0.0, 1.0, 0.30, '', 2, 'spectral_sub_bass_enabled', 1.0),
-    ('spectral_low_mids_strength', 'Low-Mids Spectral', 0.0, 1.0, 0.30, '', 2, 'spectral_low_mids_enabled', 1.0),
-    ('spectral_presence_strength', 'Presence Spectral', 0.0, 1.0, 0.30, '', 2, 'spectral_presence_enabled', 1.0),
-    ('spectral_air_strength', 'Air Spectral', 0.0, 1.0, 0.30, '', 2, 'spectral_air_enabled', 1.0),
-    ('dynamic_eq_amount', 'Dynamic EQ', 0.0, 1.0, 0.20, '', 2, 'dynamic_eq_enabled', 1.0),
-    ('pitch_range', 'Pitch Micro-Shift', 0.0, 5.0, 0.80, ' st', 1, 'pitch_enabled', 1.0),
-    ('tempo_range', 'Tempo Micro-Variation', 0.0, 0.15, 0.05, '%', 1, 'tempo_enabled', 100.0),
-    ('phase_amount', 'Phase Scrambling', 0.0, 1.0, 0.30, '', 2, 'phase_enabled', 1.0),
-    ('stereo_shift', 'Stereo Manipulation', 0.0, 0.5, 0.10, '', 2, 'stereo_enabled', 1.0),
-    ('noise_level', 'Noise Injection', -70.0, -30.0, -50.0, ' dB', 0, 'noise_enabled', 1.0),
-    ('dynamics_amount', 'Dynamics Modification', 0.0, 1.0, 0.20, '', 2, 'dynamics_enabled', 1.0),
-    ('humanize_amount', 'Humanization', 0.0, 1.0, 0.30, '', 2, 'humanize_enabled', 1.0),
-    ('reencode_bitrate', 'Lossy Re-encode', 96, 320, 192, ' kbps', 0, 'reencode_enabled', 1.0),
+    (
+        field.key,
+        _PARAM_UI[field.key][0],
+        field.minimum,
+        field.maximum,
+        field.default,
+        _PARAM_UI[field.key][1],
+        _PARAM_UI[field.key][2],
+        field.enabled_key,
+        _PARAM_UI[field.key][3],
+    )
+    for field in NUMBER_FIELDS
 ]
 
 DEFAULT_OUTPUT = str(Path.home() / 'Desktop' / 'SunoJump_Output')
@@ -2879,7 +2992,7 @@ class ParamRow(QWidget):
         if val_range < 1e-12:
             pos = 0
         else:
-            pos = int((v - self.min_val) / val_range * 200)
+            pos = round((v - self.min_val) / val_range * 200)
         self.slider.setValue(pos)
 
     def is_enabled(self):
@@ -2893,7 +3006,7 @@ class ParamRow(QWidget):
 #  Main Window
 # ============================================================
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
         self.setMinimumSize(1060, 780)
@@ -2915,6 +3028,11 @@ class MainWindow(QMainWindow):
         self._last_browse_dir = str(Path.home())
         self._last_preset_dir = str(Path.home())
         self._current_run_log = None
+        self._settings = (
+            settings
+            if settings is not None
+            else QSettings(APP_NAME, APP_NAME)
+        )
 
         # Media player for preview (optional)
         self.player = None
@@ -3066,7 +3184,7 @@ class MainWindow(QMainWindow):
 
     def _restore_session_state(self):
         self._session_restored_geometry = False
-        settings = QSettings(APP_NAME, APP_NAME)
+        settings = self._settings
         geo = settings.value("window/geometry")
         if geo is not None:
             self.restoreGeometry(geo)
@@ -3081,9 +3199,33 @@ class MainWindow(QMainWindow):
                 self.format_combo.setCurrentIndex(idx)
         preset = settings.value("session/preset")
         if preset and isinstance(preset, str):
-            idx = self.preset_combo.findText(preset)
-            if idx >= 0:
+            if preset in PRESETS:
                 self.preset_combo.setCurrentText(preset)
+            elif preset == "Custom":
+                serialized = settings.value("session/config_json")
+                try:
+                    if not isinstance(serialized, str) or not serialized:
+                        raise ConfigurationError(
+                            "legacy session has no Custom parameter values"
+                        )
+                    document = _validate_preset_document(
+                        json.loads(serialized)
+                    )
+                    self._apply_config(document["params"])
+                    self.preset_combo.blockSignals(True)
+                    self.preset_combo.setCurrentText("Custom")
+                    self.preset_combo.blockSignals(False)
+                    self._sync_header_stats()
+                except (
+                    ConfigurationError,
+                    json.JSONDecodeError,
+                    TypeError,
+                ) as exc:
+                    self.preset_combo.setCurrentText("Extreme")
+                    self._log(
+                        "Saved Custom settings were invalid or unavailable; "
+                        f"restored Extreme instead ({exc})."
+                    )
         browse = settings.value("session/last_browse_dir")
         if browse and isinstance(browse, str) and os.path.isdir(browse):
             self._last_browse_dir = browse
@@ -3092,13 +3234,31 @@ class MainWindow(QMainWindow):
             self._last_preset_dir = preset_dir
 
     def _save_session_state(self):
-        settings = QSettings(APP_NAME, APP_NAME)
+        settings = self._settings
+        params = self._get_params()
+        preset_document = _create_preset_document(
+            self.preset_combo.currentText(),
+            {
+                key: value
+                for key, value in params.items()
+                if key != "output_format"
+            },
+        )
         settings.setValue("window/geometry", self.saveGeometry())
         settings.setValue("session/output_dir", self.output_dir.text())
         settings.setValue("session/output_format", self.format_combo.currentText())
         settings.setValue("session/preset", self.preset_combo.currentText())
+        settings.setValue(
+            "session/config_json",
+            json.dumps(
+                preset_document,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
         settings.setValue("session/last_browse_dir", self._last_browse_dir)
         settings.setValue("session/last_preset_dir", self._last_preset_dir)
+        settings.sync()
 
     def _build_header(self):
         bar = QFrame()
@@ -3594,21 +3754,23 @@ class MainWindow(QMainWindow):
         self._sync_header_stats()
 
     def _apply_preset(self, name):
+        self._apply_config(PRESETS[name])
+
+    def _apply_config(self, params):
+        params = validate_render_config(
+            params,
+            require_complete=True,
+            allow_output_format=False,
+        )
         self._applying_preset = True
         try:
-            p = PRESETS[name]
-            self.meta_check.setChecked(p.get('strip_metadata', True))
+            self.meta_check.setChecked(params['strip_metadata'])
             self.spectral_scan_check.setChecked(
-                p.get(
-                    'spectral_scan_enabled',
-                    p.get('watermark_scan_enabled', True),
-                )
+                params['spectral_scan_enabled']
             )
             for key, row in self.param_rows.items():
-                if key in p:
-                    row.set_value(p[key])
-                if row.enabled_key in p:
-                    row.set_enabled_check(p[row.enabled_key])
+                row.set_value(params[key])
+                row.set_enabled_check(params[row.enabled_key])
         finally:
             self._applying_preset = False
 
@@ -3633,13 +3795,14 @@ class MainWindow(QMainWindow):
         try:
             self._last_preset_dir = str(Path(path).parent)
             params = self._get_params()
-            # Omit output_format - that's a per-session setting, not a preset
-            preset_data = {
-                'name': 'Custom',
-                'version': VERSION,
-                'schema_version': PRESET_SCHEMA_VERSION,
-                'params': {k: v for k, v in params.items() if k != 'output_format'},
-            }
+            preset_data = _create_preset_document(
+                "Custom",
+                {
+                    key: value
+                    for key, value in params.items()
+                    if key != "output_format"
+                },
+            )
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(preset_data, f, indent=2)
             self._log(f"Preset saved: {Path(path).name}")
@@ -3657,39 +3820,8 @@ class MainWindow(QMainWindow):
             self._last_preset_dir = str(Path(path).parent)
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("Invalid preset file format")
-            data = _migrate_preset(data)
-            params = data.get('params', data)
-            if not isinstance(params, dict):
-                raise ValueError("Missing params block")
-
-            self._applying_preset = True
-            try:
-                if 'strip_metadata' in params:
-                    self.meta_check.setChecked(bool(params['strip_metadata']))
-                if (
-                    'spectral_scan_enabled' in params
-                    or 'watermark_scan_enabled' in params
-                ):
-                    self.spectral_scan_check.setChecked(
-                        bool(
-                            params.get(
-                                'spectral_scan_enabled',
-                                params.get('watermark_scan_enabled'),
-                            )
-                        )
-                    )
-                for key, row in self.param_rows.items():
-                    if key in params:
-                        try:
-                            row.set_value(float(params[key]))
-                        except (TypeError, ValueError):
-                            pass
-                    if row.enabled_key in params:
-                        row.set_enabled_check(bool(params[row.enabled_key]))
-            finally:
-                self._applying_preset = False
+            document = _validate_preset_document(data)
+            self._apply_config(document["params"])
 
             self.preset_combo.blockSignals(True)
             self.preset_combo.setCurrentText('Custom')
@@ -3708,7 +3840,11 @@ class MainWindow(QMainWindow):
         for key, row in self.param_rows.items():
             params[row.enabled_key] = row.is_enabled()
             params[key] = row.value()
-        return params
+        return validate_render_config(
+            params,
+            require_complete=True,
+            allow_output_format=True,
+        )
 
     # --- Processing control ---
     def _set_processing_ui(self, processing):
@@ -4287,15 +4423,59 @@ class MainWindow(QMainWindow):
 # ============================================================
 #  CLI Mode
 # ============================================================
-def _clamp(value, lo, hi, name):
-    """Clamp CLI argument to valid range, warn if out of bounds."""
-    if value < lo or value > hi:
-        print(f"Warning: --{name} {value} out of range [{lo}, {hi}], clamping.")
-        return max(lo, min(hi, value))
-    return value
+_CLI_PASS_KEYS = {
+    "metadata": "strip_metadata",
+    "spectral-scan": "spectral_scan_enabled",
+    "spectral": "spectral_enabled",
+    "spectral-sub-bass": "spectral_sub_bass_enabled",
+    "spectral-low-mids": "spectral_low_mids_enabled",
+    "spectral-presence": "spectral_presence_enabled",
+    "spectral-air": "spectral_air_enabled",
+    "dynamic-eq": "dynamic_eq_enabled",
+    "pitch": "pitch_enabled",
+    "tempo": "tempo_enabled",
+    "phase": "phase_enabled",
+    "stereo": "stereo_enabled",
+    "noise": "noise_enabled",
+    "dynamics": "dynamics_enabled",
+    "humanize": "humanize_enabled",
+    "reencode": "reencode_enabled",
+}
+_CLI_VALUE_OVERRIDES = {
+    "spectral": ("spectral_strength", "spectral", "--spectral"),
+    "spectral_sub_bass": (
+        "spectral_sub_bass_strength",
+        "spectral-sub-bass",
+        "--spectral-sub-bass",
+    ),
+    "spectral_low_mids": (
+        "spectral_low_mids_strength",
+        "spectral-low-mids",
+        "--spectral-low-mids",
+    ),
+    "spectral_presence": (
+        "spectral_presence_strength",
+        "spectral-presence",
+        "--spectral-presence",
+    ),
+    "spectral_air": (
+        "spectral_air_strength",
+        "spectral-air",
+        "--spectral-air",
+    ),
+    "dynamic_eq": ("dynamic_eq_amount", "dynamic-eq", "--dynamic-eq"),
+    "pitch": ("pitch_range", "pitch", "--pitch"),
+    "tempo": ("tempo_range", "tempo", "--tempo"),
+    "phase": ("phase_amount", "phase", "--phase"),
+    "stereo": ("stereo_shift", "stereo", "--stereo"),
+    "noise": ("noise_level", "noise", "--noise"),
+    "dynamics": ("dynamics_amount", "dynamics", "--dynamics"),
+    "humanize": ("humanize_amount", "humanize", "--humanize"),
+    "reencode": ("reencode_bitrate", "reencode", "--reencode"),
+}
 
 
-def cli_main():
+def _build_cli_parser():
     parser = argparse.ArgumentParser(
         description=(
             f'{APP_NAME} v{VERSION} -- rights-owned audio variation '
@@ -4312,32 +4492,103 @@ def cli_main():
                         choices=list(OUTPUT_EXTENSIONS.keys()),
                         dest='out_format')
     parser.add_argument('--preset-file', default=None,
-                        help='Path to JSON preset file (overrides -p/--preset)')
+                        help='Validated JSON preset; replaces -p/--preset')
     parser.add_argument(
         '--no-spectral-scan',
         '--no-watermark-scan',
         action='store_true',
         dest='no_spectral_scan',
-        help='Disable the local narrowband candidate scan pre-pass',
+        help=(
+            'Disable the local narrowband candidate scan pre-pass; '
+            '--no-watermark-scan is a compatibility alias'
+        ),
     )
-    parser.add_argument('--spectral', type=float, help='Spectral perturbation (0.0-1.0)')
-    parser.add_argument('--spectral-sub-bass', type=float,
-                        help='Sub-bass spectral perturbation (0.0-1.0)')
-    parser.add_argument('--spectral-low-mids', type=float,
-                        help='Low-mids spectral perturbation (0.0-1.0)')
-    parser.add_argument('--spectral-presence', type=float,
-                        help='Presence-band spectral perturbation (0.0-1.0)')
-    parser.add_argument('--spectral-air', type=float,
-                        help='Air-band spectral perturbation (0.0-1.0)')
-    parser.add_argument('--dynamic-eq', type=float, help='Dynamic EQ amount (0.0-1.0)')
-    parser.add_argument('--pitch', type=float, help='Pitch micro-shift in semitones (0.0-5.0)')
-    parser.add_argument('--tempo', type=float, help='Tempo variation (0.0-0.15)')
-    parser.add_argument('--phase', type=float, help='Phase scrambling (0.0-1.0)')
-    parser.add_argument('--stereo', type=float, help='Stereo manipulation (0.0-0.5)')
-    parser.add_argument('--noise', type=float, help='Noise level in dB (-70 to -30)')
-    parser.add_argument('--dynamics', type=float, help='Dynamics amount (0.0-1.0)')
-    parser.add_argument('--humanize', type=float, help='Humanization amount (0.0-1.0)')
-    parser.add_argument('--reencode', type=int, help='Lossy re-encode bitrate (96-320)')
+    parser.add_argument(
+        '--enable-pass',
+        action='append',
+        default=[],
+        choices=sorted(_CLI_PASS_KEYS),
+        metavar='PASS',
+        help='Enable a named pass using its preset/current amount; repeatable',
+    )
+    parser.add_argument(
+        '--disable-pass',
+        action='append',
+        default=[],
+        choices=sorted(_CLI_PASS_KEYS),
+        metavar='PASS',
+        help='Disable a named pass; repeatable and conflicts with its value flag',
+    )
+    parser.add_argument(
+        '--spectral',
+        type=float,
+        help='Set spectral perturbation (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--spectral-sub-bass',
+        type=float,
+        help='Set sub-bass spectral amount (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--spectral-low-mids',
+        type=float,
+        help='Set low-mids spectral amount (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--spectral-presence',
+        type=float,
+        help='Set presence spectral amount (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--spectral-air',
+        type=float,
+        help='Set air spectral amount (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--dynamic-eq',
+        type=float,
+        help='Set Dynamic EQ amount (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--pitch',
+        type=float,
+        help='Set pitch range (0.0-5.0 semitones) and enable its pass',
+    )
+    parser.add_argument(
+        '--tempo',
+        type=float,
+        help='Set tempo variation (0.0-0.15) and enable its pass',
+    )
+    parser.add_argument(
+        '--phase',
+        type=float,
+        help='Set phase scrambling (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--stereo',
+        type=float,
+        help='Set stereo manipulation (0.0-0.5) and enable its pass',
+    )
+    parser.add_argument(
+        '--noise',
+        type=float,
+        help='Set noise level (-70 to -30 dB) and enable its pass',
+    )
+    parser.add_argument(
+        '--dynamics',
+        type=float,
+        help='Set dynamics amount (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--humanize',
+        type=float,
+        help='Set humanization amount (0.0-1.0) and enable its pass',
+    )
+    parser.add_argument(
+        '--reencode',
+        type=int,
+        help='Set lossy re-encode bitrate (96-320) and enable its pass',
+    )
     parser.add_argument('--seed', type=int, default=None,
                         help='Random seed for reproducible output (same seed = same bytes)')
     parser.add_argument(
@@ -4351,12 +4602,91 @@ def cli_main():
         action='store_true',
         help='Print machine-readable native dependency versions and exit',
     )
+    return parser
+
+
+def _apply_cli_overrides(params, args):
+    result = validate_render_config(
+        params,
+        require_complete=True,
+        allow_output_format=False,
+    )
+    enabled_passes = set(args.enable_pass)
+    disabled_passes = set(args.disable_pass)
+    if args.no_spectral_scan:
+        disabled_passes.add("spectral-scan")
+    conflicts = enabled_passes & disabled_passes
+    if conflicts:
+        raise ConfigurationError(
+            "pass cannot be both enabled and disabled: "
+            + ", ".join(sorted(conflicts))
+        )
+
+    for attribute, (config_key, pass_name, flag) in (
+        _CLI_VALUE_OVERRIDES.items()
+    ):
+        value = getattr(args, attribute)
+        if value is None:
+            continue
+        if pass_name in disabled_passes:
+            raise ConfigurationError(
+                f"{flag} conflicts with --disable-pass {pass_name}"
+            )
+        result[config_key] = value
+        enabled_key = NUMBER_FIELDS_BY_KEY[config_key].enabled_key
+        result[enabled_key] = True
+
+    for pass_name in enabled_passes:
+        result[_CLI_PASS_KEYS[pass_name]] = True
+    for pass_name in disabled_passes:
+        result[_CLI_PASS_KEYS[pass_name]] = False
+    return validate_render_config(
+        result,
+        require_complete=True,
+        allow_output_format=False,
+    )
+
+
+def cli_main():
+    parser = _build_cli_parser()
     args = parser.parse_args()
 
     # Start with built-in preset
     preset_name = args.preset.capitalize()
-    params = dict(PRESETS.get(preset_name, PRESETS['Moderate']))
-    params['output_format'] = args.out_format
+    params = dict(PRESETS[preset_name])
+
+    # Optional JSON preset file override
+    if args.preset_file:
+        try:
+            with open(args.preset_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            document = _validate_preset_document(data)
+            params = document["params"]
+            print(f"Loaded preset from {args.preset_file}")
+            preset_name = document["name"]
+        except (
+            ConfigurationError,
+            json.JSONDecodeError,
+            OSError,
+            TypeError,
+        ) as exc:
+            print(
+                f"Error: invalid configuration in preset file: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    try:
+        params = _apply_cli_overrides(params, args)
+        params["output_format"] = args.out_format
+        params = validate_render_config(
+            params,
+            require_complete=True,
+            allow_output_format=True,
+        )
+    except ConfigurationError as exc:
+        print(f"Error: invalid configuration: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     if _format_requires_ffmpeg(args.out_format):
         if not _check_ffmpeg():
@@ -4374,85 +4704,6 @@ def cli_main():
                 file=sys.stderr,
             )
             sys.exit(1)
-
-    # Optional JSON preset file override
-    if args.preset_file:
-        try:
-            with open(args.preset_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                data = _migrate_preset(data)
-            loaded = data.get('params', data) if isinstance(data, dict) else {}
-            if not isinstance(loaded, dict):
-                raise ValueError("preset file missing params block")
-            if (
-                'watermark_scan_enabled' in loaded
-                and 'spectral_scan_enabled' not in loaded
-            ):
-                loaded['spectral_scan_enabled'] = loaded.pop(
-                    'watermark_scan_enabled'
-                )
-            # Only accept known keys to avoid poisoning
-            known = (
-                {
-                    'strip_metadata',
-                    'spectral_scan_enabled',
-                    'watermark_scan_enabled',
-                }
-                | {d[0] for d in PARAM_DEFS}
-                | {d[7] for d in PARAM_DEFS}
-            )
-            for k, v in loaded.items():
-                if k in known:
-                    params[k] = v
-            print(f"Loaded preset from {args.preset_file}")
-            preset_name = data.get('name', 'Custom') if isinstance(data, dict) else 'Custom'
-        except Exception as e:
-            print(f"Warning: could not load preset file: {e}")
-
-    # Override with CLI args (validated)
-    if args.no_spectral_scan:
-        params['spectral_scan_enabled'] = False
-    if args.spectral is not None:
-        params['spectral_strength'] = _clamp(args.spectral, 0.0, 1.0, 'spectral')
-    if args.spectral_sub_bass is not None:
-        params['spectral_sub_bass_strength'] = _clamp(
-            args.spectral_sub_bass, 0.0, 1.0, 'spectral-sub-bass',
-        )
-        params['spectral_sub_bass_enabled'] = True
-    if args.spectral_low_mids is not None:
-        params['spectral_low_mids_strength'] = _clamp(
-            args.spectral_low_mids, 0.0, 1.0, 'spectral-low-mids',
-        )
-        params['spectral_low_mids_enabled'] = True
-    if args.spectral_presence is not None:
-        params['spectral_presence_strength'] = _clamp(
-            args.spectral_presence, 0.0, 1.0, 'spectral-presence',
-        )
-        params['spectral_presence_enabled'] = True
-    if args.spectral_air is not None:
-        params['spectral_air_strength'] = _clamp(args.spectral_air, 0.0, 1.0, 'spectral-air')
-        params['spectral_air_enabled'] = True
-    if args.dynamic_eq is not None:
-        params['dynamic_eq_amount'] = _clamp(args.dynamic_eq, 0.0, 1.0, 'dynamic-eq')
-        params['dynamic_eq_enabled'] = True
-    if args.pitch is not None:
-        params['pitch_range'] = _clamp(args.pitch, 0.0, 5.0, 'pitch')
-    if args.tempo is not None:
-        params['tempo_range'] = _clamp(args.tempo, 0.0, 0.15, 'tempo')
-    if args.phase is not None:
-        params['phase_amount'] = _clamp(args.phase, 0.0, 1.0, 'phase')
-    if args.stereo is not None:
-        params['stereo_shift'] = _clamp(args.stereo, 0.0, 0.5, 'stereo')
-    if args.noise is not None:
-        params['noise_level'] = _clamp(args.noise, -70.0, -30.0, 'noise')
-    if args.dynamics is not None:
-        params['dynamics_amount'] = _clamp(args.dynamics, 0.0, 1.0, 'dynamics')
-    if args.humanize is not None:
-        params['humanize_amount'] = _clamp(args.humanize, 0.0, 1.0, 'humanize')
-    if args.reencode is not None:
-        params['reencode_bitrate'] = _clamp(args.reencode, 96, 320, 'reencode')
-        params['reencode_enabled'] = True
 
     # Collect input files
     input_path = Path(args.input)

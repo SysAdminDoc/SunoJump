@@ -107,8 +107,9 @@ The gate fails on a missing, stale, or wrong-version executable; undeclared bund
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
 - **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
 - **Truthful terminal states** — jobs and batches report `succeeded`, `partial`, `failed`, or `cancelled` with stable error codes; only an all-success batch reaches 100%
+- **Lifecycle-safe cancellation** — one Cancel control covers batches, previews, and preset comparisons; closing waits for confirmed worker exit and never removes active temp storage
 - **Replayable output evidence** — every render displays its effective seed; WAV/FLAC same-environment replays are byte-tested, while sidecars name exact muxer/codec dependencies when bytes are build-sensitive
-- **Batch queue** — drag/drop multiple files, reorder them, and process them sequentially
+- **Identity-safe batch queue** — drag/drop multiple files, reorder them, and process them sequentially; stable job IDs prevent late worker results from attaching to replacement rows
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
 - **Guarded in-memory processing** — input size/decode limits are enforced; the Humanization pass processes long audio in chunks
 - **Open Output** — one-click to output folder in your file manager

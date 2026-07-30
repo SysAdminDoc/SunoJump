@@ -17,7 +17,7 @@ if '--safe-decode-worker' in sys.argv:
 
 # --- Imports ---
 import os, json, argparse, copy, tempfile, shutil, threading, hashlib, time
-import secrets
+import secrets, uuid
 import platform, traceback
 import subprocess
 from pathlib import Path
@@ -152,6 +152,7 @@ DECODE_TIMEOUT_SECONDS = 120.0
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
 ROLE_OUTPUT = Qt.ItemDataRole.UserRole + 1
+ROLE_JOB_ID = Qt.ItemDataRole.UserRole + 2
 
 PRESETS = {
     'Gentle': {
@@ -3196,20 +3197,27 @@ class AudioProcessor:
 class ProcessWorker(QThread):
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)
-    # file_started(row_index) - fired just before processing each file
-    file_started = pyqtSignal(int)
-    # file_done(row_index, RenderResult)
-    file_done = pyqtSignal(int, object)
+    # Stable queue job IDs prevent stale results from attaching by row index.
+    file_started = pyqtSignal(str)
+    file_done = pyqtSignal(str, object)
     # all_done(BatchResult)
     all_done = pyqtSignal(object)
 
-    def __init__(self, files, params, output_dir):
+    def __init__(self, jobs, params, output_dir):
         super().__init__()
-        self.files = files
+        self.jobs = []
+        for index, job in enumerate(jobs):
+            if isinstance(job, (tuple, list)) and len(job) == 2:
+                job_id, filepath = job
+            else:
+                job_id = f"worker-{index}-{uuid.uuid4().hex}"
+                filepath = job
+            self.jobs.append((str(job_id), str(filepath)))
+        self.files = [filepath for _, filepath in self.jobs]
         self.params = params
         self.output_dir = output_dir
         self._cancel_event = threading.Event()
-        self.seeds = [secrets.randbits(64) for _ in files]
+        self.seeds = [secrets.randbits(64) for _ in self.jobs]
 
     def run(self):
         t_start = time.monotonic()
@@ -3219,7 +3227,7 @@ class ProcessWorker(QThread):
         except OSError as e:
             message = f"cannot create output directory: {e}"
             self.log_signal.emit(message.capitalize())
-            for idx, filepath in enumerate(self.files):
+            for idx, (job_id, filepath) in enumerate(self.jobs):
                 result = RenderResult(
                     state=RenderState.FAILED,
                     input_path=str(filepath),
@@ -3228,7 +3236,7 @@ class ProcessWorker(QThread):
                     effective_seed=self.seeds[idx],
                 )
                 results.append(result)
-                self.file_done.emit(idx, result)
+                self.file_done.emit(job_id, result)
                 self.log_signal.emit(format_render_result(result))
             self.all_done.emit(
                 BatchResult.from_results(
@@ -3240,22 +3248,23 @@ class ProcessWorker(QThread):
         n_files = len(self.files)
         used_outputs = set()
 
-        for idx, filepath in enumerate(self.files):
+        for idx, (job_id, filepath) in enumerate(self.jobs):
             if self._cancel_event.is_set():
                 for cancelled_idx in range(idx, n_files):
+                    cancelled_job_id, cancelled_path = self.jobs[cancelled_idx]
                     result = RenderResult(
                         state=RenderState.CANCELLED,
-                        input_path=str(self.files[cancelled_idx]),
+                        input_path=cancelled_path,
                         error_code=RenderErrorCode.CANCELLED,
                         message="batch cancelled before this job started",
                         effective_seed=self.seeds[cancelled_idx],
                     )
                     results.append(result)
-                    self.file_done.emit(cancelled_idx, result)
+                    self.file_done.emit(cancelled_job_id, result)
                     self.log_signal.emit(format_render_result(result))
                 break
 
-            self.file_started.emit(idx)
+            self.file_started.emit(job_id)
 
             # Map per-file progress (0-100) to batch progress
             def batch_progress(v, _idx=idx, _n=n_files):
@@ -3302,7 +3311,7 @@ class ProcessWorker(QThread):
                     reservation.release()
             results.append(result)
             self.log_signal.emit(format_render_result(result))
-            self.file_done.emit(idx, result)
+            self.file_done.emit(job_id, result)
 
         self.all_done.emit(
             BatchResult.from_results(results, time.monotonic() - t_start)
@@ -3320,24 +3329,44 @@ class PreviewWorker(QThread):
 
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)
-    # done(success, output_path_or_empty, item_id)
-    done = pyqtSignal(bool, str, int)
+    # done(queue_job_id, preview_run_id, RenderResult)
+    done = pyqtSignal(str, str, object)
 
-    def __init__(self, input_path, params, temp_dir, item_id, duration_sec=PREVIEW_DURATION_SEC):
+    def __init__(
+        self,
+        input_path,
+        params,
+        temp_dir,
+        job_id,
+        run_id,
+        duration_sec=PREVIEW_DURATION_SEC,
+    ):
         super().__init__()
-        self.input_path = input_path
+        self.input_path = str(input_path)
         self.params = params
         self.temp_dir = temp_dir
-        self.item_id = item_id
+        self.job_id = str(job_id)
+        self.run_id = str(run_id)
         self.duration_sec = duration_sec
         self._cancel_event = threading.Event()
+        self.seed = secrets.randbits(64)
 
     def run(self):
         try:
             os.makedirs(self.temp_dir, exist_ok=True)
         except OSError as e:
             self.log_signal.emit(f"Preview: cannot create temp dir: {e}")
-            self.done.emit(False, "", self.item_id)
+            self.done.emit(
+                self.job_id,
+                self.run_id,
+                RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=self.input_path,
+                    error_code=RenderErrorCode.OUTPUT_DIR_UNAVAILABLE,
+                    message=f"cannot create preview directory: {e}",
+                    effective_seed=self.seed,
+                ),
+            )
             return
 
         stem = Path(self.input_path).stem
@@ -3356,6 +3385,7 @@ class PreviewWorker(QThread):
             log_fn=lambda m: self.log_signal.emit(m),
             progress_fn=lambda v: self.progress_signal.emit(v),
             cancel_event=self._cancel_event,
+            seed=self.seed,
         )
         self.log_signal.emit(f"Preview output path: {out_path}")
         try:
@@ -3364,13 +3394,20 @@ class PreviewWorker(QThread):
                 out_path,
                 preview_seconds=self.duration_sec,
             )
-            ok = result.usable_output
+            if not isinstance(result, RenderResult):
+                raise TypeError("preview processor returned an untyped result")
             self.log_signal.emit(format_render_result(result))
         except Exception as e:
             self.log_signal.emit(f"Preview failed unexpectedly: {e}")
             self.log_signal.emit(traceback.format_exc().rstrip())
-            ok = False
-        self.done.emit(ok, out_path if ok else "", self.item_id)
+            result = RenderResult(
+                state=RenderState.FAILED,
+                input_path=self.input_path,
+                error_code=RenderErrorCode.UNEXPECTED,
+                message=str(e),
+                effective_seed=self.seed,
+            )
+        self.done.emit(self.job_id, self.run_id, result)
 
     def cancel(self):
         self._cancel_event.set()
@@ -3386,34 +3423,84 @@ class PresetCompareWorker(QThread):
 
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)  # 0-100 overall (across all presets)
-    # preset_done(preset_name, ok, path)
-    preset_done = pyqtSignal(str, bool, str)
-    # all_done(results_dict)  mapping preset_name -> out_path (only successes)
-    all_done = pyqtSignal(dict)
+    # preset_done(queue_job_id, compare_run_id, preset_name, RenderResult)
+    preset_done = pyqtSignal(str, str, str, object)
+    # all_done(queue_job_id, compare_run_id, BatchResult)
+    all_done = pyqtSignal(str, str, object)
 
-    def __init__(self, input_path, temp_dir, duration_sec=COMPARE_DURATION_SEC):
+    def __init__(
+        self,
+        input_path,
+        temp_dir,
+        job_id,
+        run_id,
+        duration_sec=COMPARE_DURATION_SEC,
+    ):
         super().__init__()
-        self.input_path = input_path
+        self.input_path = str(input_path)
         self.temp_dir = temp_dir
+        self.job_id = str(job_id)
+        self.run_id = str(run_id)
         self.duration_sec = duration_sec
         self._cancel_event = threading.Event()
+        self.preset_names = list(PRESETS.keys())
+        self.seeds = {
+            name: secrets.randbits(64) for name in self.preset_names
+        }
 
     def run(self):
-        results = {}
+        started_at = time.monotonic()
+        results = []
+        n_presets = len(self.preset_names)
         try:
             os.makedirs(self.temp_dir, exist_ok=True)
         except OSError as e:
             self.log_signal.emit(f"Compare: cannot create temp dir: {e}")
-            self.all_done.emit(results)
+            for name in self.preset_names:
+                result = RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=self.input_path,
+                    error_code=RenderErrorCode.OUTPUT_DIR_UNAVAILABLE,
+                    message=f"cannot create compare directory: {e}",
+                    effective_seed=self.seeds[name],
+                )
+                results.append(result)
+                self.preset_done.emit(
+                    self.job_id,
+                    self.run_id,
+                    name,
+                    result,
+                )
+            self.all_done.emit(
+                self.job_id,
+                self.run_id,
+                BatchResult.from_results(
+                    results,
+                    time.monotonic() - started_at,
+                ),
+            )
             return
 
         stem = Path(self.input_path).stem
         ts = datetime.now().strftime("%H%M%S%f")
-        preset_names = list(PRESETS.keys())
-        n_presets = len(preset_names)
 
-        for i, name in enumerate(preset_names):
+        for i, name in enumerate(self.preset_names):
             if self._cancel_event.is_set():
+                for cancelled_name in self.preset_names[i:]:
+                    result = RenderResult(
+                        state=RenderState.CANCELLED,
+                        input_path=self.input_path,
+                        error_code=RenderErrorCode.CANCELLED,
+                        message="compare cancelled before this preset started",
+                        effective_seed=self.seeds[cancelled_name],
+                    )
+                    results.append(result)
+                    self.preset_done.emit(
+                        self.job_id,
+                        self.run_id,
+                        cancelled_name,
+                        result,
+                    )
                 break
             self.log_signal.emit(f"Compare {i+1}/{n_presets}: {name}")
 
@@ -3436,26 +3523,40 @@ class PresetCompareWorker(QThread):
                 log_fn=lambda m: self.log_signal.emit(f"  {m}"),
                 progress_fn=sub_progress,
                 cancel_event=self._cancel_event,
+                seed=self.seeds[name],
             )
             try:
                 result = proc.process(
                     self.input_path, out_path, preview_seconds=self.duration_sec,
                 )
-                ok = result.usable_output
+                if not isinstance(result, RenderResult):
+                    raise TypeError("compare processor returned an untyped result")
                 self.log_signal.emit(f"  {format_render_result(result)}")
             except Exception as e:
                 self.log_signal.emit(f"  Compare {name} failed unexpectedly: {e}")
                 self.log_signal.emit(traceback.format_exc().rstrip())
-                ok = False
-            if ok:
-                results[name] = out_path
-                self.preset_done.emit(name, True, out_path)
-            else:
-                self.preset_done.emit(name, False, "")
+                result = RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=self.input_path,
+                    error_code=RenderErrorCode.UNEXPECTED,
+                    message=str(e),
+                    effective_seed=self.seeds[name],
+                )
+            results.append(result)
+            self.preset_done.emit(
+                self.job_id,
+                self.run_id,
+                name,
+                result,
+            )
 
-        if len(results) == n_presets and not self._cancel_event.is_set():
+        batch_result = BatchResult.from_results(
+            results,
+            time.monotonic() - started_at,
+        )
+        if batch_result.state is RenderState.SUCCEEDED:
             self.progress_signal.emit(100)
-        self.all_done.emit(results)
+        self.all_done.emit(self.job_id, self.run_id, batch_result)
 
     def cancel(self):
         self._cancel_event.set()
@@ -3602,9 +3703,17 @@ class MainWindow(QMainWindow):
         self.preview_worker = None
         self.compare_worker = None
         self._preview_tempdir = None  # created lazily on first preview
-        self._preview_item_id = None  # id() of the QListWidgetItem being previewed
+        self._preview_job_id = None
+        self._preview_run_id = None
+        self._preview_terminal_state = "Failed"
         self._compare_results = {}  # preset_name -> path
-        self._compare_for_item_id = None  # id() of item compare was rendered for
+        self._compare_job_id = None
+        self._compare_run_id = None
+        self._compare_terminal_state = "Failed"
+        self._batch_terminal_state = "Failed"
+        self._batch_result_received = False
+        self._deferred_preview_cleanup = set()
+        self._close_pending = False
         self._playing_compare_preset = None  # name of preset currently playing from compare
         # Suppresses stale StoppedState signals during source transitions
         # (player.stop() + setSource() + play() fires Stopped then Playing;
@@ -3722,7 +3831,11 @@ class MainWindow(QMainWindow):
         _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
         _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
         _set_accessibility(self.btn_process, "Process all", "Start processing every queued file.")
-        _set_accessibility(self.btn_cancel, "Cancel processing", "Cancel the active render; disabled when no render is running.")
+        _set_accessibility(
+            self.btn_cancel,
+            "Cancel active render",
+            "Cancel the active batch, preview, or preset comparison.",
+        )
         _set_accessibility(self.progress, "Render progress", "Shows current render progress.")
         _set_accessibility(self.log_box, "Session log", "Shows processing events, warnings, metrics, and diagnostics.")
 
@@ -4327,6 +4440,7 @@ class MainWindow(QMainWindow):
         item.setToolTip(path)
         item.setData(ROLE_INPUT, path)
         item.setData(ROLE_OUTPUT, None)
+        item.setData(ROLE_JOB_ID, uuid.uuid4().hex)
         self.file_list.addItem(item)
 
     def _update_file_count(self):
@@ -4434,11 +4548,14 @@ class MainWindow(QMainWindow):
         )
 
     # --- Processing control ---
-    def _set_processing_ui(self, processing):
+    def _set_processing_ui(self, processing, state=None):
         self.btn_process.setEnabled(not processing)
         self.btn_cancel.setEnabled(processing)
+        self.btn_cancel.setText("Cancel")
         self._set_general_controls(not processing)
-        self._set_render_state("Processing" if processing else "Ready")
+        self._set_render_state(
+            state or ("Processing" if processing else "Ready")
+        )
         # Preview + compare mutually exclusive with batch processing
         has_selection = self._current_selected_item() is not None
         if _MULTIMEDIA_OK:
@@ -4449,17 +4566,21 @@ class MainWindow(QMainWindow):
         if processing:
             self.progress.setValue(0)
 
-    def _set_preview_running_ui(self, running):
+    def _set_preview_running_ui(self, running, state=None):
         if _MULTIMEDIA_OK:
             self.btn_render_preview.setEnabled(not running)
             self.btn_render_preview.setText("Rendering..." if running else "Preview")
             self.btn_compare.setEnabled(not running)
-        self._set_render_state("Previewing" if running else "Ready")
+        self.btn_cancel.setEnabled(running)
+        self.btn_cancel.setText("Cancel")
+        self._set_render_state(
+            state or ("Previewing" if running else "Ready")
+        )
         self.btn_process.setEnabled(not running)
         self._set_general_controls(not running)
         self.file_list.setDragEnabled(not running)
 
-    def _set_compare_running_ui(self, running):
+    def _set_compare_running_ui(self, running, state=None):
         if _MULTIMEDIA_OK:
             self.btn_compare.setEnabled(not running)
             self.btn_compare.setText("Comparing..." if running else "Compare")
@@ -4469,7 +4590,11 @@ class MainWindow(QMainWindow):
                 for b in self.compare_buttons.values():
                     b.setEnabled(False)
                 self.btn_apply_compare.setEnabled(False)
-        self._set_render_state("Comparing" if running else "Ready")
+        self.btn_cancel.setEnabled(running)
+        self.btn_cancel.setText("Cancel")
+        self._set_render_state(
+            state or ("Comparing" if running else "Ready")
+        )
         self.btn_process.setEnabled(not running)
         self._set_general_controls(not running)
         self.file_list.setDragEnabled(not running)
@@ -4492,10 +4617,14 @@ class MainWindow(QMainWindow):
         self._stop_playback()
 
         files = []
+        jobs = []
         for i in range(self.file_list.count()):
-            files.append(self.file_list.item(i).data(ROLE_INPUT))
+            item = self.file_list.item(i)
+            input_path = item.data(ROLE_INPUT)
+            files.append(input_path)
+            jobs.append((self._ensure_item_job_id(item), input_path))
             # Clear any previous processed-path marker
-            self.file_list.item(i).setData(ROLE_OUTPUT, None)
+            item.setData(ROLE_OUTPUT, None)
 
         out_dir = self.output_dir.text().strip() or DEFAULT_OUTPUT
         params = self._get_params()
@@ -4508,32 +4637,56 @@ class MainWindow(QMainWindow):
         self._log(f"Starting -- {len(files)} file(s), preset: {self.preset_combo.currentText()}")
         self._log(f"Output: {out_dir}\n")
 
-        self.worker = ProcessWorker(files, params, out_dir)
+        self._batch_terminal_state = "Failed"
+        self._batch_result_received = False
+        self.worker = ProcessWorker(jobs, params, out_dir)
+        active_worker = self.worker
         self.worker.log_signal.connect(self._log)
         self.worker.progress_signal.connect(self.progress.setValue)
         self.worker.file_started.connect(self._on_file_started)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.all_done.connect(self._on_all_done)
+        self.worker.finished.connect(
+            lambda worker=active_worker: self._on_batch_thread_finished(worker)
+        )
         self.worker.start()
 
     def _on_cancel(self):
-        if self.worker:
-            self._set_render_state("Cancelling")
-            self.worker.cancel()
-            self._log("\nCancelling...")
+        active = []
+        for label, worker in (
+            ("batch", self.worker),
+            ("preview", self.preview_worker),
+            ("comparison", self.compare_worker),
+        ):
+            if worker is not None and worker.isRunning():
+                active.append((label, worker))
+        if not active:
+            self._log("No active render to cancel.")
+            return
+        self._set_render_state("Cancelling")
+        self.btn_cancel.setEnabled(False)
+        for _, worker in active:
+            worker.cancel()
+        labels = ", ".join(label for label, _ in active)
+        self._log(f"\nCancelling {labels}...")
 
-    def _on_file_started(self, idx):
-        if 0 <= idx < self.file_list.count():
-            item = self.file_list.item(idx)
+    def _on_file_started(self, job_id):
+        item = self._find_item_by_job_id(job_id)
+        if item is not None:
             name = Path(item.data(ROLE_INPUT)).name
             item.setText(f"RUNNING  {name}")
 
-    def _on_file_done(self, idx, result):
+    def _on_file_done(self, job_id, result):
         if not isinstance(result, RenderResult):
             self._log("Ignored untyped worker result.")
             return
-        if 0 <= idx < self.file_list.count():
-            item = self.file_list.item(idx)
+        item = self._job_item_matches_result(job_id, result)
+        if item is None:
+            self._log(
+                f"Ignored stale result for queue job {job_id}: "
+                f"{Path(result.input_path).name}"
+            )
+        else:
             name = Path(item.data(ROLE_INPUT)).name
             if result.state is RenderState.SUCCEEDED:
                 item.setText(
@@ -4557,25 +4710,44 @@ class MainWindow(QMainWindow):
         self._update_preview_ui()
 
     def _on_all_done(self, result):
-        self._set_processing_ui(False)
+        self._batch_result_received = True
         if not isinstance(result, BatchResult):
             self.progress.setValue(min(self.progress.value(), 99))
+            self._batch_terminal_state = "Failed"
             self._set_render_state("Failed")
             self._log("\nBatch failed: worker returned an untyped outcome.")
             return
         if result.state is RenderState.SUCCEEDED:
             self.progress.setValue(100)
+            self._batch_terminal_state = "Complete"
             self._set_render_state("Complete")
         elif result.state is RenderState.PARTIAL:
             self.progress.setValue(min(self.progress.value(), 99))
+            self._batch_terminal_state = "Partial"
             self._set_render_state("Partial")
         elif result.state is RenderState.CANCELLED:
             self.progress.setValue(min(self.progress.value(), 99))
+            self._batch_terminal_state = "Cancelled"
             self._set_render_state("Cancelled")
         else:
             self.progress.setValue(min(self.progress.value(), 99))
+            self._batch_terminal_state = "Failed"
             self._set_render_state("Failed")
         self._log(f"\n{format_batch_result(result)}")
+
+    def _on_batch_thread_finished(self, worker):
+        if self.worker is not worker:
+            return
+        if not self._batch_result_received:
+            self._batch_terminal_state = "Failed"
+            self.progress.setValue(min(self.progress.value(), 99))
+            self._log("Batch worker exited without a terminal result.")
+        self.worker = None
+        self._set_processing_ui(
+            False,
+            state=self._batch_terminal_state,
+        )
+        self._on_render_thread_finished()
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -4627,13 +4799,33 @@ class MainWindow(QMainWindow):
             return self.file_list.item(0)
         return None
 
-    def _find_item_by_id(self, item_id):
-        """Find a QListWidgetItem by id() - handles list mutation during preview."""
+    def _ensure_item_job_id(self, item):
+        job_id = item.data(ROLE_JOB_ID)
+        if not isinstance(job_id, str) or not job_id:
+            job_id = uuid.uuid4().hex
+            item.setData(ROLE_JOB_ID, job_id)
+        return job_id
+
+    def _find_item_by_job_id(self, job_id):
+        """Resolve a stable queue identity without relying on wrapper addresses."""
         for i in range(self.file_list.count()):
             item = self.file_list.item(i)
-            if id(item) == item_id:
+            if item.data(ROLE_JOB_ID) == job_id:
                 return item
         return None
+
+    def _job_item_matches_result(self, job_id, result):
+        item = self._find_item_by_job_id(job_id)
+        if item is None:
+            return None
+        input_path = item.data(ROLE_INPUT)
+        if (
+            not input_path
+            or _norm_output_path(input_path)
+            != _norm_output_path(result.input_path)
+        ):
+            return None
+        return item
 
     def _is_preview_output(self, path):
         """True if path is a file inside our preview temp directory."""
@@ -4645,6 +4837,22 @@ class MainWindow(QMainWindow):
             ) == os.path.abspath(self._preview_tempdir)
         except ValueError:
             return False
+
+    def _queue_preview_cleanup(self, output_path):
+        if self._is_preview_output(output_path):
+            self._deferred_preview_cleanup.add(str(output_path))
+
+    def _flush_deferred_preview_cleanup(self):
+        if any(
+            worker is not None and worker.isRunning()
+            for worker in (self.preview_worker, self.compare_worker)
+        ):
+            return
+        pending = tuple(self._deferred_preview_cleanup)
+        self._deferred_preview_cleanup.clear()
+        for output_path in pending:
+            _remove_file_silent(output_path)
+            _remove_file_silent(_sidecar_path_for_output(output_path))
 
     # --- Render preview ---
     def _on_render_preview(self):
@@ -4679,13 +4887,11 @@ class MainWindow(QMainWindow):
                 self._log(f"Cannot create preview temp dir: {e}")
                 return
 
-        # Clean up previous preview file for this item so temp dir doesn't grow
+        # Clean previous evidence only while no preview worker can still use it.
         prev = item.data(ROLE_OUTPUT)
-        if self._is_preview_output(prev) and os.path.isfile(prev):
-            try:
-                os.unlink(prev)
-            except OSError:
-                pass
+        if self._is_preview_output(prev):
+            self._queue_preview_cleanup(prev)
+            self._flush_deferred_preview_cleanup()
             item.setData(ROLE_OUTPUT, None)
 
         params = self._get_params()
@@ -4693,7 +4899,9 @@ class MainWindow(QMainWindow):
             "gui-preview", [input_path], self._preview_tempdir, params,
             self.preset_combo.currentText(),
         )
-        self._preview_item_id = id(item)
+        self._preview_job_id = self._ensure_item_job_id(item)
+        self._preview_run_id = uuid.uuid4().hex
+        self._preview_terminal_state = "Failed"
         self._set_preview_running_ui(True)
         self._log(
             f"Rendering {int(PREVIEW_DURATION_SEC)}s preview of "
@@ -4701,37 +4909,79 @@ class MainWindow(QMainWindow):
         )
 
         self.preview_worker = PreviewWorker(
-            input_path, params, self._preview_tempdir, self._preview_item_id,
+            input_path,
+            params,
+            self._preview_tempdir,
+            self._preview_job_id,
+            self._preview_run_id,
         )
+        active_worker = self.preview_worker
         self.preview_worker.log_signal.connect(self._log)
         self.preview_worker.progress_signal.connect(self.progress.setValue)
         self.preview_worker.done.connect(self._on_preview_done)
+        self.preview_worker.finished.connect(
+            lambda worker=active_worker: self._on_preview_thread_finished(worker)
+        )
         self.preview_worker.start()
 
-    def _on_preview_done(self, ok, out_path, item_id):
-        self._set_preview_running_ui(False)
+    def _on_preview_done(self, job_id, run_id, result):
+        if not isinstance(result, RenderResult):
+            self._preview_terminal_state = "Failed"
+            self._log("Preview worker returned an untyped result.")
+            return
 
-        if not ok:
-            self._log("Preview render failed.")
+        if (
+            job_id != self._preview_job_id
+            or run_id != self._preview_run_id
+        ):
+            if result.usable_output:
+                self._queue_preview_cleanup(result.output_path)
+            self._log("Ignored stale preview result from an older render.")
+            return
+
+        if result.state is RenderState.CANCELLED:
+            self._preview_terminal_state = "Cancelled"
+            self._log("Preview cancelled.")
+            self._update_preview_ui()
+            return
+        if not result.usable_output:
+            self._preview_terminal_state = "Failed"
+            self._log(f"Preview failed: {format_render_result(result)}")
             self._update_preview_ui()
             return
 
-        # Re-locate the item by id() in case the list was modified mid-render
-        item = self._find_item_by_id(item_id)
+        item = self._job_item_matches_result(job_id, result)
         if item is None:
-            self._log("Preview ready but original list item was removed.")
-            # Orphan the temp file; it will be cleaned on close
+            self._preview_terminal_state = "Ready"
+            self._queue_preview_cleanup(result.output_path)
+            self._log(
+                "Preview ready but its queue job no longer exists; "
+                "the stale output was not attached."
+            )
             self._update_preview_ui()
             return
 
-        item.setData(ROLE_OUTPUT, out_path)
+        self._preview_terminal_state = "Ready"
+        item.setData(ROLE_OUTPUT, result.output_path)
         self._update_preview_ui()
-        self._log(f"Preview ready: {Path(out_path).name}")
+        self._log(f"Preview ready: {Path(result.output_path).name}")
 
         # Auto-play so the user immediately hears the result
         if self.file_list.currentItem() is not item:
             self.file_list.setCurrentItem(item)
         self._toggle_play('processed')
+
+    def _on_preview_thread_finished(self, worker):
+        if self.preview_worker is not worker:
+            return
+        self.preview_worker = None
+        self._set_preview_running_ui(
+            False,
+            state=self._preview_terminal_state,
+        )
+        self._flush_deferred_preview_cleanup()
+        self._update_preview_ui()
+        self._on_render_thread_finished()
 
     # --- Compare presets ---
     def _on_compare_presets(self):
@@ -4765,7 +5015,9 @@ class MainWindow(QMainWindow):
         # Reset compare state
         self._compare_results = {}
         self._playing_compare_preset = None
-        self._compare_for_item_id = id(item)
+        self._compare_job_id = self._ensure_item_job_id(item)
+        self._compare_run_id = uuid.uuid4().hex
+        self._compare_terminal_state = "Failed"
         self.compare_panel.setVisible(True)
         for name, btn in self.compare_buttons.items():
             btn.setEnabled(False)
@@ -4784,30 +5036,88 @@ class MainWindow(QMainWindow):
             f"({len(PRESETS)} presets)..."
         )
 
-        self.compare_worker = PresetCompareWorker(input_path, self._preview_tempdir)
+        self.compare_worker = PresetCompareWorker(
+            input_path,
+            self._preview_tempdir,
+            self._compare_job_id,
+            self._compare_run_id,
+        )
+        active_worker = self.compare_worker
         self.compare_worker.log_signal.connect(self._log)
         self.compare_worker.progress_signal.connect(self.progress.setValue)
         self.compare_worker.preset_done.connect(self._on_compare_preset_done)
         self.compare_worker.all_done.connect(self._on_compare_all_done)
+        self.compare_worker.finished.connect(
+            lambda worker=active_worker: self._on_compare_thread_finished(worker)
+        )
         self.compare_worker.start()
 
-    def _on_compare_preset_done(self, name, ok, out_path):
+    def _on_compare_preset_done(self, job_id, run_id, name, result):
+        if not isinstance(result, RenderResult):
+            self._log(f"Compare {name} returned an untyped result.")
+            return
+        if (
+            job_id != self._compare_job_id
+            or run_id != self._compare_run_id
+            or self._job_item_matches_result(job_id, result) is None
+        ):
+            if result.usable_output:
+                self._queue_preview_cleanup(result.output_path)
+            self._log(f"Ignored stale {name} comparison result.")
+            return
         btn = self.compare_buttons.get(name)
         if btn is None:
+            if result.usable_output:
+                self._queue_preview_cleanup(result.output_path)
             return
-        if ok:
-            self._compare_results[name] = out_path
+        if result.usable_output:
+            self._compare_results[name] = result.output_path
             btn.setText(f"Play {name}")
             btn.setEnabled(True)
+        elif result.state is RenderState.CANCELLED:
+            btn.setText(f"{name} (cancelled)")
+            btn.setEnabled(False)
         else:
             btn.setText(f"{name} (failed)")
             btn.setEnabled(False)
 
-    def _on_compare_all_done(self, results):
-        self._set_compare_running_ui(False)
-        n_ok = sum(1 for b in self.compare_buttons.values() if b.isEnabled())
-        self._log(f"Compare complete: {n_ok}/{len(PRESETS)} presets rendered.")
+    def _on_compare_all_done(self, job_id, run_id, result):
+        if (
+            job_id != self._compare_job_id
+            or run_id != self._compare_run_id
+        ):
+            self._log("Ignored terminal result from an older comparison.")
+            return
+        if not isinstance(result, BatchResult):
+            self._compare_terminal_state = "Failed"
+            self._log("Comparison worker returned an untyped terminal result.")
+            return
+        if result.state is RenderState.CANCELLED:
+            self._compare_terminal_state = "Cancelled"
+        elif result.state is RenderState.SUCCEEDED:
+            self._compare_terminal_state = "Ready"
+        elif result.state is RenderState.PARTIAL:
+            self._compare_terminal_state = "Partial"
+        else:
+            self._compare_terminal_state = "Failed"
+        n_ok = len(self._compare_results)
+        self._log(
+            f"Compare {result.state.value}: "
+            f"{n_ok}/{len(PRESETS)} presets rendered."
+        )
         self._update_preview_ui()
+
+    def _on_compare_thread_finished(self, worker):
+        if self.compare_worker is not worker:
+            return
+        self.compare_worker = None
+        self._set_compare_running_ui(
+            False,
+            state=self._compare_terminal_state,
+        )
+        self._flush_deferred_preview_cleanup()
+        self._update_preview_ui()
+        self._on_render_thread_finished()
 
     def _play_compare(self, preset_name):
         """Play the compare sample for the given preset (toggle on/off)."""
@@ -4922,13 +5232,21 @@ class MainWindow(QMainWindow):
         # Hide stale compare panel if the file it was rendered for is gone
         # or selection moved to a different file.
         if self.compare_panel.isVisible():
-            if item is None or id(item) != self._compare_for_item_id:
+            current_job_id = (
+                item.data(ROLE_JOB_ID) if item is not None else None
+            )
+            if item is None or current_job_id != self._compare_job_id:
                 if self._playing_compare_preset is not None and self.player is not None:
                     self.player.stop()
                 self._playing_compare_preset = None
+                for output_path in self._compare_results.values():
+                    self._queue_preview_cleanup(output_path)
                 self._compare_results = {}
-                self._compare_for_item_id = None
+                self._compare_job_id = None
+                self._compare_run_id = None
+                self._compare_terminal_state = "Ready"
                 self.compare_panel.setVisible(False)
+                self._flush_deferred_preview_cleanup()
 
         # Render Preview button: enabled when a file is selected and no job is running
         preview_worker_running = bool(self.preview_worker and self.preview_worker.isRunning())
@@ -4980,29 +5298,80 @@ class MainWindow(QMainWindow):
             self.btn_play_orig.setEnabled(orig_ok)
             self.btn_play_proc.setEnabled(proc_ok)
 
+    def _active_render_workers(self):
+        return [
+            (label, worker)
+            for label, worker in (
+                ("batch", self.worker),
+                ("preview", self.preview_worker),
+                ("comparison", self.compare_worker),
+            )
+            if worker is not None and worker.isRunning()
+        ]
+
+    def _on_render_thread_finished(self):
+        if self._close_pending and not self._active_render_workers():
+            self._close_pending = False
+            self._set_render_state("Safe to close")
+            self._log(
+                "Cancellation finished. Close the window again to exit safely."
+            )
+
+    def _cleanup_preview_tempdir(self):
+        if self._active_render_workers():
+            return False
+        self._flush_deferred_preview_cleanup()
+        if self._preview_tempdir and os.path.isdir(self._preview_tempdir):
+            shutil.rmtree(self._preview_tempdir, ignore_errors=True)
+            if os.path.isdir(self._preview_tempdir):
+                self._log(
+                    f"Preview temp cleanup incomplete: {self._preview_tempdir}"
+                )
+                return False
+        self._preview_tempdir = None
+        return True
+
     def closeEvent(self, event):
-        # Disconnect playback state handler before stopping; otherwise the
-        # Stopped signal queued by stop() can fire after the window is being
-        # destroyed, hitting deallocated widgets.
+        active = self._active_render_workers()
+        if active:
+            for _, worker in active:
+                worker.cancel()
+            self._set_render_state("Waiting to close")
+            self.btn_cancel.setEnabled(False)
+            for _, worker in active:
+                worker.wait(3000)
+            still_running = self._active_render_workers()
+            if still_running:
+                self._close_pending = True
+                labels = ", ".join(label for label, _ in still_running)
+                self._log(
+                    "Close paused: cancellation is still in progress for "
+                    f"{labels}. Wait for 'Safe to close', then close again."
+                )
+                event.ignore()
+                return
+
+        self._close_pending = False
+        # Disconnect playback state handlers only after every worker has
+        # reached a terminal state; queued media signals then cannot touch
+        # deallocated widgets.
         if self.player is not None:
             try:
-                self.player.playbackStateChanged.disconnect(self._on_playback_state_changed)
+                self.player.playbackStateChanged.disconnect(
+                    self._on_playback_state_changed
+                )
                 self.player.errorOccurred.disconnect(self._on_player_error)
             except (TypeError, RuntimeError):
                 pass
             self.player.stop()
-        if self.worker and self.worker.isRunning():
-            self.worker.cancel()
-            self.worker.wait(3000)
-        if self.preview_worker and self.preview_worker.isRunning():
-            self.preview_worker.cancel()
-            self.preview_worker.wait(3000)
-        if self.compare_worker and self.compare_worker.isRunning():
-            self.compare_worker.cancel()
-            self.compare_worker.wait(3000)
-        # Clean up preview temp directory
-        if self._preview_tempdir and os.path.isdir(self._preview_tempdir):
-            shutil.rmtree(self._preview_tempdir, ignore_errors=True)
+        if not self._cleanup_preview_tempdir():
+            self._set_render_state("Cleanup failed")
+            self._log(
+                "Close paused: preview files could not be removed. "
+                "Close again after resolving the reported path."
+            )
+            event.ignore()
+            return
         self._save_session_state()
         event.accept()
 

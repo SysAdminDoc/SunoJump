@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from pathlib import Path
+import tempfile
 import unittest
 
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
@@ -10,7 +12,7 @@ from render_results import (
     RenderResult,
     RenderState,
 )
-from sunojump import MainWindow, ROLE_INPUT, ROLE_OUTPUT
+from sunojump import MainWindow, ROLE_INPUT, ROLE_JOB_ID, ROLE_OUTPUT
 import verifiers
 
 
@@ -96,6 +98,7 @@ class GuiAccessibilityTests(unittest.TestCase):
     def test_file_rows_render_typed_terminal_states(self):
         item = QListWidgetItem("song.wav")
         item.setData(ROLE_INPUT, "song.wav")
+        item.setData(ROLE_JOB_ID, "job-song")
         self.window.file_list.addItem(item)
         cases = (
             (
@@ -141,7 +144,7 @@ class GuiAccessibilityTests(unittest.TestCase):
         )
         for result, label, output in cases:
             with self.subTest(state=result.state):
-                self.window._on_file_done(0, result)
+                self.window._on_file_done("job-song", result)
                 self.assertTrue(item.text().startswith(label), item.text())
                 self.assertEqual(item.data(ROLE_OUTPUT), output)
                 self.assertIn(result.state.value, item.toolTip())
@@ -187,6 +190,148 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.window._on_all_done(BatchResult.from_results([succeeded], 1.0))
         self.assertEqual(self.window.render_status_label.text(), "Complete")
         self.assertEqual(self.window.progress.value(), 100)
+
+    def test_stale_job_result_cannot_attach_to_replacement_row(self):
+        original = QListWidgetItem("song.wav")
+        original.setData(ROLE_INPUT, "song.wav")
+        original.setData(ROLE_JOB_ID, "retired-job")
+        self.window.file_list.addItem(original)
+        self.window.file_list.takeItem(0)
+
+        replacement = QListWidgetItem("song.wav")
+        replacement.setData(ROLE_INPUT, "song.wav")
+        replacement.setData(ROLE_OUTPUT, None)
+        replacement.setData(ROLE_JOB_ID, "replacement-job")
+        self.window.file_list.addItem(replacement)
+        stale = RenderResult(
+            state=RenderState.SUCCEEDED,
+            input_path="song.wav",
+            output_path="stale-output.wav",
+            validation=self._validated_output(),
+        )
+
+        self.window._on_file_done("retired-job", stale)
+
+        self.assertIsNone(replacement.data(ROLE_OUTPUT))
+        self.assertTrue(replacement.text().startswith("song.wav"))
+        self.assertIn("Ignored stale result", self.window.log_box.toPlainText())
+
+    def test_stale_preview_artifacts_wait_for_worker_exit_before_cleanup(self):
+        class FakeWorker:
+            def isRunning(self):
+                return True
+
+        preview_dir = Path(tempfile.mkdtemp(prefix="sunojump-stale-test-"))
+        output_path = preview_dir / "stale.wav"
+        sidecar_path = preview_dir / "stale.sidecar.json"
+        output_path.write_bytes(b"audio")
+        sidecar_path.write_text("{}\n", encoding="utf-8")
+        worker = FakeWorker()
+        self.window.preview_worker = worker
+        self.window._preview_tempdir = str(preview_dir)
+        self.window._preview_job_id = "removed-job"
+        self.window._preview_run_id = "old-run"
+        stale = RenderResult(
+            state=RenderState.SUCCEEDED,
+            input_path="removed.wav",
+            output_path=str(output_path),
+            validation=self._validated_output(),
+        )
+
+        self.window._on_preview_done("removed-job", "old-run", stale)
+
+        self.assertTrue(output_path.exists())
+        self.assertTrue(sidecar_path.exists())
+        self.window._on_preview_thread_finished(worker)
+        self.assertFalse(output_path.exists())
+        self.assertFalse(sidecar_path.exists())
+
+    def test_one_cancel_control_covers_all_render_modes(self):
+        class FakeWorker:
+            def __init__(self):
+                self.cancelled = False
+
+            def isRunning(self):
+                return True
+
+            def cancel(self):
+                self.cancelled = True
+
+        for attribute, set_running, expected_text in (
+            ("worker", self.window._set_processing_ui, "Cancel"),
+            (
+                "preview_worker",
+                self.window._set_preview_running_ui,
+                "Cancel",
+            ),
+            (
+                "compare_worker",
+                self.window._set_compare_running_ui,
+                "Cancel",
+            ),
+        ):
+            with self.subTest(mode=attribute):
+                fake = FakeWorker()
+                setattr(self.window, attribute, fake)
+                set_running(True)
+                self.assertTrue(self.window.btn_cancel.isEnabled())
+                self.assertEqual(self.window.btn_cancel.text(), expected_text)
+
+                self.window._on_cancel()
+
+                self.assertTrue(fake.cancelled)
+                self.assertFalse(self.window.btn_cancel.isEnabled())
+                setattr(self.window, attribute, None)
+                set_running(False)
+
+    def test_close_stays_open_until_worker_exit_before_temp_cleanup(self):
+        class FakeWorker:
+            def __init__(self):
+                self.running = True
+                self.cancelled = False
+
+            def isRunning(self):
+                return self.running
+
+            def cancel(self):
+                self.cancelled = True
+
+            def wait(self, _milliseconds):
+                return not self.running
+
+        class FakeCloseEvent:
+            def __init__(self):
+                self.accepted = False
+                self.ignored = False
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                self.ignored = True
+
+        preview_dir = Path(tempfile.mkdtemp(prefix="sunojump-close-test-"))
+        (preview_dir / "active.tmp").write_text("active", encoding="utf-8")
+        fake = FakeWorker()
+        self.window.preview_worker = fake
+        self.window._preview_tempdir = str(preview_dir)
+
+        first_event = FakeCloseEvent()
+        self.window.closeEvent(first_event)
+
+        self.assertTrue(first_event.ignored)
+        self.assertFalse(first_event.accepted)
+        self.assertTrue(fake.cancelled)
+        self.assertTrue(preview_dir.exists())
+        self.assertIn("Close paused", self.window.log_box.toPlainText())
+
+        fake.running = False
+        second_event = FakeCloseEvent()
+        self.window.closeEvent(second_event)
+
+        self.assertTrue(second_event.accepted)
+        self.assertFalse(second_event.ignored)
+        self.assertFalse(preview_dir.exists())
 
     def test_tab_order_follows_visual_workflow(self):
         order = self.window._tab_order_widgets

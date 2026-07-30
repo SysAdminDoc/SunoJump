@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from PyQt6.QtCore import QCoreApplication
+from PyQt6.QtWidgets import QApplication
 
 import sunojump
 from render_results import (
@@ -429,7 +429,7 @@ class OutputValidationTests(unittest.TestCase):
 class ProcessWorkerOutcomeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        cls.app = QApplication.instance() or QApplication([])
 
     def test_setup_failure_finishes_every_job_as_failed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -534,6 +534,87 @@ class ProcessWorkerOutcomeTests(unittest.TestCase):
         self.assertEqual(batches[0].state, RenderState.PARTIAL)
         self.assertEqual(batches[0].error_counts, {"decode_failed": 1})
         self.assertLess(max(progress), 100)
+
+
+class PreviewAndCompareWorkerOutcomeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_preview_cancel_emits_typed_cancelled_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.wav"
+            sf.write(input_path, self._tone(), 8000)
+            worker = sunojump.PreviewWorker(
+                input_path,
+                {"strip_metadata": True},
+                temp_dir,
+                "job-preview",
+                "run-preview",
+            )
+            done = []
+            worker.done.connect(
+                lambda job_id, run_id, result: done.append(
+                    (job_id, run_id, result)
+                )
+            )
+            worker.cancel()
+
+            worker.run()
+
+        self.assertEqual(len(done), 1)
+        job_id, run_id, result = done[0]
+        self.assertEqual(job_id, "job-preview")
+        self.assertEqual(run_id, "run-preview")
+        self.assertEqual(result.state, RenderState.CANCELLED)
+        self.assertEqual(result.error_code, RenderErrorCode.CANCELLED)
+        self.assertIsNotNone(result.effective_seed)
+
+    def test_compare_cancel_finishes_every_preset_as_cancelled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = sunojump.PresetCompareWorker(
+                "input.wav",
+                temp_dir,
+                "job-compare",
+                "run-compare",
+            )
+            presets = []
+            batches = []
+            worker.preset_done.connect(
+                lambda job_id, run_id, name, result: presets.append(
+                    (job_id, run_id, name, result)
+                )
+            )
+            worker.all_done.connect(
+                lambda job_id, run_id, result: batches.append(
+                    (job_id, run_id, result)
+                )
+            )
+            worker.cancel()
+
+            worker.run()
+
+        self.assertEqual(len(presets), len(sunojump.PRESETS))
+        self.assertTrue(
+            all(
+                job_id == "job-compare"
+                and run_id == "run-compare"
+                and result.state is RenderState.CANCELLED
+                for job_id, run_id, _, result in presets
+            )
+        )
+        self.assertEqual(batches[0][0:2], ("job-compare", "run-compare"))
+        self.assertEqual(batches[0][2].state, RenderState.CANCELLED)
+        self.assertEqual(
+            batches[0][2].counts["cancelled"],
+            len(sunojump.PRESETS),
+        )
+
+    @staticmethod
+    def _tone(sr=8000):
+        t = np.arange(sr, dtype=np.float64) / sr
+        return 0.25 * np.sin(2.0 * np.pi * 440.0 * t)
 
 
 class CliOutcomeIntegrationTests(unittest.TestCase):

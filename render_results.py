@@ -22,6 +22,8 @@ class RenderErrorCode(str, Enum):
     INVALID_INPUT = "invalid_input"
     DECODE_FAILED = "decode_failed"
     EMPTY_AUDIO = "empty_audio"
+    C2PA_INSPECTION_FAILED = "c2pa_inspection_failed"
+    C2PA_POLICY_REQUIRED = "c2pa_policy_required"
     NO_PASSES_ENABLED = "no_passes_enabled"
     PASS_FAILED = "pass_failed"
     OUTPUT_MAPPING_INVALID = "output_mapping_invalid"

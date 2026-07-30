@@ -28,7 +28,7 @@ SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based
 
 | # | Pass | What It Does |
 |---|------|-------------|
-| 1 | **Metadata Strip** | Removes tags recognized by Mutagen; signed provenance may be affected |
+| 1 | **Ordinary Metadata Strip** | Removes tags recognized by Mutagen after the separate C2PA provenance preflight |
 | 2 | **Spectral Perturbation** | Scans stable narrowband candidates, then perturbs frequency magnitudes with per-band controls and randomized STFT window sweeps |
 | 3 | **Dynamic EQ** | Time-varying multiband EQ with LUFS-like gain matching |
 | 4 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
@@ -105,6 +105,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Responsive, keyboard-complete GUI** — panels reflow down to 560×360, long labels wrap at enlarged font sizes and in RTL layouts, focus is visible, queue actions have keyboard equivalents, and sliders expose displayed units to screen readers
 - **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available
 - **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
+- **C2PA provenance guardrail** — locates embedded or adjacent Content Credentials before decode, blocks by default, and records manifest hashes plus the explicit output-without-source-credentials decision without claiming cryptographic validation
 - **Transactional output saves** — reserves collision-free names across processes, validates same-folder temporary renders, and atomically publishes without replacing an existing audio or sidecar destination
 - **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
 - **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
@@ -128,7 +129,7 @@ python sunojump.py
 1. Drop audio files into the file list (or click Browse)
 2. Select a preset or customize individual parameters
 3. (Optional) Click **Render Preview** to process the first 30 seconds of the selected file so you can hear the result before committing; adjust settings and re-render as needed
-4. Click **Process All** to render every file in the list to the output directory with `_sj` suffix
+4. Click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
 5. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
 
 Keyboard shortcuts cover the primary workflow: `Ctrl+O` browse, `Ctrl+P` preview, `Ctrl+Shift+P` compare, `Ctrl+R` resume, `Ctrl+Shift+R` retry failed, `Ctrl+S` save a preset, `Ctrl+Enter` process, and `Esc` cancel. In the queue, `Delete`/`Backspace` removes the selection and `Alt+Up`/`Alt+Down` reorders it.
@@ -150,6 +151,9 @@ python sunojump.py -i song.wav -p aggressive --reencode 128
 # Resume pending/interrupted work, or retry only failed/partial jobs
 python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json
 python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json --retry failed
+
+# Explicitly allow a transformed output that omits source Content Credentials
+python sunojump.py -i signed.wav --c2pa-policy allow-removal
 ```
 
 #### CLI Options
@@ -163,6 +167,7 @@ python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json --re
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
+| `--c2pa-policy` | `block`, or `allow-removal` to acknowledge that transformed outputs omit and do not re-sign source Content Credentials | block |
 | `--no-spectral-scan`, `--no-watermark-scan` | Disable the local narrowband candidate scan (`--no-watermark-scan` is retained for compatibility) | enabled |
 | `--enable-pass PASS` | Enable a named pass at its current/preset amount; repeatable | none |
 | `--disable-pass PASS` | Disable a named pass; repeatable | none |
@@ -190,6 +195,8 @@ Use `Save...` in the GUI to export the current settings, then pass the resulting
 CLI exit status is `0` only when every job succeeds, `1` when a batch has a usable output but is partial, and `2` when no job produces a usable output. Human-readable per-file and batch summaries include stable error codes, the effective seed, and sidecar hash. Each independently versioned sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
 
 Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
+
+Before any decode or transform, SunoJump performs bounded discovery of C2PA manifest stores in supported RIFF/WAVE, ID3-based MP3/FLAC, Ogg, AIFF, and adjacent `.c2pa` locations. Discovery reports `present_unvalidated`, `absent`, or `inspection_failed`; it does not validate signatures, trust chains, assertions, or hard bindings. A detected store is blocked by default. If explicitly allowed, the original remains byte-for-byte untouched while the re-encoded output omits and does not re-sign the source credentials. The replay sidecar records the source manifest hash, discovery status, policy, and decision. This behavior follows the [C2PA 2.4 embedding specification](https://spec.c2pa.org/specifications/specifications/2.4/specs/C2PA_Specification.html) and is not evidence of any acoustic-detector change.
 
 ## Presets
 

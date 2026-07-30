@@ -3,6 +3,7 @@ from contextlib import redirect_stderr
 import io
 import json
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
@@ -36,6 +37,19 @@ class ConfigurationSchemaTests(unittest.TestCase):
                         base=default_render_config(),
                         require_complete=True,
                     )
+
+    def test_c2pa_policy_is_optional_but_rejects_unknown_values(self):
+        complete = validate_render_config(
+            default_render_config(),
+            require_complete=True,
+        )
+        self.assertNotIn("c2pa_policy", complete)
+        with self.assertRaises(ConfigurationError):
+            validate_render_config(
+                {"c2pa_policy": "silently-drop"},
+                base=default_render_config(),
+                require_complete=True,
+            )
 
     def test_partial_legacy_preset_migrates_then_fills_schema_defaults(self):
         document = sunojump._validate_preset_document({
@@ -107,6 +121,55 @@ class CliConfigurationTests(unittest.TestCase):
                     args,
                 )
                 self.assertTrue(config[enabled_key])
+
+    def test_c2pa_policy_defaults_to_block_and_accepts_explicit_removal(self):
+        parser = sunojump._build_cli_parser()
+        blocked = parser.parse_args(["--input", "unused.wav"])
+        allowed = parser.parse_args([
+            "--input",
+            "unused.wav",
+            "--c2pa-policy",
+            "allow-removal",
+        ])
+        self.assertEqual(blocked.c2pa_policy, "block")
+        self.assertEqual(allowed.c2pa_policy, "allow-removal")
+
+    def test_cli_refuses_c2pa_source_before_creating_output(self):
+        manifest = b"\x00\x00\x00\x18jumbcli-policy"
+        chunk = (
+            b"C2PA"
+            + struct.pack("<I", len(manifest))
+            + manifest
+            + (b"\x00" if len(manifest) & 1 else b"")
+        )
+        body = b"WAVE" + chunk
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "signed.wav"
+            output_dir = temp_path / "output"
+            input_path.write_bytes(
+                b"RIFF" + struct.pack("<I", len(body)) + body
+            )
+            argv = [
+                "sunojump.py",
+                "--input",
+                str(input_path),
+                "--output",
+                str(output_dir),
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                with redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as context:
+                        sunojump.cli_main()
+
+            self.assertFalse(output_dir.exists())
+
+        self.assertEqual(context.exception.code, 2)
+        self.assertIn(
+            "--c2pa-policy allow-removal",
+            stderr.getvalue(),
+        )
 
     def test_explicit_pass_enable_disable_and_conflicts_are_unambiguous(self):
         parser = sunojump._build_cli_parser()
@@ -210,6 +273,10 @@ class CustomSessionTests(unittest.TestCase):
             self.assertEqual(first.preset_combo.currentText(), "Custom")
             expected = first._get_params()
             first._save_session_state()
+            saved = json.loads(
+                first_settings.value("session/config_json")
+            )
+            self.assertNotIn("c2pa_policy", saved["params"])
             first.close()
 
             second_settings = QSettings(

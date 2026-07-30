@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from concurrent.futures import ProcessPoolExecutor
+import hashlib
 import json
+import struct
 import threading
 import tempfile
 import unittest
@@ -27,6 +29,21 @@ def _reserve_output_in_child(input_path, output_dir):
         reservation.token,
         reservation.renamed,
     )
+
+
+def _append_c2pa_wav_chunk(path, manifest):
+    original = path.read_bytes()
+    if original[:4] != b"RIFF" or original[8:12] != b"WAVE":
+        raise AssertionError("fixture is not a RIFF/WAVE file")
+    padding = b"\x00" if len(manifest) & 1 else b""
+    chunk = (
+        b"C2PA"
+        + struct.pack("<I", len(manifest))
+        + manifest
+        + padding
+    )
+    body = original[8:] + chunk
+    path.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
 
 
 class CoupledPitchTempoTests(unittest.TestCase):
@@ -780,10 +797,84 @@ class PresetSchemaTests(unittest.TestCase):
             sidecar = json.loads(
                 output_path.with_suffix('.sidecar.json').read_text(encoding='utf-8')
             )
-            self.assertEqual(sidecar['schema_version'], 1)
+            self.assertEqual(
+                sidecar['schema_version'],
+                sunojump.SIDECAR_SCHEMA_VERSION,
+            )
 
 
 class SidecarTraceTests(unittest.TestCase):
+    def test_c2pa_source_is_blocked_without_explicit_policy(self):
+        manifest = b"\x00\x00\x00\x18jumbprocessor-block"
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            input_path = temp_path / "signed.wav"
+            output_path = temp_path / "blocked.wav"
+            sf.write(input_path, np.zeros(8000, dtype=np.float64), 8000)
+            _append_c2pa_wav_chunk(input_path, manifest)
+            source_before = input_path.read_bytes()
+
+            result = AudioProcessor(
+                {"strip_metadata": False},
+                seed=42,
+            ).process(str(input_path), str(output_path))
+
+            self.assertEqual(result.state, sunojump.RenderState.FAILED)
+            self.assertEqual(
+                result.error_code,
+                sunojump.RenderErrorCode.C2PA_POLICY_REQUIRED,
+            )
+            self.assertFalse(output_path.exists())
+            self.assertEqual(input_path.read_bytes(), source_before)
+
+    def test_c2pa_acknowledgement_is_recorded_without_copying_manifest(self):
+        manifest = b"\x00\x00\x00\x18jumbprocessor-allow"
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_path = Path(tmp)
+            input_path = temp_path / "signed.wav"
+            output_path = temp_path / "allowed.wav"
+            timeline = np.arange(8000, dtype=np.float64) / 8000
+            sf.write(
+                input_path,
+                0.25 * np.sin(2.0 * np.pi * 440.0 * timeline),
+                8000,
+            )
+            _append_c2pa_wav_chunk(input_path, manifest)
+            source_before = input_path.read_bytes()
+
+            result = AudioProcessor(
+                {
+                    "strip_metadata": True,
+                    "c2pa_policy": "allow-removal",
+                },
+                seed=42,
+            ).process(str(input_path), str(output_path))
+
+            self.assertEqual(result.state, sunojump.RenderState.SUCCEEDED)
+            self.assertEqual(input_path.read_bytes(), source_before)
+            self.assertEqual(
+                sunojump.inspect_c2pa(output_path).status,
+                "absent",
+            )
+            sidecar = json.loads(
+                output_path.with_suffix(".sidecar.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            provenance = sidecar["source_provenance"]
+            self.assertEqual(provenance["status"], "present_unvalidated")
+            self.assertEqual(provenance["validation"], "not_performed")
+            self.assertEqual(provenance["policy"], "allow-removal")
+            self.assertFalse(provenance["source_file_modified"])
+            self.assertFalse(
+                provenance["source_manifest_copied_to_output"]
+            )
+            self.assertFalse(provenance["acoustic_detector_evidence"])
+            self.assertEqual(
+                provenance["manifest_stores"][0]["sha256"],
+                hashlib.sha256(manifest).hexdigest(),
+            )
+
     def test_unavailable_verifier_state_matches_log_and_sidecar(self):
         sr = 8000
         t = np.arange(sr, dtype=np.float64) / sr

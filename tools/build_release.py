@@ -53,6 +53,7 @@ FORBIDDEN_BUNDLE_NAMES = {
 }
 REQUIRED_SOURCE_FILES = {
     Path("batch_manifest.py"),
+    Path("c2pa_provenance.py"),
     Path("config_schema.py"),
     Path("requirements-build-lock.txt"),
     Path("render_results.py"),

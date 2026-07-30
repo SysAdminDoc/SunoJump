@@ -53,6 +53,12 @@ class ReleaseBuildTests(unittest.TestCase):
             self.mod.REQUIRED_SOURCE_FILES,
         )
 
+    def test_release_source_includes_c2pa_preflight_guard(self):
+        self.assertIn(
+            pathlib.Path("c2pa_provenance.py"),
+            self.mod.REQUIRED_SOURCE_FILES,
+        )
+
     def test_unhashed_lock_entry_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             lock = pathlib.Path(temp_dir) / "bad-lock.txt"

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import math
 from typing import Mapping
 
+from c2pa_provenance import C2PA_POLICIES
+
 
 CONFIG_SCHEMA_VERSION = 1
 OUTPUT_FORMATS = frozenset({"wav", "flac", "ogg", "mp3", "m4a"})
@@ -169,6 +171,7 @@ def _validate_mapping(
     allow_output_format: bool,
 ) -> dict[str, bool | float | str]:
     known = set(REQUIRED_CONFIG_KEYS)
+    known.add("c2pa_policy")
     if allow_output_format:
         known.add("output_format")
     unknown = sorted(set(raw) - known)
@@ -213,6 +216,16 @@ def _validate_mapping(
                     f"unsupported output_format: {value!r}"
                 )
             validated[key] = output_format
+            continue
+        if key == "c2pa_policy":
+            if not isinstance(value, str):
+                raise ConfigurationError("c2pa_policy must be a string")
+            policy = value.strip().lower()
+            if policy not in C2PA_POLICIES:
+                raise ConfigurationError(
+                    f"unsupported c2pa_policy: {value!r}"
+                )
+            validated[key] = policy
     return validated
 
 

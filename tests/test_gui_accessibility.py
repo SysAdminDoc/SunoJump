@@ -10,6 +10,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QBoxLayout, QListWidgetItem
 
 from batch_manifest import BatchManifestStore
+from c2pa_provenance import C2PAInspection, ManifestStoreEvidence
 from render_results import (
     BatchResult,
     OutputValidation,
@@ -74,6 +75,90 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertIn("Rights-owned audio only", text)
         self.assertIn("do not predict platform outcomes", text)
         self.assertIn("do not predict or guarantee", self.window.scope_label.toolTip())
+
+    @staticmethod
+    def _present_c2pa():
+        return C2PAInspection(
+            status="present_unvalidated",
+            container="wav",
+            manifest_stores=(
+                ManifestStoreEvidence(
+                    location="riff:C2PA",
+                    sha256="a" * 64,
+                    size_bytes=128,
+                ),
+            ),
+            message="manifest located; validation not performed",
+        )
+
+    def test_c2pa_cancel_preserves_source_and_starts_no_render(self):
+        with mock.patch.object(
+            sunojump,
+            "inspect_c2pa",
+            return_value=self._present_c2pa(),
+        ), mock.patch.object(
+            self.window,
+            "_confirm_c2pa_output_without_credentials",
+            return_value=False,
+        ) as confirm:
+            result = self.window._authorize_source_provenance(
+                ["signed.wav"],
+                self.window._get_params(),
+            )
+
+        self.assertIsNone(result)
+        confirm.assert_called_once()
+        self.assertEqual(
+            self.window.render_status_label.text(),
+            "Provenance protected",
+        )
+        self.assertIn(
+            "source Content Credentials were preserved",
+            self.window.log_box.toPlainText(),
+        )
+
+    def test_c2pa_continue_returns_explicit_allow_policy(self):
+        with mock.patch.object(
+            sunojump,
+            "inspect_c2pa",
+            return_value=self._present_c2pa(),
+        ), mock.patch.object(
+            self.window,
+            "_confirm_c2pa_output_without_credentials",
+            return_value=True,
+        ):
+            result = self.window._authorize_source_provenance(
+                ["signed.wav"],
+                self.window._get_params(),
+            )
+
+        self.assertEqual(result["c2pa_policy"], "allow-removal")
+
+    def test_c2pa_inspection_failure_is_visible_and_fails_closed(self):
+        failed = C2PAInspection(
+            status="inspection_failed",
+            container="wav",
+            message="truncated RIFF chunk header",
+        )
+        with mock.patch.object(
+            sunojump,
+            "inspect_c2pa",
+            return_value=failed,
+        ), mock.patch.object(
+            sunojump.QMessageBox,
+            "critical",
+        ) as critical:
+            result = self.window._authorize_source_provenance(
+                ["broken.wav"],
+                self.window._get_params(),
+            )
+
+        self.assertIsNone(result)
+        critical.assert_called_once()
+        self.assertEqual(
+            self.window.render_status_label.text(),
+            "Provenance check failed",
+        )
 
     def test_verifier_state_renders_verbatim_in_gui_session_log(self):
         result = verifiers.VerifierResult(

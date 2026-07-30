@@ -37,6 +37,12 @@ from batch_manifest import (
     BatchManifestStore,
     default_manifest_path,
 )
+from c2pa_provenance import (
+    C2PA_POLICIES,
+    C2PA_POLICY_ALLOW_REMOVAL,
+    C2PA_POLICY_BLOCK,
+    inspect_c2pa,
+)
 from safe_audio import (
     DecodeCancelled,
     DecodeLimits,
@@ -59,7 +65,7 @@ from verifiers import ConstellationVerifier, format_verifier_result
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
-SIDECAR_SCHEMA_VERSION = 1
+SIDECAR_SCHEMA_VERSION = 2
 SIDECAR_SCHEMA_ID = "com.sunojump.replay-evidence"
 SIDECAR_AUDIO_TAG = "SUNOJUMP_SIDECAR_PAYLOAD_SHA256"
 SIGNAL_CHANGE_METRIC = {
@@ -104,6 +110,7 @@ try:
         QComboBox, QLineEdit, QCheckBox, QSlider, QProgressBar,
         QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
         QStyle, QScrollArea,
+        QMessageBox,
     )
     from PyQt6.QtCore import (
         PYQT_VERSION_STR,
@@ -1572,6 +1579,7 @@ class AudioProcessor:
         self._trace = self._new_trace()
         self._decode_metadata = {}
         self._verifier_results = []
+        self._source_provenance = None
 
     def _new_trace(self):
         return {
@@ -1636,6 +1644,7 @@ class AudioProcessor:
         self.rng = np.random.default_rng(self._seed)
         self._trace = self._new_trace()
         self._verifier_results = []
+        self._source_provenance = None
         self.log(f"Loading {Path(input_path).name}...")
         self.log(f"  Effective seed: {self._seed}")
 
@@ -1660,6 +1669,51 @@ class AudioProcessor:
         except ValueError as e:
             self.log(f"  Error: {e}")
             return finish(RenderState.FAILED, RenderErrorCode.INVALID_INPUT, str(e))
+
+        self._source_provenance = inspect_c2pa(input_path)
+        if self._source_provenance.failed:
+            message = (
+                "C2PA provenance inspection failed; source was not "
+                f"processed: {self._source_provenance.message}"
+            )
+            self.log(f"  Error: {message}")
+            return finish(
+                RenderState.FAILED,
+                RenderErrorCode.C2PA_INSPECTION_FAILED,
+                message,
+            )
+        if self._source_provenance.present:
+            store_summary = ", ".join(
+                f"{store.location} sha256:{store.sha256[:12]}"
+                for store in self._source_provenance.manifest_stores
+            )
+            self.log(
+                "  C2PA source provenance detected "
+                f"({self._source_provenance.status}): {store_summary}"
+            )
+            policy = self.params.get(
+                "c2pa_policy",
+                C2PA_POLICY_BLOCK,
+            )
+            if policy != C2PA_POLICY_ALLOW_REMOVAL:
+                message = (
+                    "source contains C2PA Content Credentials; processing "
+                    "is blocked until removal/invalidation is explicitly "
+                    "acknowledged"
+                )
+                self.log(f"  Error: {message}")
+                return finish(
+                    RenderState.FAILED,
+                    RenderErrorCode.C2PA_POLICY_REQUIRED,
+                    message,
+                )
+            self.log(
+                "  C2PA policy acknowledged: the source remains unchanged; "
+                "the transformed output will not carry or re-sign the source "
+                "manifest. This is not evidence of acoustic-detector change."
+            )
+        else:
+            self.log("  C2PA source provenance: not detected")
 
         try:
             audio, sr, self._decode_metadata = decode_audio_isolated(
@@ -2069,10 +2123,44 @@ class AudioProcessor:
                 "ffmpeg": _ffmpeg_version_line(),
             },
             "decode": self._decode_metadata,
+            "source_provenance": self._source_provenance_report(),
             "rng": self._trace.get("rng", {}),
             "passes": self._trace.get("passes", {}),
             "replay": self._replay_report(fmt),
         }
+
+    def _source_provenance_report(self):
+        inspection = self._source_provenance
+        if inspection is None:
+            return {
+                "status": "not_inspected",
+                "policy": self.params.get(
+                    "c2pa_policy",
+                    C2PA_POLICY_BLOCK,
+                ),
+            }
+        report = inspection.to_dict()
+        report.update({
+            "policy": self.params.get(
+                "c2pa_policy",
+                C2PA_POLICY_BLOCK,
+            ),
+            "decision": (
+                "explicitly_acknowledged_output_without_source_credentials"
+                if inspection.present
+                else "no_source_manifest_detected"
+            ),
+            "source_file_modified": False,
+            "source_manifest_copied_to_output": False,
+            "acoustic_detector_evidence": False,
+            "output_effect": (
+                "Transformed output is re-encoded without copying or "
+                "re-signing source Content Credentials."
+                if inspection.present
+                else "No source Content Credentials were located."
+            ),
+        })
+        return report
 
     def _write_sidecar(
         self,
@@ -3571,6 +3659,7 @@ class PresetCompareWorker(QThread):
         temp_dir,
         job_id,
         run_id,
+        c2pa_policy=C2PA_POLICY_BLOCK,
         duration_sec=COMPARE_DURATION_SEC,
     ):
         super().__init__()
@@ -3579,6 +3668,9 @@ class PresetCompareWorker(QThread):
         self.job_id = str(job_id)
         self.run_id = str(run_id)
         self.duration_sec = duration_sec
+        if c2pa_policy not in C2PA_POLICIES:
+            raise ValueError(f"unsupported C2PA policy: {c2pa_policy}")
+        self.c2pa_policy = c2pa_policy
         self._cancel_event = threading.Event()
         self.preset_names = list(PRESETS.keys())
         self.seeds = {
@@ -3649,6 +3741,7 @@ class PresetCompareWorker(QThread):
             params = dict(PRESETS[name])
             params['output_format'] = 'wav'
             params['reencode_enabled'] = False
+            params['c2pa_policy'] = self.c2pa_policy
 
             out_path = os.path.join(
                 self.temp_dir, f"{stem}_compare_{name}_{ts}.wav",
@@ -4644,7 +4737,15 @@ class MainWindow(QMainWindow):
             "Narrowband candidate scan",
             "Toggle local narrowband candidate scanning before spectral perturbation.",
         )
-        _set_accessibility(self.meta_check, "Metadata strip", "Toggle metadata stripping on saved output files.")
+        _set_accessibility(
+            self.meta_check,
+            "Strip ordinary metadata",
+            (
+                "Remove ordinary tags from saved outputs. C2PA Content "
+                "Credentials are inspected separately and require explicit "
+                "acknowledgement before any transformed output is created."
+            ),
+        )
         _set_accessibility(
             self.format_combo,
             "Output format",
@@ -4812,7 +4913,7 @@ class MainWindow(QMainWindow):
             {
                 key: value
                 for key, value in params.items()
-                if key != "output_format"
+                if key not in {"output_format", "c2pa_policy"}
             },
         )
         settings.setValue("window/geometry", self.saveGeometry())
@@ -5116,7 +5217,7 @@ class MainWindow(QMainWindow):
         self.spectral_scan_check.setChecked(True)
         self.spectral_scan_check.stateChanged.connect(lambda _: self._on_param_changed())
 
-        self.meta_check = QCheckBox("Metadata Strip")
+        self.meta_check = QCheckBox("Strip Ordinary Metadata")
         self.meta_check.setChecked(True)
         self.meta_check.stateChanged.connect(lambda _: self._on_param_changed())
         self._place_grid(
@@ -5561,7 +5662,7 @@ class MainWindow(QMainWindow):
                 {
                     key: value
                     for key, value in params.items()
-                    if key != "output_format"
+                    if key not in {"output_format", "c2pa_policy"}
                 },
             )
             with open(path, 'w', encoding='utf-8') as f:
@@ -5597,6 +5698,7 @@ class MainWindow(QMainWindow):
             'strip_metadata': self.meta_check.isChecked(),
             'spectral_scan_enabled': self.spectral_scan_check.isChecked(),
             'output_format': self.format_combo.currentText().lower(),
+            'c2pa_policy': C2PA_POLICY_BLOCK,
         }
         for key, row in self.param_rows.items():
             params[row.enabled_key] = row.is_enabled()
@@ -5608,6 +5710,100 @@ class MainWindow(QMainWindow):
         )
 
     # --- Processing control ---
+    def _confirm_c2pa_output_without_credentials(self, inspections):
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("Content Credentials detected")
+        dialog.setText(
+            "One or more source files contain C2PA Content Credentials."
+        )
+        dialog.setInformativeText(
+            "SunoJump will transform and re-encode the audio. Original files "
+            "remain unchanged, but outputs will not carry or re-sign the "
+            "source manifests, and their hard bindings would not apply to "
+            "the transformed audio. This is not evidence of an acoustic "
+            "detector change."
+        )
+        details = []
+        for path, inspection in inspections:
+            stores = ", ".join(
+                f"{store.location} sha256:{store.sha256[:12]}"
+                for store in inspection.manifest_stores
+            )
+            details.append(
+                f"{Path(path).name}: {inspection.status}; {stores}"
+            )
+        dialog.setDetailedText("\n".join(details))
+        continue_button = dialog.addButton(
+            "Continue without source credentials",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        cancel_button = dialog.addButton(
+            QMessageBox.StandardButton.Cancel,
+        )
+        dialog.setDefaultButton(cancel_button)
+        dialog.setEscapeButton(cancel_button)
+        dialog.exec()
+        return dialog.clickedButton() is continue_button
+
+    def _authorize_source_provenance(self, input_paths, params):
+        inspections = [
+            (str(path), inspect_c2pa(path))
+            for path in input_paths
+        ]
+        failed = [
+            (path, inspection)
+            for path, inspection in inspections
+            if inspection.failed
+        ]
+        if failed:
+            details = "; ".join(
+                f"{Path(path).name}: {inspection.message}"
+                for path, inspection in failed
+            )
+            self._set_render_state("Provenance check failed")
+            self._log(
+                "C2PA provenance inspection failed; no render started. "
+                f"{details}"
+            )
+            QMessageBox.critical(
+                self,
+                "Provenance inspection failed",
+                (
+                    "SunoJump could not safely inspect source provenance. "
+                    "No output was created.\n\n"
+                    f"{details}"
+                ),
+            )
+            return None
+        present = [
+            (path, inspection)
+            for path, inspection in inspections
+            if inspection.present
+        ]
+        if not present:
+            return params
+        if params.get("c2pa_policy") != C2PA_POLICY_ALLOW_REMOVAL:
+            if not self._confirm_c2pa_output_without_credentials(present):
+                self._set_render_state("Provenance protected")
+                self._log(
+                    "Render cancelled: source Content Credentials were "
+                    "preserved and no output was created."
+                )
+                return None
+        authorized = dict(params)
+        authorized["c2pa_policy"] = C2PA_POLICY_ALLOW_REMOVAL
+        try:
+            return validate_render_config(
+                authorized,
+                require_complete=False,
+                allow_output_format=True,
+            )
+        except ConfigurationError as exc:
+            self._set_render_state("Configuration invalid")
+            self._log(f"Cannot apply C2PA policy: {exc}")
+            return None
+
     def _set_processing_ui(self, processing, state=None):
         self.btn_process.setEnabled(not processing)
         self.btn_cancel.setEnabled(processing)
@@ -5678,10 +5874,20 @@ class MainWindow(QMainWindow):
 
         self._stop_playback()
 
+        input_paths = [
+            self.file_list.item(i).data(ROLE_INPUT)
+            for i in range(self.file_list.count())
+        ]
+        params = self._authorize_source_provenance(
+            input_paths,
+            self._get_params(),
+        )
+        if params is None:
+            return
+
         manifest_jobs = []
-        for i in range(self.file_list.count()):
+        for i, input_path in enumerate(input_paths):
             item = self.file_list.item(i)
-            input_path = item.data(ROLE_INPUT)
             manifest_jobs.append({
                 "id": self._ensure_item_job_id(item),
                 "input_path": input_path,
@@ -5691,7 +5897,6 @@ class MainWindow(QMainWindow):
             item.setData(ROLE_OUTPUT, None)
 
         out_dir = self.output_dir.text().strip() or DEFAULT_OUTPUT
-        params = self._get_params()
         try:
             os.makedirs(out_dir, exist_ok=True)
             manifest_store = BatchManifestStore.create(
@@ -6072,7 +6277,12 @@ class MainWindow(QMainWindow):
             self._flush_deferred_preview_cleanup()
             item.setData(ROLE_OUTPUT, None)
 
-        params = self._get_params()
+        params = self._authorize_source_provenance(
+            [input_path],
+            self._get_params(),
+        )
+        if params is None:
+            return
         self._start_run_log(
             "gui-preview", [input_path], self._preview_tempdir, params,
             self.preset_combo.currentText(),
@@ -6181,6 +6391,13 @@ class MainWindow(QMainWindow):
             self._log("Selected file not found.")
             return
 
+        policy_params = self._authorize_source_provenance(
+            [input_path],
+            {"c2pa_policy": C2PA_POLICY_BLOCK},
+        )
+        if policy_params is None:
+            return
+
         self._stop_playback()
 
         if self._preview_tempdir is None or not os.path.isdir(self._preview_tempdir):
@@ -6206,7 +6423,11 @@ class MainWindow(QMainWindow):
         self._set_compare_running_ui(True)
         self._start_run_log(
             "gui-compare", [input_path], self._preview_tempdir,
-            {'presets': list(PRESETS.keys()), 'duration_sec': COMPARE_DURATION_SEC},
+            {
+                'presets': list(PRESETS.keys()),
+                'duration_sec': COMPARE_DURATION_SEC,
+                'c2pa_policy': policy_params["c2pa_policy"],
+            },
             "Compare Presets",
         )
         self._log(
@@ -6219,6 +6440,7 @@ class MainWindow(QMainWindow):
             self._preview_tempdir,
             self._compare_job_id,
             self._compare_run_id,
+            c2pa_policy=policy_params["c2pa_policy"],
         )
         active_worker = self.compare_worker
         self.compare_worker.log_signal.connect(self._log)
@@ -6654,6 +6876,17 @@ def _build_cli_parser():
         ),
     )
     parser.add_argument(
+        '--c2pa-policy',
+        choices=sorted(C2PA_POLICIES),
+        default=C2PA_POLICY_BLOCK,
+        help=(
+            "C2PA source policy: block (default) refuses transformed "
+            "outputs; allow-removal explicitly acknowledges that originals "
+            "stay unchanged while outputs omit and do not re-sign source "
+            "Content Credentials"
+        ),
+    )
+    parser.add_argument(
         '--no-spectral-scan',
         '--no-watermark-scan',
         action='store_true',
@@ -6834,6 +7067,7 @@ def cli_main():
             "-i", "--input", "-o", "--output", "-p", "--preset",
             "-f", "--format", "--preset-file", "--seed",
             "--no-spectral-scan", "--no-watermark-scan",
+            "--c2pa-policy",
             "--enable-pass", "--disable-pass", "--spectral",
             "--spectral-sub-bass", "--spectral-low-mids",
             "--spectral-presence", "--spectral-air", "--dynamic-eq",
@@ -6899,6 +7133,7 @@ def cli_main():
         try:
             params = _apply_cli_overrides(params, args)
             params["output_format"] = args.out_format
+            params["c2pa_policy"] = args.c2pa_policy
             params = validate_render_config(
                 params,
                 require_complete=True,
@@ -6922,6 +7157,62 @@ def cli_main():
         if not files:
             print("No supported audio files found.")
             sys.exit(1)
+        inspections = [
+            (filepath, inspect_c2pa(filepath))
+            for filepath in files
+        ]
+        failed_inspections = [
+            (filepath, inspection)
+            for filepath, inspection in inspections
+            if inspection.failed
+        ]
+        if failed_inspections:
+            for filepath, inspection in failed_inspections:
+                print(
+                    "Error: C2PA provenance inspection failed for "
+                    f"{Path(filepath).name}: {inspection.message}",
+                    file=sys.stderr,
+                )
+            print(
+                "No output was created because source provenance could not "
+                "be inspected safely.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        present_inspections = [
+            (filepath, inspection)
+            for filepath, inspection in inspections
+            if inspection.present
+        ]
+        if (
+            present_inspections
+            and args.c2pa_policy != C2PA_POLICY_ALLOW_REMOVAL
+        ):
+            for filepath, inspection in present_inspections:
+                stores = ", ".join(
+                    f"{store.location} sha256:{store.sha256[:12]}"
+                    for store in inspection.manifest_stores
+                )
+                print(
+                    f"Error: {Path(filepath).name} contains C2PA Content "
+                    f"Credentials ({inspection.status}; {stores}).",
+                    file=sys.stderr,
+                )
+            print(
+                "Processing is blocked. Re-run with "
+                "--c2pa-policy allow-removal only if you accept that source "
+                "files stay unchanged while transformed outputs omit and do "
+                "not re-sign those credentials. This is not evidence of an "
+                "acoustic-detector change.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if present_inspections:
+            print(
+                "C2PA policy acknowledged: originals remain unchanged; "
+                "transformed outputs will omit and not re-sign source "
+                "Content Credentials."
+            )
         jobs = [
             {
                 "id": uuid.uuid4().hex,

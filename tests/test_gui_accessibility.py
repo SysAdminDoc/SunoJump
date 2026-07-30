@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from PyQt6.QtWidgets import QApplication, QListWidgetItem
+from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtGui import QFont
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QBoxLayout, QListWidgetItem
 
 from batch_manifest import BatchManifestStore
 from render_results import (
@@ -408,6 +411,81 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertLess(order.index(self.window.preset_combo), order.index(self.window.btn_process))
         self.assertLess(order.index(self.window.output_dir), order.index(self.window.btn_process))
 
+    def test_queue_delete_and_alt_arrow_reorder_work_from_keyboard(self):
+        for name in ("first.wav", "second.wav", "third.wav"):
+            self.window._append_item(name)
+        middle = self.window.file_list.item(1)
+        middle.setSelected(True)
+        self.window.file_list.setCurrentItem(middle)
+
+        QTest.keyClick(
+            self.window.file_list,
+            Qt.Key.Key_Down,
+            Qt.KeyboardModifier.AltModifier,
+        )
+        self.assertEqual(
+            [
+                self.window.file_list.item(index).data(ROLE_INPUT)
+                for index in range(self.window.file_list.count())
+            ],
+            ["first.wav", "third.wav", "second.wav"],
+        )
+        self.assertIn(
+            "Moved 1 selected item(s) down",
+            self.window.log_box.toPlainText(),
+        )
+
+        QTest.keyClick(
+            self.window.file_list,
+            Qt.Key.Key_Delete,
+        )
+        self.assertEqual(self.window.file_list.count(), 2)
+        self.assertNotIn(
+            "second.wav",
+            [
+                self.window.file_list.item(index).data(ROLE_INPUT)
+                for index in range(self.window.file_list.count())
+            ],
+        )
+
+    def test_primary_actions_expose_window_shortcuts(self):
+        shortcuts = {
+            self.window.btn_browse: "Ctrl+O",
+            self.window.btn_resume_batch: "Ctrl+R",
+            self.window.btn_retry_failed: "Ctrl+Shift+R",
+            self.window.btn_render_preview: "Ctrl+P",
+            self.window.btn_compare: "Ctrl+Shift+P",
+            self.window.btn_save_preset: "Ctrl+S",
+            self.window.btn_load_preset: "Ctrl+Shift+O",
+            self.window.btn_process: "Ctrl+Return",
+            self.window.btn_cancel: "Esc",
+        }
+        for button, expected in shortcuts.items():
+            self.assertEqual(
+                button.shortcut().toString(),
+                expected,
+            )
+            self.assertIn("Shortcut:", button.toolTip())
+
+    def test_slider_accessibility_announces_displayed_units(self):
+        for key, suffix in (
+            ("pitch_range", " st"),
+            ("tempo_range", "%"),
+            ("noise_level", " dB"),
+            ("reencode_bitrate", " kbps"),
+        ):
+            with self.subTest(key=key):
+                row = self.window.param_rows[key]
+                self.assertIn(
+                    row.val_label.text(),
+                    row.slider.accessibleName(),
+                )
+                self.assertIn(suffix, row.slider.accessibleName())
+                self.assertIn(
+                    row.val_label.text(),
+                    row.slider.accessibleDescription(),
+                )
+
 
 class VisualAccessibilityTests(unittest.TestCase):
     @classmethod
@@ -455,13 +533,157 @@ class VisualAccessibilityTests(unittest.TestCase):
         ratio = self._contrast_ratio(accent_lum, bg_lum)
         self.assertGreaterEqual(ratio, 3.0, f"accent/base contrast {ratio:.1f} < 3.0")
 
-    def test_minimum_window_size_allows_reasonable_layout(self):
+    def test_minimum_window_size_enables_scaled_desktops(self):
         min_size = self.window.minimumSize()
-        self.assertGreaterEqual(min_size.width(), 1060)
-        self.assertGreaterEqual(min_size.height(), 780)
+        self.assertLessEqual(min_size.width(), 560)
+        self.assertLessEqual(min_size.height(), 360)
+        self.assertIsNotNone(self.window.main_scroller)
+        self.assertTrue(self.window.main_scroller.widgetResizable())
         self.assertIsNotNone(self.window.btn_process)
         self.assertIsNotNone(self.window.file_list)
         self.assertIsNotNone(self.window.preset_combo)
+
+    def test_compact_layout_has_no_horizontal_overflow_at_scale_matrix(self):
+        original_font = QApplication.font()
+        try:
+            for scale in (1.0, 1.5, 2.0):
+                with self.subTest(scale=scale):
+                    font = QFont(original_font)
+                    font.setPointSizeF(original_font.pointSizeF() * scale)
+                    QApplication.setFont(font)
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        settings = QSettings(
+                            str(Path(temp_dir) / "session.ini"),
+                            QSettings.Format.IniFormat,
+                        )
+                        window = MainWindow(settings=settings)
+                        try:
+                            window.setStyleSheet(sunojump.STYLE)
+                            window.setLayoutDirection(
+                                Qt.LayoutDirection.RightToLeft
+                            )
+                            long_labels = {
+                                window.btn_browse:
+                                    "[!! Browse for audio files !!]",
+                                window.btn_remove:
+                                    "[!! Remove selected audio files !!]",
+                                window.btn_resume_batch:
+                                    "[!! Resume interrupted batch !!]",
+                                window.btn_retry_failed:
+                                    "[!! Retry failed batch jobs !!]",
+                                window.btn_process:
+                                    "[!! Process every queued file !!]",
+                            }
+                            for widget, text in long_labels.items():
+                                widget.setText(text)
+                            window.scope_label.setText(
+                                "[!! Rights-owned audio material only !!]\n"
+                                "[!! Local metrics never predict external "
+                                "platform outcomes !!]"
+                            )
+                            window.resize(700, 520)
+                            window.show()
+                            QApplication.processEvents()
+
+                            self.assertTrue(window._responsive_compact)
+                            self.assertEqual(
+                                window._workspace_layout.direction(),
+                                QBoxLayout.Direction.TopToBottom,
+                            )
+                            self.assertEqual(
+                                window.main_scroller
+                                .horizontalScrollBar()
+                                .maximum(),
+                                0,
+                            )
+                            self.assertTrue(
+                                all(
+                                    row._compact
+                                    for row in window.param_rows.values()
+                                )
+                            )
+                            for widget, text in long_labels.items():
+                                required = (
+                                    max(
+                                        widget.fontMetrics()
+                                        .horizontalAdvance(line)
+                                        for line in widget.text().splitlines()
+                                    )
+                                    + widget.iconSize().width()
+                                    + 48
+                                )
+                                self.assertEqual(
+                                    widget.text().replace("\n", " "),
+                                    text,
+                                )
+                                self.assertGreaterEqual(
+                                    widget.width(),
+                                    required,
+                                    widget.objectName() or text,
+                                )
+                                self.assertGreaterEqual(
+                                    widget.height(),
+                                    (
+                                        len(widget.text().splitlines())
+                                        * widget.fontMetrics().lineSpacing()
+                                        + 16
+                                    ),
+                                    widget.objectName() or text,
+                                )
+                            queue_buttons = (
+                                window.btn_browse,
+                                window.btn_remove,
+                                window.btn_clear,
+                                window.btn_resume_batch,
+                                window.btn_retry_failed,
+                            )
+                            for first, second in zip(
+                                queue_buttons,
+                                queue_buttons[1:],
+                            ):
+                                first_bottom = first.mapTo(
+                                    window._content_root,
+                                    first.rect().bottomLeft(),
+                                ).y()
+                                second_top = second.mapTo(
+                                    window._content_root,
+                                    second.rect().topLeft(),
+                                ).y()
+                                self.assertLess(
+                                    first_bottom,
+                                    second_top,
+                                    f"{first.text()} overlaps "
+                                    f"{second.text()}",
+                                )
+                            window.main_scroller.ensureWidgetVisible(
+                                window.btn_process
+                            )
+                            QApplication.processEvents()
+                            viewport = window.main_scroller.viewport()
+                            position = window.btn_process.mapTo(
+                                viewport,
+                                window.btn_process.rect().center(),
+                            )
+                            self.assertTrue(
+                                viewport.rect().contains(position),
+                                position,
+                            )
+                        finally:
+                            window.close()
+        finally:
+            QApplication.setFont(original_font)
+
+    def test_stylesheet_exposes_visible_keyboard_focus(self):
+        for selector in (
+            "QPushButton:focus",
+            "QListWidget:focus",
+            "QComboBox:focus",
+            "QLineEdit:focus",
+            "QCheckBox:focus",
+            "QSlider:focus",
+            "QTextEdit:focus",
+        ):
+            self.assertIn(selector, sunojump.STYLE)
 
     def test_disabled_controls_not_hidden(self):
         self.window.btn_cancel.setEnabled(False)

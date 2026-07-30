@@ -58,6 +58,7 @@ REQUIRED_SOURCE_FILES = {
     Path("render_results.py"),
     Path("safe_audio.py"),
     Path("safe_audio_worker.py"),
+    Path("tools/smoke_accessibility.ps1"),
     Path("verifiers.py"),
 }
 

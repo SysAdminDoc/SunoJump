@@ -86,6 +86,8 @@ python tools/build_release.py
 
 The gate fails on a missing, stale, or wrong-version executable; undeclared bundled packages; incomplete license/source records; or failed smoke tests. It does not perform code signing. `dist/` receives the executable, `SHA256SUMS`, CycloneDX 1.7 SBOM, actual PyInstaller inventory, native-version report, license notices/source routing, build provenance, both locks, and the corresponding source archive. Use `sha256sum -c SHA256SUMS` from inside the downloaded artifact directory to verify the set.
 
+On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch an isolated-settings GUI and verify its UI Automation tree, keyboard focus, primary control names, and unit-bearing slider announcements—the same accessibility surface consumed by Narrator.
+
 ## Features
 
 - **11-pass audio processing pipeline** — metadata strip, spectral perturbation, dynamic EQ, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
@@ -100,7 +102,7 @@ The gate fails on a missing, stale, or wrong-version executable; undeclared bund
 - **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing
 - **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, then apply your favorite
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
-- **Accessible GUI controls** — primary controls and pass sliders expose screen-reader names, descriptions, and a tested focus order
+- **Responsive, keyboard-complete GUI** — panels reflow down to 560×360, long labels wrap at enlarged font sizes and in RTL layouts, focus is visible, queue actions have keyboard equivalents, and sliders expose displayed units to screen readers
 - **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available
 - **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
 - **Transactional output saves** — reserves collision-free names across processes, validates same-folder temporary renders, and atomically publishes without replacing an existing audio or sidecar destination
@@ -128,6 +130,8 @@ python sunojump.py
 3. (Optional) Click **Render Preview** to process the first 30 seconds of the selected file so you can hear the result before committing; adjust settings and re-render as needed
 4. Click **Process All** to render every file in the list to the output directory with `_sj` suffix
 5. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
+
+Keyboard shortcuts cover the primary workflow: `Ctrl+O` browse, `Ctrl+P` preview, `Ctrl+Shift+P` compare, `Ctrl+R` resume, `Ctrl+Shift+R` retry failed, `Ctrl+S` save a preset, `Ctrl+Enter` process, and `Esc` cancel. In the queue, `Delete`/`Backspace` removes the selection and `Alt+Up`/`Alt+Down` reorders it.
 
 ### CLI Mode
 ```bash

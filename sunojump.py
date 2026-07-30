@@ -99,13 +99,29 @@ except ImportError as e:
 try:
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QBoxLayout, QGridLayout,
         QPushButton, QLabel, QListWidget, QListWidgetItem,
         QComboBox, QLineEdit, QCheckBox, QSlider, QProgressBar,
         QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
         QStyle, QScrollArea,
     )
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QSettings, PYQT_VERSION_STR, QT_VERSION_STR
-    from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
+    from PyQt6.QtCore import (
+        PYQT_VERSION_STR,
+        QT_VERSION_STR,
+        QSettings,
+        QSize,
+        QThread,
+        QUrl,
+        Qt,
+        pyqtSignal,
+    )
+    from PyQt6.QtGui import (
+        QDesktopServices,
+        QDragEnterEvent,
+        QDropEvent,
+        QFont,
+        QKeySequence,
+    )
 except ImportError as e:
     missing = getattr(e, 'name', None) or str(e)
     print(f"ERROR: Missing required GUI dependency: {missing}", file=sys.stderr)
@@ -416,7 +432,6 @@ QMainWindow {{
 QWidget {{
     color: {C['text']};
     font-family: 'Segoe UI', 'Arial', sans-serif;
-    font-size: 13px;
 }}
 QWidget#appRoot {{
     background-color: {C['base']};
@@ -443,21 +458,17 @@ QLabel {{
 }}
 QLabel#appTitle {{
     color: {C['text']};
-    font-size: 28px;
     font-weight: bold;
 }}
 QLabel#appSubtitle {{
     color: {C['subtext']};
-    font-size: 12px;
 }}
 QLabel#sectionTitle {{
     color: {C['text']};
-    font-size: 15px;
     font-weight: bold;
 }}
 QLabel#sectionSubtitle {{
     color: {C['overlay']};
-    font-size: 11px;
 }}
 QLabel#statusPill, QLabel#accentPill {{
     background-color: {C['surface0']};
@@ -465,7 +476,6 @@ QLabel#statusPill, QLabel#accentPill {{
     border-radius: 8px;
     padding: 5px 10px;
     color: {C['subtext']};
-    font-size: 12px;
     font-weight: bold;
 }}
 QLabel#accentPill {{
@@ -475,12 +485,10 @@ QLabel#accentPill {{
 }}
 QLabel#countLabel {{
     color: {C['accent_soft']};
-    font-size: 12px;
     font-weight: bold;
 }}
 QLabel#hintLabel {{
     color: {C['overlay']};
-    font-size: 11px;
 }}
 QLabel#nowPlaying {{
     color: {C['subtext']};
@@ -514,6 +522,9 @@ QPushButton:hover {{
 QPushButton:pressed {{
     background-color: {C['surface1']};
 }}
+QPushButton:focus {{
+    border: 2px solid {C['accent_soft']};
+}}
 QPushButton:disabled {{
     background-color: {C['mantle']};
     color: {C['overlay']};
@@ -523,7 +534,6 @@ QPushButton#processBtn {{
     background-color: {C['accent']};
     border-color: {C['accent']};
     color: {C['crust']};
-    font-size: 15px;
     padding: 10px 24px;
 }}
 QPushButton#processBtn:hover {{
@@ -544,7 +554,6 @@ QPushButton#iconButton {{
 }}
 QPushButton#compareButton {{
     padding: 6px 10px;
-    font-size: 12px;
 }}
 QListWidget {{
     background-color: {C['crust']};
@@ -564,6 +573,9 @@ QListWidget::item:selected {{
 QListWidget::item:hover {{
     background-color: {C['mantle']};
 }}
+QListWidget:focus {{
+    border: 2px solid {C['accent_soft']};
+}}
 QComboBox {{
     background-color: {C['surface0']};
     border: 1px solid {C['surface1']};
@@ -582,6 +594,9 @@ QComboBox QAbstractItemView {{
     color: {C['text']};
     selection-background-color: {C['surface1']};
 }}
+QComboBox:focus {{
+    border: 2px solid {C['accent_soft']};
+}}
 QLineEdit {{
     background-color: {C['crust']};
     border: 1px solid {C['surface1']};
@@ -590,7 +605,7 @@ QLineEdit {{
     color: {C['text']};
 }}
 QLineEdit:focus {{
-    border-color: {C['accent']};
+    border: 2px solid {C['accent_soft']};
 }}
 QCheckBox {{
     color: {C['text']};
@@ -606,6 +621,12 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background-color: {C['accent']};
     border-color: {C['accent']};
+}}
+QCheckBox:focus {{
+    color: {C['accent_soft']};
+    background-color: {C['mantle']};
+    border: 1px solid {C['accent_soft']};
+    border-radius: 5px;
 }}
 QWidget#paramRow {{
     background-color: {C['surface0']};
@@ -640,6 +661,11 @@ QSlider::sub-page:horizontal {{
     background: {C['accent']};
     border-radius: 3px;
 }}
+QSlider:focus {{
+    background-color: {C['mantle']};
+    border: 1px solid {C['accent_soft']};
+    border-radius: 5px;
+}}
 QSlider::groove:horizontal:disabled {{
     background: {C['mantle']};
 }}
@@ -669,7 +695,9 @@ QTextEdit {{
     padding: 8px;
     color: {C['subtext']};
     font-family: 'Cascadia Code', 'Consolas', monospace;
-    font-size: 12px;
+}}
+QTextEdit:focus {{
+    border: 2px solid {C['accent_soft']};
 }}
 QScrollBar:vertical {{
     background: {C['crust']};
@@ -791,6 +819,20 @@ def _set_accessibility(widget, name, description):
     widget.setAccessibleDescription(description)
     if hasattr(widget, 'setToolTip') and not widget.toolTip():
         widget.setToolTip(description)
+
+
+def _set_relative_font(widget, point_delta=0.0, *, bold=None):
+    """Apply hierarchy without overriding the user's application font size."""
+    base = QApplication.font()
+    font = QFont(base)
+    point_size = base.pointSizeF()
+    if point_size > 0:
+        font.setPointSizeF(max(1.0, point_size + point_delta))
+    elif base.pixelSize() > 0:
+        font.setPixelSize(max(1, round(base.pixelSize() + point_delta)))
+    if bold is not None:
+        font.setBold(bold)
+    widget.setFont(font)
 
 
 def _diagnostics_dir():
@@ -3660,10 +3702,99 @@ class PresetCompareWorker(QThread):
 # ============================================================
 #  Custom Widgets
 # ============================================================
+class ResponsiveButton(QPushButton):
+    """Push button that wraps translated text in compact layouts."""
+
+    def __init__(self, text=""):
+        self._responsive_source_text = str(text)
+        self._responsive_compact = False
+        super().__init__(text)
+
+    def setText(self, text):
+        self._responsive_source_text = str(text).replace("\n", " ")
+        self._apply_responsive_text()
+
+    def set_compact(self, compact):
+        compact = bool(compact)
+        if compact == self._responsive_compact:
+            return
+        self._responsive_compact = compact
+        self._apply_responsive_text()
+
+    def _apply_responsive_text(self):
+        text = self._responsive_source_text
+        if not self._responsive_compact or not text:
+            super().setText(text)
+            self.setMinimumHeight(0)
+            self.updateGeometry()
+            return
+        metrics = self.fontMetrics()
+        target_width = max(
+            180,
+            metrics.horizontalAdvance("M") * 22,
+        )
+        lines = []
+        remaining = text.strip()
+        while remaining:
+            if metrics.horizontalAdvance(remaining) <= target_width:
+                lines.append(remaining)
+                break
+            split_at = 1
+            for index in range(1, len(remaining) + 1):
+                if (
+                    metrics.horizontalAdvance(remaining[:index])
+                    > target_width
+                ):
+                    break
+                split_at = index
+            space_at = remaining.rfind(" ", 0, split_at + 1)
+            if space_at > 0:
+                split_at = space_at
+            lines.append(remaining[:split_at].strip())
+            remaining = remaining[split_at:].strip()
+        super().setText("\n".join(line for line in lines if line))
+        line_count = len(self.text().splitlines())
+        if line_count > 1:
+            self.setMinimumHeight(
+                line_count * self.fontMetrics().lineSpacing() + 20
+            )
+        else:
+            self.setMinimumHeight(0)
+        self.updateGeometry()
+
+    def sizeHint(self):
+        base = super().sizeHint()
+        if not self._responsive_compact or "\n" not in self.text():
+            return base
+        metrics = self.fontMetrics()
+        lines = self.text().splitlines()
+        icon_width = (
+            self.iconSize().width() + 8
+            if not self.icon().isNull()
+            else 0
+        )
+        width = (
+            max(metrics.horizontalAdvance(line) for line in lines)
+            + icon_width
+            + 48
+        )
+        height = max(
+            base.height(),
+            len(lines) * metrics.lineSpacing() + 20,
+            self.iconSize().height() + 20,
+        )
+        return QSize(width, height)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+
 class DropListWidget(QListWidget):
     """File list that accepts external file drops and allows internal reordering."""
 
     filesDropped = pyqtSignal(list)
+    removeRequested = pyqtSignal()
+    orderChanged = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -3672,6 +3803,62 @@ class DropListWidget(QListWidget):
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
+    def keyPressEvent(self, event):
+        if event.key() in {
+            Qt.Key.Key_Delete,
+            Qt.Key.Key_Backspace,
+        }:
+            if self.selectedItems():
+                self.removeRequested.emit()
+            event.accept()
+            return
+        reorder_modifier = event.modifiers() & (
+            Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.ControlModifier
+        )
+        if reorder_modifier and event.key() in {
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
+        }:
+            direction = -1 if event.key() == Qt.Key.Key_Up else 1
+            if self._move_selected(direction):
+                label = "up" if direction < 0 else "down"
+                self.orderChanged.emit(
+                    f"Moved {len(self.selectedItems())} selected "
+                    f"item(s) {label}."
+                )
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _move_selected(self, direction):
+        selected = list(self.selectedItems())
+        if not selected:
+            return False
+        row_items = sorted(
+            (self.row(item), item)
+            for item in selected
+        )
+        rows = [row for row, _item in row_items]
+        if direction < 0:
+            if rows[0] == 0:
+                return False
+            iterable = row_items
+        else:
+            if rows[-1] == self.count() - 1:
+                return False
+            iterable = reversed(row_items)
+        current = self.currentItem()
+        for row, item in iterable:
+            moved = self.takeItem(row)
+            self.insertItem(row + direction, moved)
+        for item in selected:
+            item.setSelected(True)
+        if current is not None:
+            self.setCurrentItem(current)
+            self.scrollToItem(current)
+        return True
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         # Internal drag (reorder): accept through base class behavior
@@ -3698,6 +3885,38 @@ class DropListWidget(QListWidget):
             self.filesDropped.emit(paths)
 
 
+class ValueAnnouncingSlider(QSlider):
+    """Slider whose accessible name/description include the displayed units."""
+
+    def __init__(self, orientation):
+        super().__init__(orientation)
+        self._accessible_base_name = "Amount"
+        self._accessible_instructions = ""
+        self._accessible_value_text = ""
+
+    def configure_accessibility(self, name, instructions):
+        self._accessible_base_name = name
+        self._accessible_instructions = instructions
+        self._sync_accessibility()
+
+    def set_accessible_value(self, value_text):
+        self._accessible_value_text = value_text
+        self._sync_accessibility()
+
+    def _sync_accessibility(self):
+        value = self._accessible_value_text or "not set"
+        self.setAccessibleName(
+            f"{self._accessible_base_name}: {value}"
+        )
+        self.setAccessibleDescription(
+            f"Current value {value}. {self._accessible_instructions}"
+        )
+        self.setToolTip(
+            f"{self._accessible_base_name}: {value}. "
+            f"{self._accessible_instructions}"
+        )
+
+
 class ParamRow(QWidget):
     changed = pyqtSignal()
 
@@ -3715,9 +3934,12 @@ class ParamRow(QWidget):
         self.suffix = suffix
         self.display_factor = display_factor
 
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 8)
-        lay.setSpacing(10)
+        self._compact = None
+        self._parent_compact = False
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(10, 8, 10, 8)
+        self._grid.setHorizontalSpacing(10)
+        self._grid.setVerticalSpacing(6)
 
         self.check = QCheckBox()
         self.check.setChecked(True)
@@ -3727,33 +3949,114 @@ class ParamRow(QWidget):
             f"Enable {label}",
             f"Toggle the {label} processing pass.",
         )
-        lay.addWidget(self.check)
 
         self._label = QLabel(label)
         self._label.setObjectName("paramName")
-        self._label.setFixedWidth(180)
-        lay.addWidget(self._label)
+        self._label.setWordWrap(True)
 
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = ValueAnnouncingSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 200)
-        _set_accessibility(
-            self.slider,
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(10)
+        self.slider.configure_accessibility(
             f"{label} amount",
-            f"Adjust {label} from {min_val} to {max_val}{suffix}.",
+            (
+                f"Adjust {label} from "
+                f"{self._format_display_value(min_val)} to "
+                f"{self._format_display_value(max_val)}. "
+                "Use Left and Right Arrow for fine changes or "
+                "Page Up and Page Down for larger changes."
+            ),
         )
-        lay.addWidget(self.slider, 1)
+        self._label.setBuddy(self.slider)
 
         self.val_label = QLabel()
         self.val_label.setObjectName("paramValue")
-        self.val_label.setFixedWidth(72)
         self.val_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            Qt.AlignmentFlag.AlignTrailing
+            | Qt.AlignmentFlag.AlignVCenter,
         )
-        lay.addWidget(self.val_label)
+        _set_accessibility(
+            self.val_label,
+            f"{label} displayed value",
+            f"Displays the current {label} value with units.",
+        )
+        widest_value = max(
+            self._format_display_value(min_val),
+            self._format_display_value(max_val),
+            key=len,
+        )
+        self.val_label.setMinimumWidth(
+            self.val_label.fontMetrics().horizontalAdvance(widest_value)
+            + 8
+        )
+        self._set_compact(False)
 
         self.slider.valueChanged.connect(self._update_label)
         self.check.stateChanged.connect(self._on_check_changed)
         self.set_value(default)
+        self._update_label()
+
+    def _format_display_value(self, value):
+        display_value = value * self.display_factor
+        return f"{display_value:.{self.decimals}f}{self.suffix}"
+
+    def _set_compact(self, compact):
+        if compact == self._compact:
+            return
+        self._compact = compact
+        for widget in (
+            self.check,
+            self._label,
+            self.slider,
+            self.val_label,
+        ):
+            self._grid.removeWidget(widget)
+        if compact:
+            self._grid.addWidget(self.check, 0, 0)
+            self._grid.addWidget(self._label, 0, 1, 1, 2)
+            self._grid.addWidget(self.val_label, 0, 3)
+            self._grid.addWidget(self.slider, 1, 1, 1, 3)
+        else:
+            self._grid.addWidget(self.check, 0, 0)
+            self._grid.addWidget(self._label, 0, 1)
+            self._grid.addWidget(self.slider, 0, 2)
+            self._grid.addWidget(self.val_label, 0, 3)
+        self._grid.setColumnStretch(0, 0)
+        self._grid.setColumnStretch(1, 0)
+        self._grid.setColumnStretch(2, 1)
+        self._grid.setColumnStretch(3, 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._parent_compact:
+            self._set_compact(True)
+            return
+        self._update_compact_for_width()
+
+    def _update_compact_for_width(self):
+        metrics = self.fontMetrics()
+        slider_width = max(150, metrics.horizontalAdvance("M") * 16)
+        required_width = (
+            self.check.sizeHint().width()
+            + self._label.sizeHint().width()
+            + slider_width
+            + self.val_label.minimumWidth()
+            + 60
+        )
+        if self._compact:
+            required_width += max(
+                40,
+                metrics.horizontalAdvance("M") * 4,
+            )
+        self._set_compact(self.width() < required_width)
+
+    def set_parent_compact(self, compact):
+        self._parent_compact = bool(compact)
+        if compact:
+            self._set_compact(True)
+        else:
+            self._update_compact_for_width()
 
     def _on_check_changed(self, state):
         enabled = self.check.isChecked()
@@ -3762,8 +4065,9 @@ class ParamRow(QWidget):
         self.changed.emit()
 
     def _update_label(self):
-        display_val = self.value() * self.display_factor
-        self.val_label.setText(f"{display_val:.{self.decimals}f}{self.suffix}")
+        value_text = self._format_display_value(self.value())
+        self.val_label.setText(value_text)
+        self.slider.set_accessible_value(value_text)
         self.changed.emit()
 
     def value(self):
@@ -3792,7 +4096,7 @@ class MainWindow(QMainWindow):
     def __init__(self, settings=None):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
-        self.setMinimumSize(1060, 780)
+        self.setMinimumSize(560, 360)
         self.resize(1180, 880)
         self.worker = None
         self.preview_worker = None
@@ -3837,36 +4141,65 @@ class MainWindow(QMainWindow):
             self.player.errorOccurred.connect(self._on_player_error)
 
         central = QWidget()
-        central.setObjectName("appRoot")
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        shell = QVBoxLayout(central)
+        shell.setContentsMargins(0, 0, 0, 0)
+
+        self.main_scroller = QScrollArea()
+        self.main_scroller.setObjectName("mainScroller")
+        self.main_scroller.setWidgetResizable(True)
+        self.main_scroller.setFrameShape(QFrame.Shape.NoFrame)
+        self.main_scroller.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.main_scroller.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        shell.addWidget(self.main_scroller)
+
+        self._content_root = QWidget()
+        self._content_root.setObjectName("appRoot")
+        self.main_scroller.setWidget(self._content_root)
+        root = QVBoxLayout(self._content_root)
         root.setContentsMargins(18, 16, 18, 18)
         root.setSpacing(14)
 
         root.addWidget(self._build_header())
 
-        workspace = QHBoxLayout()
-        workspace.setSpacing(14)
+        self._workspace_widget = QWidget()
+        self._workspace_layout = QBoxLayout(
+            QBoxLayout.Direction.LeftToRight,
+            self._workspace_widget,
+        )
+        self._workspace_layout.setContentsMargins(0, 0, 0, 0)
+        self._workspace_layout.setSpacing(14)
 
-        left_col = QVBoxLayout()
+        self._left_column = QWidget()
+        left_col = QVBoxLayout(self._left_column)
+        left_col.setContentsMargins(0, 0, 0, 0)
         left_col.setSpacing(14)
         left_col.addWidget(self._build_files(), 5)
         left_col.addWidget(self._build_preview(), 0)
         left_col.addWidget(self._build_log(), 3)
 
-        right_col = QVBoxLayout()
+        self._right_column = QWidget()
+        right_col = QVBoxLayout(self._right_column)
+        right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(14)
         right_col.addWidget(self._build_settings(), 7)
         right_col.addWidget(self._build_output(), 0)
         right_col.addWidget(self._build_controls(), 0)
 
-        workspace.addLayout(left_col, 5)
-        workspace.addLayout(right_col, 6)
-        root.addLayout(workspace, 1)
+        self._workspace_layout.addWidget(self._left_column, 5)
+        self._workspace_layout.addWidget(self._right_column, 6)
+        root.addWidget(self._workspace_widget, 1)
         self._sync_header_stats()
         self._configure_accessibility()
+        self._configure_shortcuts()
         self._configure_tab_order()
         self._restore_session_state()
+        self._responsive_compact = None
+        self._update_responsive_layout()
 
         if not self._session_restored_geometry:
             screen = QApplication.primaryScreen()
@@ -3875,6 +4208,333 @@ class MainWindow(QMainWindow):
                 x = (geo.width() - self.width()) // 2 + geo.x()
                 y = (geo.height() - self.height()) // 2 + geo.y()
                 self.move(x, y)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_workspace_layout"):
+            self._update_responsive_layout(event.size().width() - 20)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_responsive_layout()
+
+    def _update_responsive_layout(self, available_width=None):
+        viewport_width = available_width
+        if viewport_width is None:
+            viewport_width = (
+                self.main_scroller.viewport().width()
+                if hasattr(self, "main_scroller")
+                else self.width()
+            )
+        if viewport_width < 100:
+            viewport_width = self.width()
+        em_width = max(8, self.fontMetrics().horizontalAdvance("M"))
+        breakpoint = max(900, em_width * 80)
+        compact = viewport_width < breakpoint
+        if compact == getattr(self, "_responsive_compact", None):
+            if compact:
+                self._refresh_responsive_panel_minimums(True)
+            return
+        self._responsive_compact = compact
+        direction = (
+            QBoxLayout.Direction.TopToBottom
+            if compact
+            else QBoxLayout.Direction.LeftToRight
+        )
+        self._workspace_layout.setDirection(direction)
+        self._workspace_layout.setStretch(0, 5 if not compact else 1)
+        self._workspace_layout.setStretch(1, 6 if not compact else 1)
+        if hasattr(self, "_header_layout"):
+            self._header_layout.setDirection(
+                QBoxLayout.Direction.TopToBottom
+                if compact
+                else QBoxLayout.Direction.LeftToRight
+            )
+            self._arrange_header_status(compact)
+        self._arrange_adaptive_controls(compact)
+        self._refresh_responsive_panel_minimums(compact)
+
+    def _refresh_responsive_panel_minimums(self, compact):
+        """Keep preferred child heights so compact grids never overlap."""
+        for panel in self._content_root.findChildren(QFrame):
+            if panel.objectName() != "panel":
+                continue
+            if not compact:
+                panel.setMinimumHeight(0)
+                continue
+            layout = panel.layout()
+            if layout is None:
+                continue
+            layout.invalidate()
+            margins = layout.contentsMargins()
+            preferred_height = margins.top() + margins.bottom()
+            if layout.count() > 1:
+                preferred_height += layout.spacing() * (layout.count() - 1)
+            available_width = max(
+                1,
+                panel.width() - margins.left() - margins.right(),
+            )
+            for index in range(layout.count()):
+                item = layout.itemAt(index)
+                item_height = max(
+                    item.minimumSize().height(),
+                    item.sizeHint().height(),
+                )
+                if item.hasHeightForWidth():
+                    item_height = max(
+                        item_height,
+                        item.heightForWidth(available_width),
+                    )
+                preferred_height += item_height
+            panel.setMinimumHeight(preferred_height + 2)
+
+    @staticmethod
+    def _place_grid(layout, placements, stretch_columns=()):
+        while layout.count():
+            layout.takeAt(0)
+        for column in range(8):
+            layout.setColumnStretch(column, 0)
+        for widget, row, column, row_span, column_span in placements:
+            layout.addWidget(
+                widget,
+                row,
+                column,
+                row_span,
+                column_span,
+            )
+        for column, stretch in stretch_columns:
+            layout.setColumnStretch(column, stretch)
+
+    def _arrange_adaptive_controls(self, compact):
+        for button in self.findChildren(ResponsiveButton):
+            button.set_compact(compact)
+        if hasattr(self, "param_rows"):
+            for row in self.param_rows.values():
+                row.set_parent_compact(compact)
+
+        if hasattr(self, "_queue_primary_grid"):
+            if compact:
+                placements = (
+                    (self.btn_browse, 0, 0, 1, 1),
+                    (self.btn_remove, 1, 0, 1, 1),
+                    (self.btn_clear, 2, 0, 1, 1),
+                    (self.file_count_label, 3, 0, 1, 1),
+                )
+                stretches = ((0, 1),)
+            else:
+                placements = (
+                    (self.btn_browse, 0, 0, 1, 1),
+                    (self.btn_remove, 0, 1, 1, 1),
+                    (self.btn_clear, 0, 2, 1, 1),
+                    (self.file_count_label, 0, 4, 1, 1),
+                )
+                stretches = ((3, 1),)
+            self._place_grid(
+                self._queue_primary_grid,
+                placements,
+                stretches,
+            )
+
+        if hasattr(self, "_queue_history_grid"):
+            placements = (
+                (
+                    self.btn_resume_batch,
+                    0,
+                    0,
+                    1,
+                    1,
+                ),
+                (
+                    self.btn_retry_failed,
+                    1 if compact else 0,
+                    0 if compact else 1,
+                    1,
+                    1,
+                ),
+            )
+            self._place_grid(
+                self._queue_history_grid,
+                placements,
+                ((0 if compact else 2, 1),),
+            )
+
+        if hasattr(self, "_preview_controls_grid"):
+            if compact:
+                placements = (
+                    (self.btn_render_preview, 0, 0, 1, 1),
+                    (self.btn_compare, 0, 1, 1, 1),
+                    (self.btn_play_orig, 1, 0, 1, 1),
+                    (self.btn_play_proc, 1, 1, 1, 1),
+                    (self.preview_label, 2, 0, 1, 2),
+                )
+                stretches = ((0, 1), (1, 1))
+            else:
+                placements = (
+                    (self.btn_render_preview, 0, 0, 1, 1),
+                    (self.btn_compare, 0, 1, 1, 1),
+                    (self.btn_play_orig, 0, 2, 1, 1),
+                    (self.btn_play_proc, 0, 3, 1, 1),
+                    (self.preview_label, 0, 4, 1, 1),
+                )
+                stretches = ((4, 1),)
+            self._place_grid(
+                self._preview_controls_grid,
+                placements,
+                stretches,
+            )
+
+        if hasattr(self, "_preset_controls_grid"):
+            if compact:
+                placements = (
+                    (self.preset_label, 0, 0, 1, 1),
+                    (self.preset_combo, 0, 1, 1, 1),
+                    (self.btn_save_preset, 1, 0, 1, 1),
+                    (self.btn_load_preset, 1, 1, 1, 1),
+                )
+                stretches = ((1, 1),)
+            else:
+                placements = (
+                    (self.preset_label, 0, 0, 1, 1),
+                    (self.preset_combo, 0, 1, 1, 1),
+                    (self.btn_save_preset, 0, 2, 1, 1),
+                    (self.btn_load_preset, 0, 3, 1, 1),
+                )
+                stretches = ((4, 1),)
+            self._place_grid(
+                self._preset_controls_grid,
+                placements,
+                stretches,
+            )
+
+        if hasattr(self, "_toggle_controls_grid"):
+            placements = (
+                (self.spectral_scan_check, 0, 0, 1, 1),
+                (
+                    self.meta_check,
+                    1 if compact else 0,
+                    0 if compact else 1,
+                    1,
+                    1,
+                ),
+            )
+            self._place_grid(
+                self._toggle_controls_grid,
+                placements,
+                ((0, 1), (1, 1)),
+            )
+
+        if hasattr(self, "_format_controls_grid"):
+            if compact:
+                placements = (
+                    (self.format_label, 0, 0, 1, 1),
+                    (self.format_combo, 0, 1, 1, 1),
+                    (self.btn_open_output, 1, 0, 1, 2),
+                )
+            else:
+                placements = (
+                    (self.format_label, 0, 0, 1, 1),
+                    (self.format_combo, 0, 1, 1, 1),
+                    (self.btn_open_output, 0, 3, 1, 1),
+                )
+            self._place_grid(
+                self._format_controls_grid,
+                placements,
+                ((1 if compact else 2, 1),),
+            )
+
+        if hasattr(self, "_directory_controls_grid"):
+            if compact:
+                placements = (
+                    (self.directory_label, 0, 0, 1, 2),
+                    (self.output_dir, 1, 0, 1, 1),
+                    (self.btn_browse_output, 1, 1, 1, 1),
+                )
+            else:
+                placements = (
+                    (self.directory_label, 0, 0, 1, 1),
+                    (self.output_dir, 0, 1, 1, 1),
+                    (self.btn_browse_output, 0, 2, 1, 1),
+                )
+            self._place_grid(
+                self._directory_controls_grid,
+                placements,
+                ((0 if compact else 1, 1),),
+            )
+
+        if hasattr(self, "_render_controls_grid"):
+            if compact:
+                placements = (
+                    (self.btn_process, 0, 0, 1, 1),
+                    (self.btn_cancel, 1, 0, 1, 1),
+                    (self.progress, 2, 0, 1, 1),
+                )
+                stretches = ((0, 1),)
+            else:
+                placements = (
+                    (self.btn_process, 0, 0, 1, 1),
+                    (self.btn_cancel, 0, 1, 1, 1),
+                    (self.progress, 0, 2, 1, 1),
+                )
+                stretches = ((2, 1),)
+            self._place_grid(
+                self._render_controls_grid,
+                placements,
+                stretches,
+            )
+
+        if hasattr(self, "_log_controls_grid"):
+            placements = (
+                (self.btn_open_log, 0, 0, 1, 1),
+                (
+                    self.btn_clear_logs,
+                    1 if compact else 0,
+                    0 if compact else 1,
+                    1,
+                    1,
+                ),
+            )
+            self._place_grid(
+                self._log_controls_grid,
+                placements,
+                ((0, 1), (1, 1)),
+            )
+
+        if hasattr(self, "_compare_controls_grid"):
+            if compact:
+                placements = [(self.compare_label, 0, 0, 1, 2)]
+                for index, button in enumerate(
+                    self.compare_buttons.values()
+                ):
+                    placements.append(
+                        (
+                            button,
+                            1 + index // 2,
+                            index % 2,
+                            1,
+                            1,
+                        )
+                    )
+                placements.append(
+                    (self.btn_apply_compare, 3, 0, 1, 2)
+                )
+                stretches = ((0, 1), (1, 1))
+            else:
+                placements = [(self.compare_label, 0, 0, 1, 1)]
+                placements.extend(
+                    (button, 0, index + 1, 1, 1)
+                    for index, button in enumerate(
+                        self.compare_buttons.values()
+                    )
+                )
+                placements.append(
+                    (self.btn_apply_compare, 0, 5, 1, 1)
+                )
+                stretches = ((6, 1),)
+            self._place_grid(
+                self._compare_controls_grid,
+                tuple(placements),
+                stretches,
+            )
 
     def _standard_icon(self, pixmap):
         return self.style().standardIcon(pixmap)
@@ -3895,32 +4555,90 @@ class MainWindow(QMainWindow):
             f"{RIGHTS_ONLY_NOTICE} {EVIDENCE_NOTICE}",
         )
         _set_accessibility(
+            self.queue_status_label,
+            "Queue status: 0 files",
+            "Current number of files in the queue.",
+        )
+        _set_accessibility(
+            self.preset_status_label,
+            "Preset status: Extreme",
+            "Current processing preset.",
+        )
+        _set_accessibility(
+            self.format_status_label,
+            "Format status: WAV",
+            "Current output format.",
+        )
+        _set_accessibility(
+            self.render_status_label,
+            "Render status: Ready",
+            "Current render lifecycle state.",
+        )
+        _set_accessibility(
             self.file_list,
             "Audio queue",
-            "Drop audio files, select queued files, and reorder the batch.",
+            (
+                "Drop audio files and select queued files. Press Delete or "
+                "Backspace to remove selection; press Alt plus Up or Down "
+                "Arrow to reorder it."
+            ),
         )
-        _set_accessibility(self.btn_browse, "Browse audio files", "Add audio files to the queue.")
+        _set_accessibility(
+            self.btn_browse,
+            "Browse audio files",
+            "Add audio files to the queue. Shortcut Control plus O.",
+        )
         _set_accessibility(self.btn_remove, "Remove selected files", "Remove selected files from the queue.")
         _set_accessibility(self.btn_clear, "Clear queue", "Remove every file from the queue.")
         _set_accessibility(
             self.btn_resume_batch,
             "Resume batch",
-            "Load a batch manifest and continue only pending or interrupted jobs.",
+            (
+                "Load a batch manifest and continue only pending or "
+                "interrupted jobs. Shortcut Control plus R."
+            ),
         )
         _set_accessibility(
             self.btn_retry_failed,
             "Retry failed batch jobs",
-            "Load a batch manifest and retry only failed or partial jobs.",
+            (
+                "Load a batch manifest and retry only failed or partial jobs. "
+                "Shortcut Control plus Shift plus R."
+            ),
         )
-        _set_accessibility(self.btn_render_preview, "Render preview", "Render a short preview; disabled until a file is selected.")
-        _set_accessibility(self.btn_compare, "Compare presets", "Render one short sample per preset; disabled until a file is selected.")
+        _set_accessibility(
+            self.btn_render_preview,
+            "Render preview",
+            (
+                "Render a short preview; disabled until a file is selected. "
+                "Shortcut Control plus P."
+            ),
+        )
+        _set_accessibility(
+            self.btn_compare,
+            "Compare presets",
+            (
+                "Render one short sample per preset; disabled until a file "
+                "is selected. Shortcut Control plus Shift plus P."
+            ),
+        )
         _set_accessibility(self.btn_play_orig, "Play original", "Play the selected original file; disabled until audio is available.")
         _set_accessibility(self.btn_play_proc, "Play processed", "Play the selected processed file; disabled until output is available.")
         _set_accessibility(self.btn_open_log, "Open run log", "Open the latest persistent run log; disabled until a run starts.")
         _set_accessibility(self.btn_clear_logs, "Clear logs", "Delete all persistent run logs from the log directory.")
         _set_accessibility(self.preset_combo, "Preset", "Choose the processing preset.")
-        _set_accessibility(self.btn_save_preset, "Save preset", "Save current settings to a JSON preset file.")
-        _set_accessibility(self.btn_load_preset, "Load preset", "Load settings from a JSON preset file.")
+        _set_accessibility(
+            self.btn_save_preset,
+            "Save preset",
+            "Save current settings to JSON. Shortcut Control plus S.",
+        )
+        _set_accessibility(
+            self.btn_load_preset,
+            "Load preset",
+            (
+                "Load settings from JSON. Shortcut Control plus Shift plus O."
+            ),
+        )
         _set_accessibility(
             self.spectral_scan_check,
             "Narrowband candidate scan",
@@ -3935,14 +4653,34 @@ class MainWindow(QMainWindow):
         _set_accessibility(self.btn_open_output, "Open output folder", "Open the current output directory in the file manager.")
         _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
         _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
-        _set_accessibility(self.btn_process, "Process all", "Start processing every queued file.")
+        _set_accessibility(
+            self.btn_process,
+            "Process all",
+            (
+                "Start processing every queued file. Shortcut Control plus "
+                "Enter."
+            ),
+        )
         _set_accessibility(
             self.btn_cancel,
             "Cancel active render",
-            "Cancel the active batch, preview, or preset comparison.",
+            (
+                "Cancel the active batch, preview, or preset comparison. "
+                "Shortcut Escape."
+            ),
         )
         _set_accessibility(self.progress, "Render progress", "Shows current render progress.")
         _set_accessibility(self.log_box, "Session log", "Shows processing events, warnings, metrics, and diagnostics.")
+        _set_accessibility(
+            self.file_count_label,
+            "Queue count: 0 files",
+            "Current number of queued audio files.",
+        )
+        _set_accessibility(
+            self.preview_label,
+            "Preview target: Select a file",
+            "Names the file selected for preview and playback.",
+        )
 
         for name, btn in self.compare_buttons.items():
             _set_accessibility(
@@ -3955,6 +4693,32 @@ class MainWindow(QMainWindow):
             "Apply currently playing preset",
             "Apply the currently playing comparison preset to the main preset selector.",
         )
+
+    def _configure_shortcuts(self):
+        shortcuts = (
+            (self.btn_browse, "Ctrl+O"),
+            (self.btn_resume_batch, "Ctrl+R"),
+            (self.btn_retry_failed, "Ctrl+Shift+R"),
+            (self.btn_render_preview, "Ctrl+P"),
+            (self.btn_compare, "Ctrl+Shift+P"),
+            (self.btn_save_preset, "Ctrl+S"),
+            (self.btn_load_preset, "Ctrl+Shift+O"),
+            (self.btn_open_output, "Ctrl+Shift+E"),
+            (self.btn_process, "Ctrl+Return"),
+            (self.btn_cancel, "Esc"),
+        )
+        for button, sequence in shortcuts:
+            key_sequence = QKeySequence(sequence)
+            button.setShortcut(key_sequence)
+            shortcut_text = key_sequence.toString(
+                QKeySequence.SequenceFormat.NativeText
+            )
+            tooltip = button.toolTip().rstrip()
+            if tooltip and not tooltip.endswith((".", "!", "?")):
+                tooltip += "."
+            button.setToolTip(
+                f"{tooltip} Shortcut: {shortcut_text}.".strip()
+            )
 
     def _configure_tab_order(self):
         order = [
@@ -4070,23 +4834,31 @@ class MainWindow(QMainWindow):
     def _build_header(self):
         bar = QFrame()
         bar.setObjectName("topBar")
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(18, 14, 18, 14)
-        lay.setSpacing(16)
+        self._header_layout = QBoxLayout(
+            QBoxLayout.Direction.LeftToRight,
+            bar,
+        )
+        self._header_layout.setContentsMargins(18, 14, 18, 14)
+        self._header_layout.setSpacing(16)
 
-        brand_col = QVBoxLayout()
+        brand_widget = QWidget()
+        brand_col = QVBoxLayout(brand_widget)
+        brand_col.setContentsMargins(0, 0, 0, 0)
         brand_col.setSpacing(1)
         title = QLabel(APP_NAME)
         title.setObjectName("appTitle")
+        _set_relative_font(title, 9.0, bold=True)
         self.scope_label = QLabel(
             "Rights-owned audio only\n"
             "Local metrics do not predict platform outcomes"
         )
         self.scope_label.setObjectName("appSubtitle")
+        self.scope_label.setWordWrap(True)
+        _set_relative_font(self.scope_label, -1.0)
         self.scope_label.setToolTip(EVIDENCE_NOTICE)
         brand_col.addWidget(title)
         brand_col.addWidget(self.scope_label)
-        lay.addLayout(brand_col, 1)
+        self._header_layout.addWidget(brand_widget, 1)
 
         self.queue_status_label = QLabel("0 files")
         self.queue_status_label.setObjectName("statusPill")
@@ -4097,18 +4869,58 @@ class MainWindow(QMainWindow):
         self.render_status_label = QLabel("Ready")
         self.render_status_label.setObjectName("statusPill")
 
-        for widget in (
+        self._version_label = QLabel(f"v{VERSION}")
+        self._version_label.setObjectName("sectionSubtitle")
+        _set_relative_font(self._version_label, -1.0)
+        self._header_status_widgets = (
             self.queue_status_label,
             self.preset_status_label,
             self.format_status_label,
             self.render_status_label,
-        ):
-            lay.addWidget(widget)
-
-        version = QLabel(f"v{VERSION}")
-        version.setObjectName("sectionSubtitle")
-        lay.addWidget(version)
+            self._version_label,
+        )
+        status_widget = QWidget()
+        self._header_status_grid = QGridLayout(status_widget)
+        self._header_status_grid.setContentsMargins(0, 0, 0, 0)
+        self._header_status_grid.setHorizontalSpacing(10)
+        self._header_status_grid.setVerticalSpacing(8)
+        self._arrange_header_status(False)
+        self._header_layout.addWidget(status_widget)
         return bar
+
+    def _arrange_header_status(self, compact):
+        grid = self._header_status_grid
+        for widget in self._header_status_widgets:
+            grid.removeWidget(widget)
+        if compact:
+            positions = (
+                (self.queue_status_label, 0, 0, 1, 1),
+                (self.preset_status_label, 0, 1, 1, 1),
+                (self.format_status_label, 1, 0, 1, 1),
+                (self.render_status_label, 1, 1, 1, 1),
+                (self._version_label, 2, 0, 1, 2),
+            )
+        else:
+            positions = tuple(
+                (widget, 0, index, 1, 1)
+                for index, widget in enumerate(
+                    self._header_status_widgets
+                )
+            )
+        for widget, row, column, row_span, column_span in positions:
+            grid.addWidget(
+                widget,
+                row,
+                column,
+                row_span,
+                column_span,
+            )
+        grid.setColumnStretch(0, 1 if compact else 0)
+        grid.setColumnStretch(1, 1 if compact else 0)
+        self._version_label.setAlignment(
+            Qt.AlignmentFlag.AlignTrailing
+            | Qt.AlignmentFlag.AlignVCenter
+        )
 
     def _make_panel(self, title, subtitle=None):
         panel = QFrame()
@@ -4123,10 +4935,14 @@ class MainWindow(QMainWindow):
         head.setSpacing(2)
         title_label = QLabel(title)
         title_label.setObjectName("sectionTitle")
+        title_label.setWordWrap(True)
+        _set_relative_font(title_label, 2.0, bold=True)
         head.addWidget(title_label)
         if subtitle:
             subtitle_label = QLabel(subtitle)
             subtitle_label.setObjectName("sectionSubtitle")
+            subtitle_label.setWordWrap(True)
+            _set_relative_font(subtitle_label, -1.0)
             head.addWidget(subtitle_label)
         outer.addLayout(head)
         return panel, outer
@@ -4135,15 +4951,30 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'queue_status_label'):
             return
         count = self.file_list.count() if hasattr(self, 'file_list') else 0
-        self.queue_status_label.setText(f"{count} file{'s' if count != 1 else ''}")
+        count_text = f"{count} file{'s' if count != 1 else ''}"
+        self.queue_status_label.setText(count_text)
+        self.queue_status_label.setAccessibleName(
+            f"Queue status: {count_text}"
+        )
         if hasattr(self, 'preset_combo'):
-            self.preset_status_label.setText(self.preset_combo.currentText())
+            preset = self.preset_combo.currentText()
+            self.preset_status_label.setText(preset)
+            self.preset_status_label.setAccessibleName(
+                f"Preset status: {preset}"
+            )
         if hasattr(self, 'format_combo'):
-            self.format_status_label.setText(self.format_combo.currentText())
+            output_format = self.format_combo.currentText()
+            self.format_status_label.setText(output_format)
+            self.format_status_label.setAccessibleName(
+                f"Format status: {output_format}"
+            )
 
     def _set_render_state(self, text):
         if hasattr(self, 'render_status_label'):
             self.render_status_label.setText(text)
+            self.render_status_label.setAccessibleName(
+                f"Render status: {text}"
+            )
 
     # --- File section ---
     def _build_files(self):
@@ -4152,35 +4983,40 @@ class MainWindow(QMainWindow):
             "Add audio files, reorder the batch, and track rendered outputs.",
         )
 
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
+        self._queue_primary_grid = QGridLayout()
+        self._queue_primary_grid.setSpacing(8)
         self.btn_browse = self._decorate_button(
-            QPushButton("Browse"),
+            ResponsiveButton("Browse"),
             QStyle.StandardPixmap.SP_DialogOpenButton,
         )
         self.btn_browse.clicked.connect(self._on_browse)
         self.btn_remove = self._decorate_button(
-            QPushButton("Remove"),
+            ResponsiveButton("Remove"),
             QStyle.StandardPixmap.SP_DialogCancelButton,
         )
         self.btn_remove.clicked.connect(self._on_remove_selected)
-        self.btn_clear = QPushButton("Clear")
+        self.btn_clear = ResponsiveButton("Clear")
         self.btn_clear.clicked.connect(self._on_clear)
 
         self.file_count_label = QLabel("0 files")
         self.file_count_label.setObjectName("countLabel")
 
-        btn_row.addWidget(self.btn_browse)
-        btn_row.addWidget(self.btn_remove)
-        btn_row.addWidget(self.btn_clear)
-        btn_row.addStretch()
-        btn_row.addWidget(self.file_count_label)
-        lay.addLayout(btn_row)
+        self._place_grid(
+            self._queue_primary_grid,
+            (
+                (self.btn_browse, 0, 0, 1, 1),
+                (self.btn_remove, 0, 1, 1, 1),
+                (self.btn_clear, 0, 2, 1, 1),
+                (self.file_count_label, 0, 4, 1, 1),
+            ),
+            ((3, 1),),
+        )
+        lay.addLayout(self._queue_primary_grid)
 
-        history_row = QHBoxLayout()
-        history_row.setSpacing(8)
+        self._queue_history_grid = QGridLayout()
+        self._queue_history_grid.setSpacing(8)
         self.btn_resume_batch = self._decorate_button(
-            QPushButton("Resume Batch"),
+            ResponsiveButton("Resume Batch"),
             QStyle.StandardPixmap.SP_BrowserReload,
         )
         self.btn_resume_batch.setToolTip(
@@ -4189,9 +5025,8 @@ class MainWindow(QMainWindow):
         self.btn_resume_batch.clicked.connect(
             lambda: self._load_batch_manifest("pending")
         )
-        history_row.addWidget(self.btn_resume_batch)
         self.btn_retry_failed = self._decorate_button(
-            QPushButton("Retry Failed"),
+            ResponsiveButton("Retry Failed"),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_retry_failed.setToolTip(
@@ -4200,18 +5035,34 @@ class MainWindow(QMainWindow):
         self.btn_retry_failed.clicked.connect(
             lambda: self._load_batch_manifest("failed")
         )
-        history_row.addWidget(self.btn_retry_failed)
-        history_row.addStretch()
-        lay.addLayout(history_row)
+        self._place_grid(
+            self._queue_history_grid,
+            (
+                (self.btn_resume_batch, 0, 0, 1, 1),
+                (self.btn_retry_failed, 0, 1, 1, 1),
+            ),
+            ((2, 1),),
+        )
+        lay.addLayout(self._queue_history_grid)
 
         self.file_list = DropListWidget()
-        self.file_list.setMinimumHeight(220)
+        self.file_list.setMinimumHeight(140)
+        self.file_list.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
+        )
         self.file_list.filesDropped.connect(self._add_files)
+        self.file_list.removeRequested.connect(self._on_remove_selected)
+        self.file_list.orderChanged.connect(
+            self._on_keyboard_queue_reordered
+        )
         self.file_list.itemSelectionChanged.connect(self._update_preview_ui)
         lay.addWidget(self.file_list)
 
         hint = QLabel("Drop files here - drag to reorder - WAV, MP3, FLAC, OGG, AIFF, Opus")
         hint.setObjectName("hintLabel")
+        hint.setWordWrap(True)
+        _set_relative_font(hint, -1.0)
         lay.addWidget(hint)
 
         return panel
@@ -4224,53 +5075,69 @@ class MainWindow(QMainWindow):
         )
 
         # Preset row
-        preset_row = QHBoxLayout()
-        preset_row.setSpacing(8)
-        preset_row.addWidget(QLabel("Preset:"))
+        self._preset_controls_grid = QGridLayout()
+        self._preset_controls_grid.setSpacing(8)
+        self.preset_label = QLabel("Preset:")
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(list(PRESETS.keys()) + ['Custom'])
         self.preset_combo.setCurrentText('Extreme')
         self.preset_combo.currentTextChanged.connect(self._on_preset)
-        preset_row.addWidget(self.preset_combo)
+        self.preset_label.setBuddy(self.preset_combo)
 
         self.btn_save_preset = self._decorate_button(
-            QPushButton("Save"),
+            ResponsiveButton("Save"),
             QStyle.StandardPixmap.SP_DialogSaveButton,
         )
         self.btn_save_preset.setToolTip("Save current settings to a JSON file")
         self.btn_save_preset.clicked.connect(self._save_preset)
-        preset_row.addWidget(self.btn_save_preset)
 
         self.btn_load_preset = self._decorate_button(
-            QPushButton("Load"),
+            ResponsiveButton("Load"),
             QStyle.StandardPixmap.SP_DialogOpenButton,
         )
         self.btn_load_preset.setToolTip("Load settings from a JSON file")
         self.btn_load_preset.clicked.connect(self._load_preset)
-        preset_row.addWidget(self.btn_load_preset)
+        self._place_grid(
+            self._preset_controls_grid,
+            (
+                (self.preset_label, 0, 0, 1, 1),
+                (self.preset_combo, 0, 1, 1, 1),
+                (self.btn_save_preset, 0, 2, 1, 1),
+                (self.btn_load_preset, 0, 3, 1, 1),
+            ),
+            ((4, 1),),
+        )
+        lay.addLayout(self._preset_controls_grid)
 
-        preset_row.addStretch()
-        lay.addLayout(preset_row)
-
-        toggle_row = QHBoxLayout()
-        toggle_row.setSpacing(16)
+        self._toggle_controls_grid = QGridLayout()
+        self._toggle_controls_grid.setHorizontalSpacing(16)
+        self._toggle_controls_grid.setVerticalSpacing(8)
         self.spectral_scan_check = QCheckBox("Narrowband Scan")
         self.spectral_scan_check.setChecked(True)
         self.spectral_scan_check.stateChanged.connect(lambda _: self._on_param_changed())
-        toggle_row.addWidget(self.spectral_scan_check)
 
         self.meta_check = QCheckBox("Metadata Strip")
         self.meta_check.setChecked(True)
         self.meta_check.stateChanged.connect(lambda _: self._on_param_changed())
-        toggle_row.addWidget(self.meta_check)
-        toggle_row.addStretch()
-        lay.addLayout(toggle_row)
+        self._place_grid(
+            self._toggle_controls_grid,
+            (
+                (self.spectral_scan_check, 0, 0, 1, 1),
+                (self.meta_check, 0, 1, 1, 1),
+            ),
+            ((0, 1), (1, 1)),
+        )
+        lay.addLayout(self._toggle_controls_grid)
 
         # Param rows
         self.param_rows = {}
         param_scroller = QScrollArea()
         param_scroller.setWidgetResizable(True)
-        param_scroller.setMinimumHeight(320)
+        param_scroller.setMinimumHeight(220)
+        param_scroller.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
+        )
         param_scroller.setFrameShape(QFrame.Shape.NoFrame)
         param_container = QWidget()
         param_lay = QVBoxLayout(param_container)
@@ -4295,9 +5162,9 @@ class MainWindow(QMainWindow):
             "Destination",
             "Choose format and output directory for processed files.",
         )
-        format_row = QHBoxLayout()
-        format_row.setSpacing(8)
-        format_row.addWidget(QLabel("Format:"))
+        self._format_controls_grid = QGridLayout()
+        self._format_controls_grid.setSpacing(8)
+        self.format_label = QLabel("Format:")
         self.format_combo = QComboBox()
         self.format_combo.addItems([fmt.upper() for fmt in _available_output_formats()])
         if not _check_ffmpeg():
@@ -4307,33 +5174,47 @@ class MainWindow(QMainWindow):
             if missing:
                 self.format_combo.setToolTip(f"ffmpeg lacks encoders for: {', '.join(missing)}")
         self.format_combo.currentTextChanged.connect(lambda _: self._sync_header_stats())
-        self.format_combo.setFixedWidth(140)
-        format_row.addWidget(self.format_combo)
-        format_row.addStretch()
+        self.format_combo.setMinimumWidth(120)
+        self.format_label.setBuddy(self.format_combo)
         self.btn_open_output = self._decorate_button(
-            QPushButton("Open"),
+            ResponsiveButton("Open"),
             QStyle.StandardPixmap.SP_DirOpenIcon,
         )
         self.btn_open_output.setToolTip("Open output directory in file manager")
         self.btn_open_output.clicked.connect(self._open_output)
-        format_row.addWidget(self.btn_open_output)
-        lay.addLayout(format_row)
+        self._place_grid(
+            self._format_controls_grid,
+            (
+                (self.format_label, 0, 0, 1, 1),
+                (self.format_combo, 0, 1, 1, 1),
+                (self.btn_open_output, 0, 3, 1, 1),
+            ),
+            ((2, 1),),
+        )
+        lay.addLayout(self._format_controls_grid)
 
-        dir_row = QHBoxLayout()
-        dir_row.setSpacing(8)
-        dir_row.addWidget(QLabel("Directory:"))
+        self._directory_controls_grid = QGridLayout()
+        self._directory_controls_grid.setSpacing(8)
+        self.directory_label = QLabel("Directory:")
         self.output_dir = QLineEdit(DEFAULT_OUTPUT)
-        self.output_dir.setMinimumWidth(320)
-        dir_row.addWidget(self.output_dir, 1)
+        self.output_dir.setMinimumWidth(160)
+        self.directory_label.setBuddy(self.output_dir)
         self.btn_browse_output = self._decorate_button(
-            QPushButton(""),
+            ResponsiveButton(""),
             QStyle.StandardPixmap.SP_DirOpenIcon,
             "iconButton",
         )
-        self.btn_browse_output.setFixedWidth(36)
         self.btn_browse_output.clicked.connect(self._browse_output)
-        dir_row.addWidget(self.btn_browse_output)
-        lay.addLayout(dir_row)
+        self._place_grid(
+            self._directory_controls_grid,
+            (
+                (self.directory_label, 0, 0, 1, 1),
+                (self.output_dir, 0, 1, 1, 1),
+                (self.btn_browse_output, 0, 2, 1, 1),
+            ),
+            ((1, 1),),
+        )
+        lay.addLayout(self._directory_controls_grid)
 
         return panel
 
@@ -4343,32 +5224,37 @@ class MainWindow(QMainWindow):
             "Render",
             "Start the full batch or stop an active render.",
         )
-        row = QHBoxLayout()
-        row.setSpacing(10)
+        self._render_controls_grid = QGridLayout()
+        self._render_controls_grid.setSpacing(10)
 
         self.btn_process = self._decorate_button(
-            QPushButton("Process All"),
+            ResponsiveButton("Process All"),
             QStyle.StandardPixmap.SP_MediaPlay,
             "processBtn",
         )
+        _set_relative_font(self.btn_process, 2.0, bold=True)
         self.btn_process.clicked.connect(self._on_process)
-        row.addWidget(self.btn_process)
 
         self.btn_cancel = self._decorate_button(
-            QPushButton("Cancel"),
+            ResponsiveButton("Cancel"),
             QStyle.StandardPixmap.SP_MediaStop,
             "cancelBtn",
         )
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._on_cancel)
-        row.addWidget(self.btn_cancel)
-
-        row.addSpacing(8)
         self.progress = QProgressBar()
         self.progress.setValue(0)
         self.progress.setFormat("%p%")
-        row.addWidget(self.progress, 1)
-        lay.addLayout(row)
+        self._place_grid(
+            self._render_controls_grid,
+            (
+                (self.btn_process, 0, 0, 1, 1),
+                (self.btn_cancel, 0, 1, 1, 1),
+                (self.progress, 0, 2, 1, 1),
+            ),
+            ((2, 1),),
+        )
+        lay.addLayout(self._render_controls_grid)
 
         return panel
 
@@ -4380,10 +5266,10 @@ class MainWindow(QMainWindow):
         )
 
         # Row 1: render + playback controls
-        row1 = QHBoxLayout()
-        row1.setSpacing(8)
+        self._preview_controls_grid = QGridLayout()
+        self._preview_controls_grid.setSpacing(8)
         self.btn_render_preview = self._decorate_button(
-            QPushButton("Preview"),
+            ResponsiveButton("Preview"),
             QStyle.StandardPixmap.SP_BrowserReload,
         )
         self.btn_render_preview.setToolTip(
@@ -4392,10 +5278,9 @@ class MainWindow(QMainWindow):
         )
         self.btn_render_preview.clicked.connect(self._on_render_preview)
         self.btn_render_preview.setEnabled(False)
-        row1.addWidget(self.btn_render_preview)
 
         self.btn_compare = self._decorate_button(
-            QPushButton("Compare"),
+            ResponsiveButton("Compare"),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_compare.setToolTip(
@@ -4404,55 +5289,72 @@ class MainWindow(QMainWindow):
         )
         self.btn_compare.clicked.connect(self._on_compare_presets)
         self.btn_compare.setEnabled(False)
-        row1.addWidget(self.btn_compare)
 
         self.btn_play_orig = self._decorate_button(
-            QPushButton("Original"),
+            ResponsiveButton("Original"),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_play_orig.clicked.connect(lambda: self._toggle_play('original'))
         self.btn_play_orig.setEnabled(False)
-        row1.addWidget(self.btn_play_orig)
 
         self.btn_play_proc = self._decorate_button(
-            QPushButton("Processed"),
+            ResponsiveButton("Processed"),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_play_proc.clicked.connect(lambda: self._toggle_play('processed'))
         self.btn_play_proc.setEnabled(False)
-        row1.addWidget(self.btn_play_proc)
-
-        row1.addSpacing(12)
         self.preview_label = QLabel("Select a file")
         self.preview_label.setObjectName("nowPlaying")
-        row1.addWidget(self.preview_label, 1)
-        outer.addLayout(row1)
+        self.preview_label.setWordWrap(True)
+        self._place_grid(
+            self._preview_controls_grid,
+            (
+                (self.btn_render_preview, 0, 0, 1, 1),
+                (self.btn_compare, 0, 1, 1, 1),
+                (self.btn_play_orig, 0, 2, 1, 1),
+                (self.btn_play_proc, 0, 3, 1, 1),
+                (self.preview_label, 0, 4, 1, 1),
+            ),
+            ((4, 1),),
+        )
+        outer.addLayout(self._preview_controls_grid)
 
         # Row 2: compare panel (hidden until Compare Presets is rendered)
         self.compare_panel = QWidget()
         self.compare_panel.setObjectName("comparePanel")
-        compare_lay = QHBoxLayout(self.compare_panel)
-        compare_lay.setContentsMargins(0, 2, 0, 0)
-        compare_lay.setSpacing(8)
-        compare_lay.addWidget(QLabel("A/B:"))
+        self._compare_controls_grid = QGridLayout(self.compare_panel)
+        self._compare_controls_grid.setContentsMargins(0, 2, 0, 0)
+        self._compare_controls_grid.setSpacing(8)
+        self.compare_label = QLabel("A/B:")
         self.compare_buttons = {}
         for name in PRESETS.keys():
-            btn = QPushButton(name)
+            btn = ResponsiveButton(name)
             btn.setObjectName("compareButton")
             btn.setToolTip(f"Play the {name} sample")
             btn.setEnabled(False)
             btn.clicked.connect(lambda _checked=False, n=name: self._play_compare(n))
             self.compare_buttons[name] = btn
-            compare_lay.addWidget(btn)
-        compare_lay.addSpacing(12)
-        self.btn_apply_compare = QPushButton("Apply Currently Playing")
+        self.btn_apply_compare = ResponsiveButton(
+            "Apply Currently Playing"
+        )
         self.btn_apply_compare.setToolTip(
             "Set the currently playing preset as the active preset for Process All"
         )
         self.btn_apply_compare.setEnabled(False)
         self.btn_apply_compare.clicked.connect(self._apply_playing_compare_preset)
-        compare_lay.addWidget(self.btn_apply_compare)
-        compare_lay.addStretch()
+        compare_placements = [(self.compare_label, 0, 0, 1, 1)]
+        compare_placements.extend(
+            (button, 0, index + 1, 1, 1)
+            for index, button in enumerate(self.compare_buttons.values())
+        )
+        compare_placements.append(
+            (self.btn_apply_compare, 0, 5, 1, 1)
+        )
+        self._place_grid(
+            self._compare_controls_grid,
+            tuple(compare_placements),
+            ((6, 1),),
+        )
         self.compare_panel.setVisible(False)
         outer.addWidget(self.compare_panel)
 
@@ -4474,28 +5376,37 @@ class MainWindow(QMainWindow):
         )
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(170)
+        self.log_box.setMinimumHeight(120)
+        self.log_box.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
+        )
         lay.addWidget(self.log_box)
-        actions = QHBoxLayout()
-        actions.addStretch()
+        self._log_controls_grid = QGridLayout()
+        self._log_controls_grid.setSpacing(8)
         self.btn_open_log = self._decorate_button(
-            QPushButton("Open Log"),
+            ResponsiveButton("Open Log"),
             QStyle.StandardPixmap.SP_FileIcon,
         )
         self.btn_open_log.setToolTip("Open the latest persistent run log")
         self.btn_open_log.setEnabled(False)
         self.btn_open_log.clicked.connect(self._open_run_log)
-        actions.addWidget(self.btn_open_log)
 
         self.btn_clear_logs = self._decorate_button(
-            QPushButton("Clear Logs"),
+            ResponsiveButton("Clear Logs"),
             QStyle.StandardPixmap.SP_TrashIcon,
         )
         self.btn_clear_logs.setToolTip("Delete all persistent run logs")
         self.btn_clear_logs.clicked.connect(self._clear_all_logs)
-        actions.addWidget(self.btn_clear_logs)
-
-        lay.addLayout(actions)
+        self._place_grid(
+            self._log_controls_grid,
+            (
+                (self.btn_open_log, 0, 0, 1, 1),
+                (self.btn_clear_logs, 0, 1, 1, 1),
+            ),
+            ((0, 1), (1, 1)),
+        )
+        lay.addLayout(self._log_controls_grid)
         return panel
 
     # --- File list slots ---
@@ -4539,6 +5450,17 @@ class MainWindow(QMainWindow):
         self._update_file_count()
         self._update_preview_ui()
 
+    def _on_keyboard_queue_reordered(self, message):
+        self._update_preview_ui()
+        self._log(f"Queue: {message}")
+        description = self.file_list.accessibleDescription().split(
+            " Last action:",
+            1,
+        )[0]
+        self.file_list.setAccessibleDescription(
+            f"{description} Last action: {message}"
+        )
+
     def _add_files(self, paths):
         existing = set()
         for i in range(self.file_list.count()):
@@ -4579,7 +5501,11 @@ class MainWindow(QMainWindow):
 
     def _update_file_count(self):
         n = self.file_list.count()
-        self.file_count_label.setText(f"{n} file{'s' if n != 1 else ''}")
+        count_text = f"{n} file{'s' if n != 1 else ''}"
+        self.file_count_label.setText(count_text)
+        self.file_count_label.setAccessibleName(
+            f"Queue count: {count_text}"
+        )
         self._sync_header_stats()
 
     # --- Preset slots ---
@@ -5519,6 +6445,9 @@ class MainWindow(QMainWindow):
             self.btn_play_orig.setEnabled(False)
             self.btn_play_proc.setEnabled(False)
             self.preview_label.setText("Select a file")
+            self.preview_label.setAccessibleName(
+                "Preview target: Select a file"
+            )
             return
 
         orig_path = item.data(ROLE_INPUT)
@@ -5531,6 +6460,9 @@ class MainWindow(QMainWindow):
         if is_preview and proc_ok:
             display_name = f"{display_name}  (preview: {int(PREVIEW_DURATION_SEC)}s)"
         self.preview_label.setText(display_name)
+        self.preview_label.setAccessibleName(
+            f"Preview target: {display_name}"
+        )
 
         processed_label = "Preview" if is_preview else "Processed"
 

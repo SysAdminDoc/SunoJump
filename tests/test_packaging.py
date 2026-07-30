@@ -50,5 +50,17 @@ class ScreenshotVersionTests(unittest.TestCase):
         self.assertIn('Version mismatch', source)
 
 
+class AccessibilitySmokeTests(unittest.TestCase):
+    def test_windows_uia_smoke_uses_isolated_settings_and_unit_names(self):
+        smoke_path = ROOT / 'tools' / 'smoke_accessibility.ps1'
+        self.assertTrue(smoke_path.exists())
+        source = smoke_path.read_text(encoding='utf-8')
+        self.assertIn('UIAutomationClient', source)
+        self.assertIn('sunojump-uia-state-', source)
+        self.assertIn('Pitch Micro-Shift amount:', source)
+        self.assertIn('Lossy Re-encode amount:', source)
+        self.assertIn('$queue.SetFocus()', source)
+
+
 if __name__ == '__main__':
     unittest.main()

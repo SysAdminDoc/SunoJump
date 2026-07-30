@@ -47,6 +47,12 @@ class ReleaseBuildTests(unittest.TestCase):
             for entry in entries:
                 self.assertEqual(len(entry.sha256), 64)
 
+    def test_release_source_requires_windows_accessibility_smoke(self):
+        self.assertIn(
+            pathlib.Path("tools/smoke_accessibility.ps1"),
+            self.mod.REQUIRED_SOURCE_FILES,
+        )
+
     def test_unhashed_lock_entry_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             lock = pathlib.Path(temp_dir) / "bad-lock.txt"

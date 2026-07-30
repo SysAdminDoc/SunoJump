@@ -35,6 +35,7 @@ class RenderErrorCode(str, Enum):
     OUTPUT_CHANNEL_MISMATCH = "output_channel_mismatch"
     OUTPUT_HASH_FAILED = "output_hash_failed"
     SIDECAR_WRITE_FAILED = "sidecar_write_failed"
+    MANIFEST_WRITE_FAILED = "manifest_write_failed"
     OUTPUT_DIR_UNAVAILABLE = "output_dir_unavailable"
     UNEXPECTED = "unexpected"
 

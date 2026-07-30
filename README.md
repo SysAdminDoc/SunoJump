@@ -110,6 +110,7 @@ The gate fails on a missing, stale, or wrong-version executable; undeclared bund
 - **Lifecycle-safe cancellation** — one Cancel control covers batches, previews, and preset comparisons; closing waits for confirmed worker exit and never removes active temp storage
 - **Replayable output evidence** — every render displays its effective seed; WAV/FLAC same-environment replays are byte-tested, while sidecars name exact muxer/codec dependencies when bytes are build-sensitive
 - **Identity-safe batch queue** — drag/drop multiple files, reorder them, and process them sequentially; stable job IDs prevent late worker results from attaching to replacement rows
+- **Resumable batch manifests** — every batch atomically persists inputs, seeds, configuration, attempts, terminal states, and artifact hashes; interrupted and failed-only work can be resumed without replacing existing files
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
 - **Guarded in-memory processing** — input size/decode limits are enforced; the Humanization pass processes long audio in chunks
 - **Open Output** — one-click to output folder in your file manager
@@ -126,6 +127,7 @@ python sunojump.py
 2. Select a preset or customize individual parameters
 3. (Optional) Click **Render Preview** to process the first 30 seconds of the selected file so you can hear the result before committing; adjust settings and re-render as needed
 4. Click **Process All** to render every file in the list to the output directory with `_sj` suffix
+5. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
 
 ### CLI Mode
 ```bash
@@ -140,16 +142,23 @@ python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
 
 # With lossy re-encode
 python sunojump.py -i song.wav -p aggressive --reencode 128
+
+# Resume pending/interrupted work, or retry only failed/partial jobs
+python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json
+python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json --retry failed
 ```
 
 #### CLI Options
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-i, --input` | Input file or directory | (required) |
+| `-i, --input` | Input file or directory; required unless `--resume` is used | none |
 | `-o, --output` | Output directory | `~/Desktop/SunoJump_Output` |
 | `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
 | `-f, --format` | wav, flac, ogg, mp3, m4a (mp3/m4a require ffmpeg) | wav |
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
+| `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
+| `--resume` | Existing batch manifest to reconcile and resume | none |
+| `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
 | `--no-spectral-scan`, `--no-watermark-scan` | Disable the local narrowband candidate scan (`--no-watermark-scan` is retained for compatibility) | enabled |
 | `--enable-pass PASS` | Enable a named pass at its current/preset amount; repeatable | none |
 | `--disable-pass PASS` | Disable a named pass; repeatable | none |
@@ -175,6 +184,8 @@ Every numeric override enables its corresponding pass. To disable one, use `--di
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs. Legacy partial presets are migrated and completed from the documented Moderate defaults; saved Custom sessions persist the full validated configuration rather than only the word `Custom`.
 
 CLI exit status is `0` only when every job succeeds, `1` when a batch has a usable output but is partial, and `2` when no job produces a usable output. Human-readable per-file and batch summaries include stable error codes, the effective seed, and sidecar hash. Each independently versioned sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
+
+Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
 
 ## Presets
 

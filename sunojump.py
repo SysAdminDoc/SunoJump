@@ -30,6 +30,13 @@ from config_schema import (
     default_render_config,
     validate_render_config,
 )
+from batch_manifest import (
+    BATCH_MANIFEST_SUFFIX,
+    RETRY_POLICIES,
+    BatchManifestError,
+    BatchManifestStore,
+    default_manifest_path,
+)
 from safe_audio import (
     DecodeCancelled,
     DecodeLimits,
@@ -3194,6 +3201,56 @@ class AudioProcessor:
 # ============================================================
 #  Process Worker Thread
 # ============================================================
+def _finish_manifest_job(manifest_store, job_id, result):
+    validation = result.validation
+    manifest_store.finish_job(
+        job_id,
+        state=result.state.value,
+        output_path=result.output_path,
+        output_sha256=(
+            validation.output_sha256 if validation is not None else None
+        ),
+        sidecar_path=result.sidecar_path,
+        sidecar_sha256=result.sidecar_sha256,
+        input_sha256=(
+            validation.input_sha256 if validation is not None else None
+        ),
+        error_code=(
+            result.error_code.value
+            if result.error_code is not None
+            else None
+        ),
+        message=result.message,
+    )
+
+
+def _manifest_failure_result(result, exc):
+    if result.usable_output:
+        return RenderResult(
+            state=RenderState.PARTIAL,
+            input_path=result.input_path,
+            output_path=result.output_path,
+            error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
+            message=(
+                "usable output exists, but batch state could not be "
+                f"persisted: {exc}"
+            ),
+            elapsed_seconds=result.elapsed_seconds,
+            validation=result.validation,
+            effective_seed=result.effective_seed,
+            sidecar_path=result.sidecar_path,
+            sidecar_sha256=result.sidecar_sha256,
+        )
+    return RenderResult(
+        state=RenderState.FAILED,
+        input_path=result.input_path,
+        error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
+        message=f"batch state could not be persisted: {exc}",
+        elapsed_seconds=result.elapsed_seconds,
+        effective_seed=result.effective_seed,
+    )
+
+
 class ProcessWorker(QThread):
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)
@@ -3203,21 +3260,42 @@ class ProcessWorker(QThread):
     # all_done(BatchResult)
     all_done = pyqtSignal(object)
 
-    def __init__(self, jobs, params, output_dir):
+    def __init__(self, jobs, params, output_dir, manifest_store=None):
         super().__init__()
         self.jobs = []
+        seeds = []
         for index, job in enumerate(jobs):
-            if isinstance(job, (tuple, list)) and len(job) == 2:
-                job_id, filepath = job
+            if isinstance(job, dict):
+                job_id = job["id"]
+                filepath = job["input_path"]
+                seed = job.get("effective_seed")
+            elif isinstance(job, (tuple, list)) and len(job) in {2, 3}:
+                job_id, filepath = job[:2]
+                seed = job[2] if len(job) == 3 else None
             else:
                 job_id = f"worker-{index}-{uuid.uuid4().hex}"
                 filepath = job
+                seed = None
             self.jobs.append((str(job_id), str(filepath)))
+            seeds.append(
+                seed if seed is not None else secrets.randbits(64)
+            )
         self.files = [filepath for _, filepath in self.jobs]
         self.params = params
         self.output_dir = output_dir
+        self.manifest_store = manifest_store
         self._cancel_event = threading.Event()
-        self.seeds = [secrets.randbits(64) for _ in self.jobs]
+        self.seeds = seeds
+
+    def _record_manifest_result(self, job_id, result):
+        if self.manifest_store is None:
+            return result
+        try:
+            _finish_manifest_job(self.manifest_store, job_id, result)
+            return result
+        except BatchManifestError as exc:
+            self.log_signal.emit(f"Batch manifest update failed: {exc}")
+            return _manifest_failure_result(result, exc)
 
     def run(self):
         t_start = time.monotonic()
@@ -3235,6 +3313,7 @@ class ProcessWorker(QThread):
                     message=message,
                     effective_seed=self.seeds[idx],
                 )
+                result = self._record_manifest_result(job_id, result)
                 results.append(result)
                 self.file_done.emit(job_id, result)
                 self.log_signal.emit(format_render_result(result))
@@ -3258,6 +3337,10 @@ class ProcessWorker(QThread):
                         error_code=RenderErrorCode.CANCELLED,
                         message="batch cancelled before this job started",
                         effective_seed=self.seeds[cancelled_idx],
+                    )
+                    result = self._record_manifest_result(
+                        cancelled_job_id,
+                        result,
                     )
                     results.append(result)
                     self.file_done.emit(cancelled_job_id, result)
@@ -3293,9 +3376,20 @@ class ProcessWorker(QThread):
                         f"Output name collision avoided: {Path(out_path).name}",
                     )
                 self.log_signal.emit(f"Output path: {out_path}")
+                if self.manifest_store is not None:
+                    self.manifest_store.begin_attempt(job_id, out_path)
                 result = processor.process(filepath, out_path)
                 if not isinstance(result, RenderResult):
                     raise TypeError("processor returned an untyped result")
+            except BatchManifestError as exc:
+                self.log_signal.emit(f"Batch manifest update failed: {exc}")
+                result = RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=str(filepath),
+                    error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
+                    message=str(exc),
+                    effective_seed=self.seeds[idx],
+                )
             except Exception as e:
                 self.log_signal.emit(f"Unexpected render failure: {e}")
                 self.log_signal.emit(traceback.format_exc().rstrip())
@@ -3309,6 +3403,7 @@ class ProcessWorker(QThread):
             finally:
                 if reservation is not None:
                     reservation.release()
+            result = self._record_manifest_result(job_id, result)
             results.append(result)
             self.log_signal.emit(format_render_result(result))
             self.file_done.emit(job_id, result)
@@ -3807,6 +3902,16 @@ class MainWindow(QMainWindow):
         _set_accessibility(self.btn_browse, "Browse audio files", "Add audio files to the queue.")
         _set_accessibility(self.btn_remove, "Remove selected files", "Remove selected files from the queue.")
         _set_accessibility(self.btn_clear, "Clear queue", "Remove every file from the queue.")
+        _set_accessibility(
+            self.btn_resume_batch,
+            "Resume batch",
+            "Load a batch manifest and continue only pending or interrupted jobs.",
+        )
+        _set_accessibility(
+            self.btn_retry_failed,
+            "Retry failed batch jobs",
+            "Load a batch manifest and retry only failed or partial jobs.",
+        )
         _set_accessibility(self.btn_render_preview, "Render preview", "Render a short preview; disabled until a file is selected.")
         _set_accessibility(self.btn_compare, "Compare presets", "Render one short sample per preset; disabled until a file is selected.")
         _set_accessibility(self.btn_play_orig, "Play original", "Play the selected original file; disabled until audio is available.")
@@ -3856,6 +3961,8 @@ class MainWindow(QMainWindow):
             self.btn_browse,
             self.btn_remove,
             self.btn_clear,
+            self.btn_resume_batch,
+            self.btn_retry_failed,
             self.file_list,
             self.btn_render_preview,
             self.btn_compare,
@@ -4069,6 +4176,33 @@ class MainWindow(QMainWindow):
         btn_row.addStretch()
         btn_row.addWidget(self.file_count_label)
         lay.addLayout(btn_row)
+
+        history_row = QHBoxLayout()
+        history_row.setSpacing(8)
+        self.btn_resume_batch = self._decorate_button(
+            QPushButton("Resume Batch"),
+            QStyle.StandardPixmap.SP_BrowserReload,
+        )
+        self.btn_resume_batch.setToolTip(
+            "Load a batch manifest and continue pending/interrupted jobs"
+        )
+        self.btn_resume_batch.clicked.connect(
+            lambda: self._load_batch_manifest("pending")
+        )
+        history_row.addWidget(self.btn_resume_batch)
+        self.btn_retry_failed = self._decorate_button(
+            QPushButton("Retry Failed"),
+            QStyle.StandardPixmap.SP_MediaPlay,
+        )
+        self.btn_retry_failed.setToolTip(
+            "Load a batch manifest and retry only failed/partial jobs"
+        )
+        self.btn_retry_failed.clicked.connect(
+            lambda: self._load_batch_manifest("failed")
+        )
+        history_row.addWidget(self.btn_retry_failed)
+        history_row.addStretch()
+        lay.addLayout(history_row)
 
         self.file_list = DropListWidget()
         self.file_list.setMinimumHeight(220)
@@ -4435,12 +4569,12 @@ class MainWindow(QMainWindow):
         self._update_file_count()
         self._update_preview_ui()
 
-    def _append_item(self, path):
+    def _append_item(self, path, job_id=None):
         item = QListWidgetItem(f"READY    {Path(path).name}")
         item.setToolTip(path)
         item.setData(ROLE_INPUT, path)
         item.setData(ROLE_OUTPUT, None)
-        item.setData(ROLE_JOB_ID, uuid.uuid4().hex)
+        item.setData(ROLE_JOB_ID, job_id or uuid.uuid4().hex)
         self.file_list.addItem(item)
 
     def _update_file_count(self):
@@ -4603,6 +4737,8 @@ class MainWindow(QMainWindow):
         self.btn_browse.setEnabled(enabled)
         self.btn_remove.setEnabled(enabled)
         self.btn_clear.setEnabled(enabled)
+        self.btn_resume_batch.setEnabled(enabled)
+        self.btn_retry_failed.setEnabled(enabled)
         self.btn_save_preset.setEnabled(enabled)
         self.btn_load_preset.setEnabled(enabled)
         self.spectral_scan_check.setEnabled(enabled)
@@ -4616,30 +4752,70 @@ class MainWindow(QMainWindow):
 
         self._stop_playback()
 
-        files = []
-        jobs = []
+        manifest_jobs = []
         for i in range(self.file_list.count()):
             item = self.file_list.item(i)
             input_path = item.data(ROLE_INPUT)
-            files.append(input_path)
-            jobs.append((self._ensure_item_job_id(item), input_path))
+            manifest_jobs.append({
+                "id": self._ensure_item_job_id(item),
+                "input_path": input_path,
+                "effective_seed": secrets.randbits(64),
+            })
             # Clear any previous processed-path marker
             item.setData(ROLE_OUTPUT, None)
 
         out_dir = self.output_dir.text().strip() or DEFAULT_OUTPUT
         params = self._get_params()
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            manifest_store = BatchManifestStore.create(
+                default_manifest_path(out_dir),
+                app_version=VERSION,
+                output_dir=out_dir,
+                config=params,
+                jobs=manifest_jobs,
+            )
+        except (OSError, BatchManifestError) as exc:
+            self._set_render_state("Manifest failed")
+            self._log(f"Cannot start batch safely: {exc}")
+            return
+        self._start_gui_batch(
+            manifest_store.select("pending"),
+            params,
+            out_dir,
+            manifest_store,
+            self.preset_combo.currentText(),
+        )
 
+    def _start_gui_batch(
+        self,
+        jobs,
+        params,
+        out_dir,
+        manifest_store,
+        label,
+        recovery_notes=None,
+    ):
+        files = [job["input_path"] for job in jobs]
         self._set_processing_ui(True)
         self.log_box.clear()
         self._start_run_log(
-            "gui-batch", files, out_dir, params, self.preset_combo.currentText(),
+            "gui-batch", files, out_dir, params, label,
         )
-        self._log(f"Starting -- {len(files)} file(s), preset: {self.preset_combo.currentText()}")
+        self._log(f"Starting -- {len(files)} file(s), preset: {label}")
         self._log(f"Output: {out_dir}\n")
+        self._log(f"Batch manifest: {manifest_store.path}")
+        for note in recovery_notes or ():
+            self._log(f"Recovery: {note}")
 
         self._batch_terminal_state = "Failed"
         self._batch_result_received = False
-        self.worker = ProcessWorker(jobs, params, out_dir)
+        self.worker = ProcessWorker(
+            jobs,
+            params,
+            out_dir,
+            manifest_store=manifest_store,
+        )
         active_worker = self.worker
         self.worker.log_signal.connect(self._log)
         self.worker.progress_signal.connect(self.progress.setValue)
@@ -4650,6 +4826,82 @@ class MainWindow(QMainWindow):
             lambda worker=active_worker: self._on_batch_thread_finished(worker)
         )
         self.worker.start()
+
+    def _load_batch_manifest(self, policy):
+        if self._active_render_workers():
+            self._log("Cannot load batch history while a render is active.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Batch Manifest",
+            self.output_dir.text().strip() or DEFAULT_OUTPUT,
+            (
+                f"SunoJump Batch (*{BATCH_MANIFEST_SUFFIX});;"
+                "JSON Files (*.json)"
+            ),
+        )
+        if not path:
+            return
+        try:
+            store = BatchManifestStore.load(path)
+            notes = store.reconcile()
+            params = validate_render_config(
+                store.config,
+                require_complete=True,
+                allow_output_format=True,
+            )
+            jobs = store.select(policy)
+            if not jobs:
+                counts = ", ".join(
+                    f"{state}={count}"
+                    for state, count in store.counts.items()
+                    if count
+                )
+                self._set_render_state("Nothing to resume")
+                self._log(
+                    f"No {policy} jobs in {Path(path).name} ({counts})."
+                )
+                return
+            output_format = params["output_format"].upper()
+            if self.format_combo.findText(output_format) < 0:
+                raise BatchManifestError(
+                    f"saved output format {output_format} is unavailable"
+                )
+        except (
+            BatchManifestError,
+            ConfigurationError,
+            OSError,
+        ) as exc:
+            self._set_render_state("Manifest invalid")
+            self._log(f"Cannot resume batch: {exc}")
+            return
+
+        self._stop_playback()
+        self.file_list.clear()
+        for job in jobs:
+            self._append_item(job["input_path"], job_id=job["id"])
+        self._update_file_count()
+        config_without_format = {
+            key: value
+            for key, value in params.items()
+            if key != "output_format"
+        }
+        self._apply_config(config_without_format)
+        self.format_combo.setCurrentText(output_format)
+        self.output_dir.setText(store.output_dir)
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.setCurrentText("Custom")
+        self.preset_combo.blockSignals(False)
+        self._sync_header_stats()
+        self._update_preview_ui()
+        self._start_gui_batch(
+            jobs,
+            params,
+            store.output_dir,
+            store,
+            f"Recovered ({policy})",
+            recovery_notes=notes,
+        )
 
     def _on_cancel(self):
         active = []
@@ -5439,7 +5691,7 @@ def _build_cli_parser():
         ),
         epilog=EVIDENCE_NOTICE,
     )
-    parser.add_argument('-i', '--input', required=True,
+    parser.add_argument('-i', '--input', required=False,
                         help='Input audio file or directory')
     parser.add_argument('-o', '--output', default=None, help='Output directory')
     parser.add_argument('-p', '--preset', default='moderate',
@@ -5449,6 +5701,26 @@ def _build_cli_parser():
                         dest='out_format')
     parser.add_argument('--preset-file', default=None,
                         help='Validated JSON preset; replaces -p/--preset')
+    parser.add_argument(
+        '--manifest',
+        default=None,
+        help='Path for the new atomic batch manifest',
+    )
+    parser.add_argument(
+        '--resume',
+        default=None,
+        metavar='MANIFEST',
+        help='Resume jobs from an existing SunoJump batch manifest',
+    )
+    parser.add_argument(
+        '--retry',
+        choices=sorted(RETRY_POLICIES),
+        default=None,
+        help=(
+            'With --resume, select pending (default), unfinished, failed, '
+            'or cancelled jobs only'
+        ),
+    )
     parser.add_argument(
         '--no-spectral-scan',
         '--no-watermark-scan',
@@ -5603,112 +5875,171 @@ def _apply_cli_overrides(params, args):
     )
 
 
+def _argv_uses_any_option(tokens, options):
+    return any(
+        token in options
+        or any(token.startswith(f"{option}=") for option in options)
+        for token in tokens
+    )
+
+
 def cli_main():
     parser = _build_cli_parser()
     args = parser.parse_args()
     if args.seed is not None and args.seed < 0:
         parser.error("--seed must be a non-negative integer")
+    if args.retry and not args.resume:
+        parser.error("--retry requires --resume")
+    if args.resume and args.manifest:
+        parser.error("--manifest cannot be combined with --resume")
+    if not args.resume and not args.input:
+        parser.error("--input is required unless --resume is used")
 
-    # Start with built-in preset
-    preset_name = args.preset.capitalize()
-    params = dict(PRESETS[preset_name])
-
-    # Optional JSON preset file override
-    if args.preset_file:
-        try:
-            with open(args.preset_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            document = _validate_preset_document(data)
-            params = document["params"]
-            print(f"Loaded preset from {args.preset_file}")
-            preset_name = document["name"]
-        except (
-            ConfigurationError,
-            json.JSONDecodeError,
-            OSError,
-            TypeError,
-        ) as exc:
-            print(
-                f"Error: invalid configuration in preset file: {exc}",
-                file=sys.stderr,
+    recovery_notes = []
+    manifest_store = None
+    if args.resume:
+        forbidden = {
+            "-i", "--input", "-o", "--output", "-p", "--preset",
+            "-f", "--format", "--preset-file", "--seed",
+            "--no-spectral-scan", "--no-watermark-scan",
+            "--enable-pass", "--disable-pass", "--spectral",
+            "--spectral-sub-bass", "--spectral-low-mids",
+            "--spectral-presence", "--spectral-air", "--dynamic-eq",
+            "--pitch", "--tempo", "--phase", "--stereo", "--noise",
+            "--dynamics", "--humanize", "--reencode",
+        }
+        if _argv_uses_any_option(sys.argv[1:], forbidden):
+            parser.error(
+                "--resume uses the manifest's inputs, output directory, "
+                "configuration, and seeds; remove conflicting options"
             )
+        try:
+            manifest_store = BatchManifestStore.load(args.resume)
+            recovery_notes = manifest_store.reconcile()
+            params = validate_render_config(
+                manifest_store.config,
+                require_complete=True,
+                allow_output_format=True,
+            )
+            policy = args.retry or "pending"
+            jobs = manifest_store.select(policy)
+        except (
+            BatchManifestError,
+            ConfigurationError,
+            OSError,
+        ) as exc:
+            print(f"Error: cannot resume batch: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if not jobs:
+            counts = ", ".join(
+                f"{state}={count}"
+                for state, count in manifest_store.counts.items()
+                if count
+            )
+            print(
+                f"No {policy} jobs in {manifest_store.path} ({counts})."
+            )
+            return
+        out_dir = manifest_store.output_dir
+        preset_name = f"Recovered ({policy})"
+    else:
+        preset_name = args.preset.capitalize()
+        params = dict(PRESETS[preset_name])
+        if args.preset_file:
+            try:
+                with open(args.preset_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                document = _validate_preset_document(data)
+                params = document["params"]
+                print(f"Loaded preset from {args.preset_file}")
+                preset_name = document["name"]
+            except (
+                ConfigurationError,
+                json.JSONDecodeError,
+                OSError,
+                TypeError,
+            ) as exc:
+                print(
+                    f"Error: invalid configuration in preset file: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+        try:
+            params = _apply_cli_overrides(params, args)
+            params["output_format"] = args.out_format
+            params = validate_render_config(
+                params,
+                require_complete=True,
+                allow_output_format=True,
+            )
+        except ConfigurationError as exc:
+            print(f"Error: invalid configuration: {exc}", file=sys.stderr)
             sys.exit(2)
 
-    try:
-        params = _apply_cli_overrides(params, args)
-        params["output_format"] = args.out_format
-        params = validate_render_config(
-            params,
-            require_complete=True,
-            allow_output_format=True,
-        )
-    except ConfigurationError as exc:
-        print(f"Error: invalid configuration: {exc}", file=sys.stderr)
-        sys.exit(2)
+        input_path = Path(args.input)
+        files = []
+        if input_path.is_dir():
+            for file_path in sorted(input_path.rglob('*')):
+                if file_path.suffix.lower() in SUPPORTED_FORMATS:
+                    files.append(str(file_path))
+        elif input_path.is_file():
+            files.append(str(input_path))
+        else:
+            print(f"Error: {args.input} not found")
+            sys.exit(1)
+        if not files:
+            print("No supported audio files found.")
+            sys.exit(1)
+        jobs = [
+            {
+                "id": uuid.uuid4().hex,
+                "input_path": filepath,
+                "effective_seed": (
+                    args.seed
+                    if args.seed is not None
+                    else secrets.randbits(64)
+                ),
+            }
+            for filepath in files
+        ]
+        out_dir = args.output or DEFAULT_OUTPUT
 
-    if _format_requires_ffmpeg(args.out_format):
+    out_format = params["output_format"]
+    if _format_requires_ffmpeg(out_format):
         if not _check_ffmpeg():
             print(
-                f"Error: {args.out_format.upper()} export requires ffmpeg in PATH. "
+                f"Error: {out_format.upper()} export requires ffmpeg in PATH. "
                 "Use WAV/FLAC/OGG or install ffmpeg.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        if not _ffmpeg_encoder_available(args.out_format):
-            encoder = FFMPEG_FORMAT_ENCODERS.get(args.out_format, args.out_format)
+        if not _ffmpeg_encoder_available(out_format):
+            encoder = FFMPEG_FORMAT_ENCODERS.get(out_format, out_format)
             print(
-                f"Error: ffmpeg lacks {encoder} encoder for {args.out_format.upper()} export. "
-                f"Install ffmpeg with {encoder} support or use WAV/FLAC/OGG.",
+                f"Error: ffmpeg lacks {encoder} encoder for "
+                f"{out_format.upper()} export. Install ffmpeg with {encoder} "
+                "support or use WAV/FLAC/OGG.",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-    # Collect input files
-    input_path = Path(args.input)
-    files = []
-    if input_path.is_dir():
-        for f in sorted(input_path.rglob('*')):
-            if f.suffix.lower() in SUPPORTED_FORMATS:
-                files.append(str(f))
-    elif input_path.is_file():
-        files.append(str(input_path))
-    else:
-        print(f"Error: {args.input} not found")
-        sys.exit(1)
-
-    if not files:
-        print("No supported audio files found.")
-        sys.exit(1)
-
-    effective_seeds = [
-        args.seed if args.seed is not None else secrets.randbits(64)
-        for _ in files
-    ]
-    out_dir = args.output or DEFAULT_OUTPUT
     try:
         os.makedirs(out_dir, exist_ok=True)
-    except OSError as exc:
-        message = f"cannot create output directory: {exc}"
-        results = [
-            RenderResult(
-                state=RenderState.FAILED,
-                input_path=filepath,
-                error_code=RenderErrorCode.OUTPUT_DIR_UNAVAILABLE,
-                message=message,
-                effective_seed=effective_seed,
+        if manifest_store is None:
+            manifest_store = BatchManifestStore.create(
+                args.manifest or default_manifest_path(out_dir),
+                app_version=VERSION,
+                output_dir=out_dir,
+                config=params,
+                jobs=jobs,
             )
-            for filepath, effective_seed in zip(files, effective_seeds)
-        ]
-        for result in results:
-            print(format_render_result(result), file=sys.stderr)
-        print(
-            format_batch_result(BatchResult.from_results(results, 0.0)),
-            file=sys.stderr,
-        )
+            jobs = manifest_store.select("pending")
+    except (OSError, BatchManifestError) as exc:
+        print(f"Error: cannot create batch state: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    ext = _output_extension(args.out_format)
-
+    files = [job["input_path"] for job in jobs]
+    ext = _output_extension(out_format)
     run_log = RunDiagnostics('cli')
 
     def cli_log(msg):
@@ -5718,22 +6049,30 @@ def cli_main():
     print(f"{APP_NAME} v{VERSION}")
     print(RIGHTS_ONLY_NOTICE)
     print(EVIDENCE_NOTICE)
-    print(f"Preset: {preset_name} | Format: {args.out_format.upper()} | Files: {len(files)}")
-    print(f"Run log: {run_log.path}\n")
+    print(
+        f"Preset: {preset_name} | Format: {out_format.upper()} | "
+        f"Files: {len(files)}"
+    )
+    print(f"Run log: {run_log.path}")
+    print(f"Batch manifest: {manifest_store.path}\n")
     run_log.write_header(
         'cli',
         files,
         out_dir,
         params,
         preset_name,
-        args.seed if args.seed is not None else "generated per file",
+        "recorded per file in batch manifest",
     )
+    for note in recovery_notes:
+        cli_log(f"Recovery: {note}")
 
     started_at = time.monotonic()
     results = []
     used_outputs = set()
-    for file_index, filepath in enumerate(files):
-        effective_seed = effective_seeds[file_index]
+    for job in jobs:
+        job_id = job["id"]
+        filepath = job["input_path"]
+        effective_seed = job["effective_seed"]
         reservation = None
         try:
             reservation = _reserve_output_path(
@@ -5744,31 +6083,47 @@ def cli_main():
             )
             out_path = reservation.output_path
             if reservation.renamed:
-                cli_log(f"Output name collision avoided: {Path(out_path).name}")
+                cli_log(
+                    f"Output name collision avoided: {Path(out_path).name}"
+                )
             cli_log(f"Output path: {out_path}")
-
+            manifest_store.begin_attempt(job_id, out_path)
             proc = AudioProcessor(
                 params,
                 log_fn=cli_log,
-                progress_fn=lambda v: None,
+                progress_fn=lambda value: None,
                 seed=effective_seed,
             )
             result = proc.process(filepath, out_path)
             if not isinstance(result, RenderResult):
                 raise TypeError("processor returned an untyped result")
-        except Exception as e:
-            cli_log(f"Unexpected render failure: {e}")
+        except BatchManifestError as exc:
+            cli_log(f"Batch manifest update failed: {exc}")
+            result = RenderResult(
+                state=RenderState.FAILED,
+                input_path=str(filepath),
+                error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
+                message=str(exc),
+                effective_seed=effective_seed,
+            )
+        except Exception as exc:
+            cli_log(f"Unexpected render failure: {exc}")
             cli_log(traceback.format_exc().rstrip())
             result = RenderResult(
                 state=RenderState.FAILED,
                 input_path=str(filepath),
                 error_code=RenderErrorCode.UNEXPECTED,
-                message=str(e),
+                message=str(exc),
                 effective_seed=effective_seed,
             )
         finally:
             if reservation is not None:
                 reservation.release()
+        try:
+            _finish_manifest_job(manifest_store, job_id, result)
+        except BatchManifestError as exc:
+            cli_log(f"Batch manifest update failed: {exc}")
+            result = _manifest_failure_result(result, exc)
         results.append(result)
         cli_log(format_render_result(result))
         cli_log("---")
@@ -5779,12 +6134,12 @@ def cli_main():
     )
     cli_log(f"\n{format_batch_result(batch_result)}")
     cli_log(f"Output directory: {out_dir}")
+    cli_log(f"Batch manifest: {manifest_store.path}")
     if batch_result.state is RenderState.SUCCEEDED:
         return
     if any(result.usable_output for result in batch_result.results):
         sys.exit(1)
-    else:
-        sys.exit(2)
+    sys.exit(2)
 
 
 # ============================================================
@@ -5793,8 +6148,12 @@ def cli_main():
 if __name__ == '__main__':
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
+        '--manifest', '--resume', '--retry',
     }
-    if len(sys.argv) > 1 and any(a in _cli_flags for a in sys.argv[1:]):
+    if len(sys.argv) > 1 and _argv_uses_any_option(
+        sys.argv[1:],
+        _cli_flags,
+    ):
         if '--version' in sys.argv:
             print(f"{APP_NAME} v{VERSION}")
             sys.exit(0)

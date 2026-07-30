@@ -2,9 +2,11 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from PyQt6.QtWidgets import QApplication, QListWidgetItem
 
+from batch_manifest import BatchManifestStore
 from render_results import (
     BatchResult,
     OutputValidation,
@@ -12,6 +14,7 @@ from render_results import (
     RenderResult,
     RenderState,
 )
+import sunojump
 from sunojump import MainWindow, ROLE_INPUT, ROLE_JOB_ID, ROLE_OUTPUT
 import verifiers
 
@@ -37,6 +40,8 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.btn_browse,
             self.window.btn_remove,
             self.window.btn_clear,
+            self.window.btn_resume_batch,
+            self.window.btn_retry_failed,
             self.window.btn_render_preview,
             self.window.btn_compare,
             self.window.btn_play_orig,
@@ -216,6 +221,63 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertTrue(replacement.text().startswith("song.wav"))
         self.assertIn("Ignored stale result", self.window.log_box.toPlainText())
 
+    def test_retry_failed_loads_only_failed_manifest_jobs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            first = temp_path / "first.wav"
+            second = temp_path / "second.wav"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            output_dir = temp_path / "output"
+            store = BatchManifestStore.create(
+                temp_path / "batch.sunojump-batch.json",
+                app_version=sunojump.VERSION,
+                output_dir=output_dir,
+                config=self.window._get_params(),
+                jobs=[
+                    {
+                        "id": "failed-job",
+                        "input_path": str(first),
+                        "effective_seed": 10,
+                    },
+                    {
+                        "id": "pending-job",
+                        "input_path": str(second),
+                        "effective_seed": 11,
+                    },
+                ],
+            )
+            store.finish_job(
+                "failed-job",
+                state="failed",
+                error_code="decode_failed",
+                message="invalid test input",
+            )
+
+            with (
+                mock.patch.object(
+                    sunojump.QFileDialog,
+                    "getOpenFileName",
+                    return_value=(str(store.path), ""),
+                ),
+                mock.patch.object(
+                    self.window,
+                    "_start_gui_batch",
+                ) as start_batch,
+            ):
+                self.window._load_batch_manifest("failed")
+
+            self.assertEqual(self.window.file_list.count(), 1)
+            item = self.window.file_list.item(0)
+            self.assertEqual(item.data(ROLE_JOB_ID), "failed-job")
+            self.assertEqual(item.data(ROLE_INPUT), str(first.resolve()))
+            jobs = start_batch.call_args.args[0]
+            self.assertEqual([job["id"] for job in jobs], ["failed-job"])
+            self.assertEqual(
+                start_batch.call_args.args[2],
+                str(output_dir.resolve()),
+            )
+
     def test_stale_preview_artifacts_wait_for_worker_exit_before_cleanup(self):
         class FakeWorker:
             def isRunning(self):
@@ -339,7 +401,9 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertEqual(order[0], self.window.btn_browse)
         self.assertEqual(order[1], self.window.btn_remove)
         self.assertEqual(order[2], self.window.btn_clear)
-        self.assertEqual(order[3], self.window.file_list)
+        self.assertEqual(order[3], self.window.btn_resume_batch)
+        self.assertEqual(order[4], self.window.btn_retry_failed)
+        self.assertEqual(order[5], self.window.file_list)
         self.assertIn(self.window.btn_process, order)
         self.assertLess(order.index(self.window.preset_combo), order.index(self.window.btn_process))
         self.assertLess(order.index(self.window.output_dir), order.index(self.window.btn_process))

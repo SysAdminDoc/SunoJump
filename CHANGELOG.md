@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.6.1 (2026-07-01)
+- **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.
+- **Lossy re-encode encoder guard.** The internal MP3 re-encode pass now checks for `libmp3lame` availability before attempting the encode, matching the export path behavior.
+- **Sidecar schema constant.** Sidecar JSON `schema_version` now uses the `PRESET_SCHEMA_VERSION` constant instead of a hardcoded `1`.
+- **Windows path redaction.** Log path redaction now handles case-insensitive Windows paths correctly.
+- **CLI help accuracy.** `--output` help text corrected from "Output file or directory" to "Output directory" to match actual behavior.
+- **Screenshot tool exit code.** `capture_screenshot.py` now exits non-zero on version mismatch and only saves the screenshot on success.
+- **Test mock safety.** Fixed ffmpeg failure test mock that created a stray `-encoders` file in the working directory.
+- **Dead code removal.** Removed unused `sha256sums_command` function and unused `json` import from release tooling.
+- **Verifier discovery robustness.** `discover_adapters` now catches all exceptions from external adapter modules, not just `ImportError`.
+- **Deferred import promoted.** Moved `hashlib` import from method body to module level.
+- **Regression coverage.** Added tests for path redaction, log retention cap enforcement, and lossy reencode missing-encoder guard (79 total tests).
+
 ## v1.6.0 (2026-06-30)
 - **Release license compliance gate.** Added `tools/audit_licenses.py` that inventories all release dependency licenses, flags unreviewed copyleft packages, and blocks release packaging when license evidence is missing.
 - **License inventory export.** `--write-inventory` flag emits a machine-readable `license-inventory.json` for release verification.

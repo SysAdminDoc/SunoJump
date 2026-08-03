@@ -134,6 +134,35 @@ class CliConfigurationTests(unittest.TestCase):
         self.assertEqual(blocked.c2pa_policy, "block")
         self.assertEqual(allowed.c2pa_policy, "allow-removal")
 
+    def test_cli_diagnostic_privacy_and_retention_are_explicit(self):
+        parser = sunojump._build_cli_parser()
+        defaults = parser.parse_args(["--input", "unused.wav"])
+        explicit = parser.parse_args([
+            "--input",
+            "unused.wav",
+            "--diagnostic-retention",
+            "12",
+            "--no-redact-diagnostics",
+        ])
+        self.assertEqual(
+            defaults.diagnostic_retention,
+            sunojump.MAX_RETAINED_LOGS,
+        )
+        self.assertFalse(defaults.no_redact_diagnostics)
+        self.assertEqual(explicit.diagnostic_retention, 12)
+        self.assertTrue(explicit.no_redact_diagnostics)
+
+        for invalid in ("0", "366", "not-a-number"):
+            with self.subTest(invalid=invalid):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args([
+                            "--input",
+                            "unused.wav",
+                            "--diagnostic-retention",
+                            invalid,
+                        ])
+
     def test_cli_refuses_c2pa_source_before_creating_output(self):
         manifest = b"\x00\x00\x00\x18jumbcli-policy"
         chunk = (

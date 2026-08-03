@@ -17,11 +17,12 @@ if '--safe-decode-worker' in sys.argv:
 
 # --- Imports ---
 import os, json, argparse, copy, tempfile, shutil, threading, hashlib, time
+import re, zipfile
 import secrets, uuid
 import platform, traceback
 import subprocess
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from config_schema import (
     CONFIG_SCHEMA_VERSION,
     NUMBER_FIELDS,
@@ -109,7 +110,7 @@ try:
         QPushButton, QLabel, QListWidget, QListWidgetItem,
         QComboBox, QLineEdit, QCheckBox, QSlider, QProgressBar,
         QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
-        QStyle, QScrollArea,
+        QStyle, QScrollArea, QSpinBox,
         QMessageBox,
     )
     from PyQt6.QtCore import (
@@ -583,7 +584,7 @@ QListWidget::item:hover {{
 QListWidget:focus {{
     border: 2px solid {C['accent_soft']};
 }}
-QComboBox {{
+QComboBox, QSpinBox {{
     background-color: {C['surface0']};
     border: 1px solid {C['surface1']};
     border-radius: 7px;
@@ -601,7 +602,7 @@ QComboBox QAbstractItemView {{
     color: {C['text']};
     selection-background-color: {C['surface1']};
 }}
-QComboBox:focus {{
+QComboBox:focus, QSpinBox:focus {{
     border: 2px solid {C['accent_soft']};
 }}
 QLineEdit {{
@@ -856,7 +857,17 @@ def _diagnostics_dir():
     return Path.home() / '.local' / 'state' / APP_NAME / 'logs'
 
 
+MIN_RETAINED_LOGS = 1
 MAX_RETAINED_LOGS = 30
+MAX_CONFIGURABLE_RETAINED_LOGS = 365
+MAX_SUPPORT_LOG_BYTES = 5 * 1024 * 1024
+SUPPORT_BUNDLE_SCHEMA_VERSION = 1
+_WINDOWS_ABSOLUTE_PATH = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])(?:[A-Z]:[\\/]|\\\\)[^\"'\r\n]+"
+)
+_POSIX_ABSOLUTE_PATH = re.compile(
+    r"(?<![:A-Za-z0-9_~])/(?!/)[^\"'\r\n]+"
+)
 
 
 def _new_diagnostics_path(prefix='run'):
@@ -864,35 +875,312 @@ def _new_diagnostics_path(prefix='run'):
     return _diagnostics_dir() / f"{prefix}-{stamp}.log"
 
 
-def _enforce_log_retention(max_logs=MAX_RETAINED_LOGS):
-    log_dir = _diagnostics_dir()
+def _validated_log_retention(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("diagnostic retention must be an integer")
+    if not MIN_RETAINED_LOGS <= value <= MAX_CONFIGURABLE_RETAINED_LOGS:
+        raise ValueError(
+            "diagnostic retention must be between "
+            f"{MIN_RETAINED_LOGS} and {MAX_CONFIGURABLE_RETAINED_LOGS}"
+        )
+    return value
+
+
+def _enforce_log_retention(
+    max_logs=MAX_RETAINED_LOGS,
+    *,
+    protected_paths=(),
+    log_dir=None,
+):
+    max_logs = _validated_log_retention(max_logs)
+    log_dir = (
+        Path(log_dir)
+        if log_dir is not None
+        else _diagnostics_dir()
+    )
+    report = {
+        "limit": max_logs,
+        "deleted": [],
+        "failures": [],
+        "remaining": [],
+    }
     if not log_dir.is_dir():
-        return
-    logs = sorted(log_dir.glob('*.log'), key=lambda p: p.stat().st_mtime)
-    while len(logs) > max_logs:
-        oldest = logs.pop(0)
+        return report
+    protected = {
+        os.path.normcase(os.path.abspath(str(path)))
+        for path in protected_paths
+    }
+    try:
+        logs = sorted(
+            log_dir.glob('*.log'),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+        )
+    except OSError as exc:
+        report["failures"].append({
+            "name": "<log-directory>",
+            "error": str(exc),
+        })
+        return report
+    removable = [
+        path
+        for path in logs
+        if os.path.normcase(os.path.abspath(str(path))) not in protected
+    ]
+    excess = max(0, len(logs) - max_logs)
+    for oldest in removable[:excess]:
         try:
             oldest.unlink()
-        except OSError:
-            pass
+            report["deleted"].append(oldest.name)
+        except OSError as exc:
+            report["failures"].append({
+                "name": oldest.name,
+                "error": str(exc),
+            })
+    try:
+        report["remaining"] = sorted(
+            path.name for path in log_dir.glob('*.log')
+        )
+    except OSError as exc:
+        report["failures"].append({
+            "name": "<remaining-log-scan>",
+            "error": str(exc),
+        })
+    return report
+
+
+def _delete_diagnostic_logs(log_dir=None):
+    log_dir = Path(log_dir) if log_dir is not None else _diagnostics_dir()
+    report = {
+        "found": 0,
+        "deleted": [],
+        "failures": [],
+        "remaining": [],
+    }
+    if not log_dir.is_dir():
+        return report
+    try:
+        logs = sorted(log_dir.glob('*.log'), key=lambda path: path.name)
+    except OSError as exc:
+        report["failures"].append({
+            "name": "<log-directory>",
+            "error": str(exc),
+        })
+        return report
+    report["found"] = len(logs)
+    for log_path in logs:
+        try:
+            log_path.unlink()
+            report["deleted"].append(log_path.name)
+        except OSError as exc:
+            report["failures"].append({
+                "name": log_path.name,
+                "error": str(exc),
+            })
+    try:
+        report["remaining"] = sorted(
+            path.name for path in log_dir.glob('*.log')
+        )
+    except OSError as exc:
+        report["failures"].append({
+            "name": "<remaining-log-scan>",
+            "error": str(exc),
+        })
+    return report
+
+
+def _replace_path_literal(text, path, replacement):
+    path = str(path)
+    if not path:
+        return text
+    if not sys.platform.startswith('win'):
+        return text.replace(path, replacement)
+    pattern = re.compile(re.escape(path), re.IGNORECASE)
+    return pattern.sub(lambda _match: replacement, text)
+
+
+def _redact_diagnostic_text(text, path_aliases=()):
+    text = "" if text is None else str(text)
+    aliases = sorted(
+        (
+            (str(path), str(alias))
+            for path, alias in path_aliases
+            if str(path)
+        ),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for path, alias in aliases:
+        text = _replace_path_literal(text, path, alias)
+    text = _replace_path_literal(text, Path.home(), "~")
+    text = _replace_path_literal(text, tempfile.gettempdir(), "<temp>")
+    text = _WINDOWS_ABSOLUTE_PATH.sub("<absolute-path>", text)
+    if not sys.platform.startswith('win'):
+        text = _POSIX_ABSOLUTE_PATH.sub("<absolute-path>", text)
+    return text
 
 
 def _redact_home_paths(text):
-    home = str(Path.home())
-    if sys.platform.startswith('win'):
-        lower = text.lower()
-        home_lower = home.lower()
-        result = []
-        i = 0
-        while i < len(text):
-            if lower[i:i + len(home_lower)] == home_lower:
-                result.append('~')
-                i += len(home)
-            else:
-                result.append(text[i])
-                i += 1
-        return ''.join(result)
-    return text.replace(home, '~')
+    """Compatibility wrapper for the default diagnostic path redaction."""
+    return _redact_diagnostic_text(text)
+
+
+def _diagnostic_data_locations(
+    output_dir,
+    settings_location,
+    preview_dir=None,
+):
+    output = Path(output_dir).expanduser()
+    return (
+        f"Run logs: {_diagnostics_dir()}",
+        f"GUI settings: {settings_location}",
+        (
+            "Batch history/manifests: "
+            f"{output}/*{BATCH_MANIFEST_SUFFIX}"
+        ),
+        f"Replay sidecars: {output}/*.sidecar.json",
+        (
+            "Preview audio: "
+            f"{preview_dir or '<OS temporary directory; removed on clean close>'}"
+        ),
+        "Support bundles: user-selected .zip destination",
+    )
+
+
+def _read_support_log(path):
+    size = path.stat().st_size
+    truncated = size > MAX_SUPPORT_LOG_BYTES
+    with path.open("rb") as handle:
+        if truncated:
+            handle.seek(-MAX_SUPPORT_LOG_BYTES, os.SEEK_END)
+        payload = handle.read(MAX_SUPPORT_LOG_BYTES)
+    text = payload.decode("utf-8", errors="replace")
+    if truncated:
+        text = "[Earlier log content omitted by support-bundle limit]\n" + text
+    return text, truncated
+
+
+def export_support_bundle(
+    destination,
+    *,
+    redact=True,
+    output_dir,
+    settings_location,
+    preview_dir=None,
+    log_dir=None,
+):
+    destination = Path(destination)
+    if destination.suffix.lower() != ".zip":
+        raise ValueError("support bundle destination must end in .zip")
+    if os.path.lexists(destination):
+        raise FileExistsError(
+            f"support bundle destination already exists: {destination}"
+        )
+    parent = destination.parent
+    if not parent.is_dir():
+        raise OSError(f"support bundle directory does not exist: {parent}")
+    source_dir = Path(log_dir) if log_dir is not None else _diagnostics_dir()
+    try:
+        log_paths = (
+            sorted(
+                source_dir.glob("*.log"),
+                key=lambda path: (path.stat().st_mtime_ns, path.name),
+            )
+            if source_dir.is_dir()
+            else []
+        )
+    except OSError as exc:
+        raise OSError(f"cannot enumerate diagnostic logs: {exc}") from exc
+
+    archived_logs = []
+    failures = []
+    archive_payloads = []
+    for index, log_path in enumerate(log_paths, start=1):
+        archive_name = f"logs/{index:03d}-{log_path.name}"
+        try:
+            text, truncated = _read_support_log(log_path)
+            if redact:
+                text = _redact_diagnostic_text(text)
+            encoded = text.encode("utf-8")
+            archive_payloads.append((archive_name, encoded))
+            archived_logs.append({
+                "name": archive_name,
+                "bytes": len(encoded),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+                "truncated": truncated,
+            })
+        except OSError as exc:
+            failures.append({
+                "name": log_path.name,
+                "error": _redact_diagnostic_text(str(exc)),
+            })
+
+    location_text = "\n".join(_diagnostic_data_locations(
+        output_dir,
+        settings_location,
+        preview_dir,
+    ))
+    environment_text = "\n".join(_diagnostic_environment_lines()) + "\n"
+    if redact:
+        location_text = _redact_diagnostic_text(location_text)
+        environment_text = _redact_diagnostic_text(environment_text)
+    manifest = {
+        "schema_version": SUPPORT_BUNDLE_SCHEMA_VERSION,
+        "app": APP_NAME,
+        "app_version": VERSION,
+        "generated_at": (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        ),
+        "path_redaction": bool(redact),
+        "included_logs": archived_logs,
+        "read_failures": failures,
+        "excluded_by_design": [
+            "audio files",
+            "batch manifests",
+            "replay sidecars",
+            "GUI settings contents",
+        ],
+    }
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=parent,
+    )
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(
+            temporary,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as bundle:
+            bundle.writestr(
+                "support-bundle.json",
+                json.dumps(
+                    manifest,
+                    indent=2,
+                    sort_keys=True,
+                ) + "\n",
+            )
+            bundle.writestr("environment.txt", environment_text)
+            bundle.writestr("data-locations.txt", location_text + "\n")
+            for archive_name, payload in archive_payloads:
+                bundle.writestr(archive_name, payload)
+        with open(temporary, "rb+") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        _promote_file_no_replace(temporary, destination)
+    except Exception:
+        _remove_file_silent(temporary)
+        raise
+    return {
+        "path": str(destination),
+        "sha256": _sha256_file(destination),
+        "included_logs": len(archived_logs),
+        "read_failures": tuple(failures),
+        "redacted": bool(redact),
+    }
 
 
 def _diagnostic_environment_lines():
@@ -919,29 +1207,78 @@ def _diagnostic_environment_lines():
 
 
 class RunDiagnostics:
-    def __init__(self, prefix='run', path=None, redact=True):
+    def __init__(
+        self,
+        prefix='run',
+        path=None,
+        redact=True,
+        max_logs=MAX_RETAINED_LOGS,
+    ):
         self.path = Path(path) if path is not None else _new_diagnostics_path(prefix)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._redact = redact
+        self._redact = bool(redact)
+        self._closed = False
+        self._path_aliases = []
         self.path.write_text('', encoding='utf-8')
-        _enforce_log_retention()
+        self.retention_report = _enforce_log_retention(
+            _validated_log_retention(max_logs),
+            protected_paths=(self.path,),
+            log_dir=self.path.parent,
+        )
+        if self.retention_report["failures"]:
+            failures = ", ".join(
+                f"{item['name']}: {item['error']}"
+                for item in self.retention_report["failures"]
+            )
+            self.write(f"Log retention warning: {failures}")
+
+    @property
+    def closed(self):
+        return self._closed
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+
+    def set_redaction(self, enabled):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("diagnostic log is closed")
+            self._redact = bool(enabled)
+
+    def _register_sensitive_path(self, path, alias):
+        raw = str(path)
+        if raw and os.path.isabs(raw):
+            self._path_aliases.append((raw, alias))
 
     def write(self, msg):
         text = '' if msg is None else str(msg)
-        if self._redact:
-            text = _redact_home_paths(text)
-        lines = text.splitlines() or ['']
-        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with self._lock:
+            if self._closed:
+                raise RuntimeError("diagnostic log is closed")
+            if self._redact:
+                text = _redact_diagnostic_text(
+                    text,
+                    self._path_aliases,
+                )
+            lines = text.splitlines() or ['']
+            ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             with self.path.open('a', encoding='utf-8') as f:
                 for line in lines:
                     f.write(f"[{ts}] {line}\n")
 
     def write_header(self, mode, inputs, output_dir, params, preset_name=None, seed=None):
+        self._register_sensitive_path(output_dir, "<output-dir>")
+        for index, input_path in enumerate(inputs, start=1):
+            self._register_sensitive_path(input_path, f"<input-{index}>")
         self.write(f"{APP_NAME} v{VERSION} run started")
         self.write(f"Rights scope: {RIGHTS_ONLY_NOTICE}")
         self.write(f"Evidence scope: {EVIDENCE_NOTICE}")
+        self.write(
+            "Path redaction: "
+            f"{'enabled' if self._redact else 'disabled by explicit choice'}"
+        )
         self.write(f"Mode: {mode}")
         self.write(f"Preset: {preset_name or 'Custom'}")
         if seed is None:
@@ -4352,7 +4689,10 @@ class MainWindow(QMainWindow):
         for panel in self._content_root.findChildren(QFrame):
             if panel.objectName() != "panel":
                 continue
-            if not compact:
+            if (
+                not compact
+                and panel is not getattr(self, "_log_panel", None)
+            ):
                 panel.setMinimumHeight(0)
                 continue
             layout = panel.layout()
@@ -4576,20 +4916,30 @@ class MainWindow(QMainWindow):
             )
 
         if hasattr(self, "_log_controls_grid"):
-            placements = (
-                (self.btn_open_log, 0, 0, 1, 1),
-                (
-                    self.btn_clear_logs,
-                    1 if compact else 0,
-                    0 if compact else 1,
-                    1,
-                    1,
-                ),
-            )
+            if compact:
+                placements = (
+                    (self.btn_open_log, 0, 0, 1, 2),
+                    (self.btn_export_support, 1, 0, 1, 2),
+                    (self.btn_clear_logs, 2, 0, 1, 2),
+                    (self.retention_label, 3, 0, 1, 1),
+                    (self.retention_spin, 3, 1, 1, 1),
+                    (self.redact_logs_check, 4, 0, 1, 2),
+                    (self.btn_diagnostic_privacy, 5, 0, 1, 2),
+                )
+            else:
+                placements = (
+                    (self.btn_open_log, 0, 0, 1, 1),
+                    (self.btn_export_support, 0, 1, 1, 1),
+                    (self.btn_clear_logs, 0, 2, 1, 1),
+                    (self.retention_label, 1, 0, 1, 1),
+                    (self.retention_spin, 1, 1, 1, 1),
+                    (self.redact_logs_check, 2, 0, 1, 2),
+                    (self.btn_diagnostic_privacy, 1, 2, 2, 1),
+                )
             self._place_grid(
                 self._log_controls_grid,
                 placements,
-                ((0, 1), (1, 1)),
+                ((0, 1), (1, 1), (2, 1)),
             )
 
         if hasattr(self, "_compare_controls_grid"):
@@ -4718,7 +5068,44 @@ class MainWindow(QMainWindow):
         _set_accessibility(self.btn_play_orig, "Play original", "Play the selected original file; disabled until audio is available.")
         _set_accessibility(self.btn_play_proc, "Play processed", "Play the selected processed file; disabled until output is available.")
         _set_accessibility(self.btn_open_log, "Open run log", "Open the latest persistent run log; disabled until a run starts.")
-        _set_accessibility(self.btn_clear_logs, "Clear logs", "Delete all persistent run logs from the log directory.")
+        _set_accessibility(
+            self.btn_export_support,
+            "Export support bundle",
+            (
+                "Create an atomic ZIP containing bounded diagnostic logs, "
+                "environment details, and no audio, manifests, sidecars, or "
+                "settings contents."
+            ),
+        )
+        _set_accessibility(
+            self.btn_clear_logs,
+            "Clear logs",
+            (
+                "Confirm and delete persistent run logs after closing the "
+                "active diagnostic lifecycle."
+            ),
+        )
+        _set_accessibility(
+            self.retention_spin,
+            "Diagnostic log retention count",
+            "Choose how many persistent run logs to retain, from 1 to 365.",
+        )
+        _set_accessibility(
+            self.redact_logs_check,
+            "Redact paths in diagnostics",
+            (
+                "Hide registered input and output locations, the home "
+                "directory, temporary paths, and other absolute paths."
+            ),
+        )
+        _set_accessibility(
+            self.btn_diagnostic_privacy,
+            "Privacy preview and data locations",
+            (
+                "Preview path redaction and identify local logs, settings, "
+                "batch manifests, sidecars, previews, and support bundles."
+            ),
+        )
         _set_accessibility(self.preset_combo, "Preset", "Choose the processing preset.")
         _set_accessibility(
             self.btn_save_preset,
@@ -4834,6 +5221,11 @@ class MainWindow(QMainWindow):
             self.btn_play_orig,
             self.btn_play_proc,
             self.btn_open_log,
+            self.btn_export_support,
+            self.btn_clear_logs,
+            self.retention_spin,
+            self.redact_logs_check,
+            self.btn_diagnostic_privacy,
             self.preset_combo,
             self.btn_save_preset,
             self.btn_load_preset,
@@ -5473,14 +5865,15 @@ class MainWindow(QMainWindow):
     def _build_log(self):
         panel, lay = self._make_panel(
             "Session Log",
-            "Processing events, warnings, and strength metrics.",
+            "Processing events, privacy controls, and exportable diagnostics.",
         )
+        self._log_panel = panel
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setMinimumHeight(120)
         self.log_box.setSizePolicy(
             QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
         )
         lay.addWidget(self.log_box)
         self._log_controls_grid = QGridLayout()
@@ -5499,13 +5892,76 @@ class MainWindow(QMainWindow):
         )
         self.btn_clear_logs.setToolTip("Delete all persistent run logs")
         self.btn_clear_logs.clicked.connect(self._clear_all_logs)
+
+        self.btn_export_support = self._decorate_button(
+            ResponsiveButton("Export Support"),
+            QStyle.StandardPixmap.SP_DialogSaveButton,
+        )
+        self.btn_export_support.setToolTip(
+            "Export bounded diagnostics as an atomic ZIP support bundle"
+        )
+        self.btn_export_support.clicked.connect(self._export_support_bundle)
+
+        self.retention_label = QLabel("Retain:")
+        self.retention_spin = QSpinBox()
+        self.retention_spin.setRange(
+            MIN_RETAINED_LOGS,
+            MAX_CONFIGURABLE_RETAINED_LOGS,
+        )
+        self.retention_spin.setSuffix(" logs")
+        try:
+            retained_logs = int(self._settings.value(
+                "diagnostics/retained_logs",
+                MAX_RETAINED_LOGS,
+            ))
+            retained_logs = _validated_log_retention(retained_logs)
+        except (TypeError, ValueError):
+            retained_logs = MAX_RETAINED_LOGS
+        self.retention_spin.setValue(retained_logs)
+        self.retention_label.setBuddy(self.retention_spin)
+        self.retention_spin.editingFinished.connect(
+            self._save_diagnostic_preferences
+        )
+
+        self.redact_logs_check = QCheckBox("Redact paths")
+        redact_value = self._settings.value(
+            "diagnostics/redact_paths",
+            True,
+        )
+        if isinstance(redact_value, str):
+            redact_value = redact_value.strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+        self.redact_logs_check.setChecked(bool(redact_value))
+        self.redact_logs_check.toggled.connect(
+            self._save_diagnostic_preferences
+        )
+
+        self.btn_diagnostic_privacy = self._decorate_button(
+            ResponsiveButton("Privacy & Locations"),
+            QStyle.StandardPixmap.SP_MessageBoxInformation,
+        )
+        self.btn_diagnostic_privacy.setToolTip(
+            "Preview path redaction and show every local diagnostics location"
+        )
+        self.btn_diagnostic_privacy.clicked.connect(
+            self._show_diagnostic_privacy
+        )
         self._place_grid(
             self._log_controls_grid,
             (
                 (self.btn_open_log, 0, 0, 1, 1),
-                (self.btn_clear_logs, 0, 1, 1, 1),
+                (self.btn_export_support, 0, 1, 1, 1),
+                (self.btn_clear_logs, 0, 2, 1, 1),
+                (self.retention_label, 1, 0, 1, 1),
+                (self.retention_spin, 1, 1, 1, 1),
+                (self.redact_logs_check, 2, 0, 1, 2),
+                (self.btn_diagnostic_privacy, 1, 2, 2, 1),
             ),
-            ((0, 1), (1, 1)),
+            ((0, 1), (1, 1), (2, 1)),
         )
         lay.addLayout(self._log_controls_grid)
         return panel
@@ -5865,6 +6321,10 @@ class MainWindow(QMainWindow):
         self.btn_load_preset.setEnabled(enabled)
         self.spectral_scan_check.setEnabled(enabled)
         self.meta_check.setEnabled(enabled)
+        self.btn_export_support.setEnabled(enabled)
+        self.btn_clear_logs.setEnabled(enabled)
+        self.retention_spin.setEnabled(enabled)
+        self.redact_logs_check.setEnabled(enabled)
 
     def _on_process(self):
         if self.file_list.count() == 0:
@@ -6142,7 +6602,13 @@ class MainWindow(QMainWindow):
 
     def _start_run_log(self, mode, files, out_dir, params, preset_name):
         try:
-            self._current_run_log = RunDiagnostics(mode)
+            if self._current_run_log is not None:
+                self._current_run_log.close()
+            self._current_run_log = RunDiagnostics(
+                mode,
+                redact=self.redact_logs_check.isChecked(),
+                max_logs=self.retention_spin.value(),
+            )
             self._current_run_log.write_header(mode, files, out_dir, params, preset_name)
             self.btn_open_log.setEnabled(True)
             self._log(f"Run log: {self._current_run_log.path}")
@@ -6158,20 +6624,209 @@ class MainWindow(QMainWindow):
         if not _open_file(str(self._current_run_log.path)):
             self._log(f"Could not open run log: {self._current_run_log.path}")
 
+    def _save_diagnostic_preferences(self, *_args):
+        retained_logs = self.retention_spin.value()
+        redact = self.redact_logs_check.isChecked()
+        self._settings.setValue(
+            "diagnostics/retained_logs",
+            retained_logs,
+        )
+        self._settings.setValue("diagnostics/redact_paths", redact)
+        self._settings.sync()
+        protected = ()
+        if self._current_run_log is not None:
+            protected = (self._current_run_log.path,)
+            try:
+                self._current_run_log.set_redaction(redact)
+            except RuntimeError:
+                self._current_run_log = None
+                self.btn_open_log.setEnabled(False)
+                protected = ()
+        report = _enforce_log_retention(
+            retained_logs,
+            protected_paths=protected,
+        )
+        if report["failures"]:
+            details = "; ".join(
+                f"{item['name']}: {item['error']}"
+                for item in report["failures"]
+            )
+            self._log(f"Log retention incomplete: {details}")
+        elif report["deleted"]:
+            self._log(
+                "Log retention removed "
+                f"{len(report['deleted'])} old file(s); "
+                f"{len(report['remaining'])} remain."
+            )
+
+    def _show_diagnostic_privacy(self):
+        output_dir = self.output_dir.text().strip() or DEFAULT_OUTPUT
+        locations = _diagnostic_data_locations(
+            output_dir,
+            self._settings.fileName(),
+            self._preview_tempdir,
+        )
+        sample = "\n".join((
+            f"Input: {Path.home() / 'Music' / 'example.wav'}",
+            f"Output: {Path(output_dir).expanduser() / 'example_sj.wav'}",
+            f"Temporary preview: {Path(tempfile.gettempdir()) / 'preview.wav'}",
+        ))
+        redact = self.redact_logs_check.isChecked()
+        preview = (
+            _redact_diagnostic_text(sample)
+            if redact
+            else sample
+        )
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle("Diagnostic privacy and locations")
+        dialog.setText(
+            "Path redaction is "
+            f"{'enabled' if redact else 'disabled'} for new log entries "
+            "and support-bundle export."
+        )
+        dialog.setInformativeText(
+            "Open Show Details to preview the exported text and identify "
+            "every local diagnostics location. Support bundles exclude audio, "
+            "batch manifests, sidecars, and GUI settings contents."
+        )
+        dialog.setDetailedText(
+            "REDACTION PREVIEW\n"
+            f"{preview}\n\n"
+            "LOCAL DATA LOCATIONS\n"
+            + "\n".join(locations)
+        )
+        dialog.exec()
+
+    def _export_support_bundle(self):
+        if self._active_render_workers():
+            self._log(
+                "Support bundle export is unavailable while a render is active."
+            )
+            return
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        default_path = str(
+            Path.home() / f"SunoJump-support-{stamp}.zip"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Support Bundle",
+            default_path,
+            "ZIP archive (*.zip)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".zip"):
+            path += ".zip"
+        self._log("Support bundle export requested.")
+        try:
+            result = export_support_bundle(
+                path,
+                redact=self.redact_logs_check.isChecked(),
+                output_dir=self.output_dir.text().strip() or DEFAULT_OUTPUT,
+                settings_location=self._settings.fileName(),
+                preview_dir=self._preview_tempdir,
+            )
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            self._log(f"Support bundle export failed: {exc}")
+            QMessageBox.critical(
+                self,
+                "Support bundle not created",
+                str(exc),
+            )
+            return
+        detail = (
+            f"Created {result['path']}\n"
+            f"SHA-256: {result['sha256']}\n"
+            f"Included logs: {result['included_logs']}\n"
+            f"Path redaction: {'on' if result['redacted'] else 'off'}"
+        )
+        if result["read_failures"]:
+            detail += (
+                "\nUnreadable logs: "
+                + ", ".join(
+                    item["name"] for item in result["read_failures"]
+                )
+            )
+        self._log(
+            "Support bundle created: "
+            f"{result['included_logs']} log(s), "
+            f"sha256:{result['sha256'][:12]}"
+        )
+        QMessageBox.information(
+            self,
+            "Support bundle created",
+            detail,
+        )
+
     def _clear_all_logs(self):
+        if self._active_render_workers():
+            self._log(
+                "Logs cannot be cleared while a render is active."
+            )
+            QMessageBox.warning(
+                self,
+                "Logs are active",
+                "Wait for the current render to finish before clearing logs.",
+            )
+            return
         log_dir = _diagnostics_dir()
         if not log_dir.is_dir():
             self._log("No log directory found.")
             return
         logs = list(log_dir.glob('*.log'))
-        count = 0
-        for log_file in logs:
-            try:
-                log_file.unlink()
-                count += 1
-            except OSError:
-                pass
-        self._log(f"Cleared {count} log file(s).")
+        if not logs:
+            self._log(f"No persistent logs found in {log_dir}.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete persistent logs?",
+            (
+                f"Delete {len(logs)} log file(s) from:\n{log_dir}\n\n"
+                "This cannot be undone. Audio, batch manifests, replay "
+                "sidecars, support bundles, and GUI settings are not deleted."
+            ),
+            (
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel
+            ),
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self._log("Log deletion cancelled.")
+            return
+        if self._current_run_log is not None:
+            self._current_run_log.close()
+            self._current_run_log = None
+        self.btn_open_log.setEnabled(False)
+        report = _delete_diagnostic_logs(log_dir)
+        summary = (
+            f"Deleted {len(report['deleted'])} of {report['found']} "
+            f"log file(s); {len(report['remaining'])} remain."
+        )
+        self._log(summary)
+        if report["failures"] or report["remaining"]:
+            details = "\n".join(
+                f"{item['name']}: {item['error']}"
+                for item in report["failures"]
+            )
+            if report["remaining"]:
+                details += (
+                    ("\n" if details else "")
+                    + "Remaining: "
+                    + ", ".join(report["remaining"])
+                )
+            QMessageBox.warning(
+                self,
+                "Log deletion incomplete",
+                summary + "\n\n" + details,
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Logs deleted",
+                summary,
+            )
 
     # --- Preview / playback ---
     def _current_selected_item(self):
@@ -6779,6 +7434,9 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._save_session_state()
+        if self._current_run_log is not None:
+            self._current_run_log.close()
+            self._current_run_log = None
         event.accept()
 
 
@@ -6837,6 +7495,19 @@ _CLI_VALUE_OVERRIDES = {
 }
 
 
+def _parse_cli_log_retention(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "diagnostic retention must be an integer"
+        ) from exc
+    try:
+        return _validated_log_retention(parsed)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _build_cli_parser():
     parser = argparse.ArgumentParser(
         description=(
@@ -6884,6 +7555,24 @@ def _build_cli_parser():
             "outputs; allow-removal explicitly acknowledges that originals "
             "stay unchanged while outputs omit and do not re-sign source "
             "Content Credentials"
+        ),
+    )
+    parser.add_argument(
+        '--diagnostic-retention',
+        type=_parse_cli_log_retention,
+        default=MAX_RETAINED_LOGS,
+        metavar='COUNT',
+        help=(
+            "retain 1-365 persistent run logs "
+            f"(default: {MAX_RETAINED_LOGS})"
+        ),
+    )
+    parser.add_argument(
+        '--no-redact-diagnostics',
+        action='store_true',
+        help=(
+            "explicitly keep absolute paths in new run logs; path redaction "
+            "is enabled by default"
         ),
     )
     parser.add_argument(
@@ -7263,7 +7952,11 @@ def cli_main():
 
     files = [job["input_path"] for job in jobs]
     ext = _output_extension(out_format)
-    run_log = RunDiagnostics('cli')
+    run_log = RunDiagnostics(
+        'cli',
+        redact=not args.no_redact_diagnostics,
+        max_logs=args.diagnostic_retention,
+    )
 
     def cli_log(msg):
         print(msg)
@@ -7358,6 +8051,7 @@ def cli_main():
     cli_log(f"\n{format_batch_result(batch_result)}")
     cli_log(f"Output directory: {out_dir}")
     cli_log(f"Batch manifest: {manifest_store.path}")
+    run_log.close()
     if batch_result.state is RenderState.SUCCEEDED:
         return
     if any(result.usable_output for result in batch_result.results):

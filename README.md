@@ -107,7 +107,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
 - **C2PA provenance guardrail** — locates embedded or adjacent Content Credentials before decode, blocks by default, and records manifest hashes plus the explicit output-without-source-credentials decision without claiming cryptographic validation
 - **Transactional output saves** — reserves collision-free names across processes, validates same-folder temporary renders, and atomically publishes without replacing an existing audio or sidecar destination
-- **Persistent run diagnostics** — every GUI and CLI run writes a local log with environment, parameters, paths, pass results, and tracebacks
+- **Privacy-controlled diagnostics** — every GUI and CLI run writes a bounded local log with path redaction on by default; users control retention, preview redaction, confirm deletion, and export atomic support ZIPs
 - **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
 - **Truthful terminal states** — jobs and batches report `succeeded`, `partial`, `failed`, or `cancelled` with stable error codes; only an all-success batch reaches 100%
 - **Lifecycle-safe cancellation** — one Cancel control covers batches, previews, and preset comparisons; closing waits for confirmed worker exit and never removes active temp storage
@@ -168,6 +168,8 @@ python sunojump.py -i signed.wav --c2pa-policy allow-removal
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
 | `--c2pa-policy` | `block`, or `allow-removal` to acknowledge that transformed outputs omit and do not re-sign source Content Credentials | block |
+| `--diagnostic-retention` | Number of persistent run logs to retain, from 1 to 365 | 30 |
+| `--no-redact-diagnostics` | Explicitly retain absolute paths in new CLI run logs | redaction enabled |
 | `--no-spectral-scan`, `--no-watermark-scan` | Disable the local narrowband candidate scan (`--no-watermark-scan` is retained for compatibility) | enabled |
 | `--enable-pass PASS` | Enable a named pass at its current/preset amount; repeatable | none |
 | `--disable-pass PASS` | Disable a named pass; repeatable | none |
@@ -197,6 +199,19 @@ CLI exit status is `0` only when every job succeeds, `1` when a batch has a usab
 Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
 
 Before any decode or transform, SunoJump performs bounded discovery of C2PA manifest stores in supported RIFF/WAVE, ID3-based MP3/FLAC, Ogg, AIFF, and adjacent `.c2pa` locations. Discovery reports `present_unvalidated`, `absent`, or `inspection_failed`; it does not validate signatures, trust chains, assertions, or hard bindings. A detected store is blocked by default. If explicitly allowed, the original remains byte-for-byte untouched while the re-encoded output omits and does not re-sign the source credentials. The replay sidecar records the source manifest hash, discovery status, policy, and decision. This behavior follows the [C2PA 2.4 embedding specification](https://spec.c2pa.org/specifications/specifications/2.4/specs/C2PA_Specification.html) and is not evidence of any acoustic-detector change.
+
+### Diagnostics, Privacy, and Local Data
+
+The Session Log panel controls persistent diagnostics. **Redact paths** is enabled by default and masks registered input/output roots, the home and temporary directories, and other absolute paths. **Privacy & Locations** previews the current redaction and shows where every persistent category lives. **Retain** keeps 1-365 logs; cleanup failures are reported instead of ignored. **Clear Logs** requires confirmation, refuses to run during rendering, closes the active log lifecycle before deletion, and reports both failures and remaining files.
+
+**Export Support** creates a no-replace ZIP atomically. Each included log is capped at 5 MiB, and the bundle records hashes, environment details, redaction state, and read failures. Audio, batch manifests, replay sidecars, and GUI settings contents are excluded by design.
+
+- Run logs: the platform state/log directory shown by **Privacy & Locations** (`%LOCALAPPDATA%\SunoJump\logs` on Windows)
+- GUI settings: the QSettings location shown in the same dialog
+- Batch history: `*.sunojump-batch.json` in the chosen output directory
+- Replay evidence: `*.sidecar.json` beside processed audio in the chosen output directory
+- Preview audio: OS temporary storage, removed after worker exit and clean close
+- Support bundles: the user-selected `.zip` destination
 
 ## Presets
 

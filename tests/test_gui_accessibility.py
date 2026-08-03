@@ -51,6 +51,11 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.btn_play_orig,
             self.window.btn_play_proc,
             self.window.btn_open_log,
+            self.window.btn_export_support,
+            self.window.btn_clear_logs,
+            self.window.retention_spin,
+            self.window.redact_logs_check,
+            self.window.btn_diagnostic_privacy,
             self.window.preset_combo,
             self.window.btn_save_preset,
             self.window.btn_load_preset,
@@ -159,6 +164,89 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.render_status_label.text(),
             "Provenance check failed",
         )
+
+    def test_confirmed_log_clear_closes_lifecycle_and_does_not_recreate(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_dir = Path(temp_dir) / "logs"
+            with mock.patch.object(
+                sunojump,
+                "_diagnostics_dir",
+                return_value=log_dir,
+            ):
+                diagnostic = sunojump.RunDiagnostics(path=log_dir / "active.log")
+                diagnostic.write("active")
+                self.window._current_run_log = diagnostic
+                self.window.btn_open_log.setEnabled(True)
+                with mock.patch.object(
+                    sunojump.QMessageBox,
+                    "question",
+                    return_value=(
+                        sunojump.QMessageBox.StandardButton.Yes
+                    ),
+                ), mock.patch.object(
+                    sunojump.QMessageBox,
+                    "information",
+                ):
+                    self.window._clear_all_logs()
+                self.window._log("UI-only message after deletion")
+
+                self.assertFalse(log_dir.joinpath("active.log").exists())
+                self.assertFalse(list(log_dir.glob("*.log")))
+
+        self.assertTrue(diagnostic.closed)
+        self.assertIsNone(self.window._current_run_log)
+        self.assertFalse(self.window.btn_open_log.isEnabled())
+        self.assertIn(
+            "Deleted 1 of 1 log file(s); 0 remain.",
+            self.window.log_box.toPlainText(),
+        )
+
+    def test_cancelled_log_clear_keeps_active_log_writable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_dir = Path(temp_dir) / "logs"
+            with mock.patch.object(
+                sunojump,
+                "_diagnostics_dir",
+                return_value=log_dir,
+            ):
+                diagnostic = sunojump.RunDiagnostics(path=log_dir / "active.log")
+                self.window._current_run_log = diagnostic
+                with mock.patch.object(
+                    sunojump.QMessageBox,
+                    "question",
+                    return_value=(
+                        sunojump.QMessageBox.StandardButton.Cancel
+                    ),
+                ):
+                    self.window._clear_all_logs()
+                diagnostic.write("still active")
+                text = diagnostic.path.read_text(encoding="utf-8")
+
+        self.assertFalse(diagnostic.closed)
+        self.assertIn("still active", text)
+
+    def test_diagnostic_preferences_persist_with_explicit_privacy_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                str(Path(temp_dir) / "settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+            window = MainWindow(settings=settings)
+            try:
+                window.retention_spin.setValue(17)
+                window.redact_logs_check.setChecked(False)
+                window._save_diagnostic_preferences()
+                settings.sync()
+                self.assertEqual(
+                    int(settings.value("diagnostics/retained_logs")),
+                    17,
+                )
+                self.assertEqual(
+                    settings.value("diagnostics/redact_paths"),
+                    False,
+                )
+            finally:
+                window.close()
 
     def test_verifier_state_renders_verbatim_in_gui_session_log(self):
         result = verifiers.VerifierResult(
@@ -495,6 +583,23 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertIn(self.window.btn_process, order)
         self.assertLess(order.index(self.window.preset_combo), order.index(self.window.btn_process))
         self.assertLess(order.index(self.window.output_dir), order.index(self.window.btn_process))
+
+    def test_diagnostic_controls_do_not_overlap_session_log(self):
+        self.window.resize(1180, 880)
+        self.window.show()
+        self.app.processEvents()
+
+        log_bottom = self.window.log_box.geometry().bottom()
+        control_top = min(
+            widget.geometry().top()
+            for widget in (
+                self.window.btn_open_log,
+                self.window.btn_export_support,
+                self.window.btn_clear_logs,
+            )
+        )
+
+        self.assertLess(log_bottom, control_top)
 
     def test_queue_delete_and_alt_arrow_reorder_work_from_keyboard(self):
         for name in ("first.wav", "second.wav", "third.wav"):

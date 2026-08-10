@@ -202,3 +202,92 @@
 - CLI mode with full parameter control
 - WAV/FLAC/OGG output formats
 - Auto-installs dependencies on first run
+
+## Roadmap archive — 2026-08-10 — ROADMAP.md
+
+<details>
+<summary>Original roadmap snapshot</summary>
+
+```markdown
+# SunoJump Roadmap
+
+Roadmap for SunoJump — the 11-pass, local audio-analysis and transform pipeline. Focus: evidence-first diagnostics for rights-owned audio, preserved quality, truthful uncertainty, and recoverable desktop/CLI workflows.
+
+## Planned Features
+
+### Evidence and quality validation
+- A/B regression suite with redistributable 44.1/48 kHz stereo music, per-detector score/coverage/offset, ViSQOL-audio or validated PEAQ, BS.1770-5 loudness/true peak, fixed seeds, negative controls, and no Suno-acceptance claim
+
+### Performance
+- GPU path via CuPy/PyTorch for FFT-heavy passes after correctness and artifact-size gates
+- Streaming / chunked rendering for long files with bounded RAM (on 2026-07-29, only Humanization is chunked; the full file is otherwise decoded)
+- Parallel-per-file worker pool with per-file progress
+
+### Presets & customization
+- Preset A/B/C/D Compare UI enhancements - save the winner per-file back into history
+- Corpus-derived quality profiles for vocal/instrumental and dense/sparse material; do not ship genre labels until detector and perceptual results prove a meaningful difference
+- Preview at arbitrary offsets (not just first 30 seconds)
+
+### Batch & CLI
+- Watch-folder mode: drop a file, get a processed file in output/
+- GUI queue view with per-file presets
+- `--profile <json>` flag composes preset plus overrides
+- Exit codes: 0 = success, 1 = partial, 2 = all failed; add schema-versioned JSON/JSONL per-file results while keeping human logs on stderr
+
+### Auditing
+- Before/after spectrogram side-by-side PNG export per file
+- Experimental modification metric expanded to named per-pass contributions without bypass/effectiveness labels
+- Before/after ITU-R BS.1770-5 loudness + true-peak report
+- Crest-factor and stereo-width delta report
+
+## Competitive Research
+
+- **Chromaprint 1.6.1 / pyacoustid** — add as a lightweight, test-only second fingerprint family with short-input and chunk-boundary fixtures.
+- **Olaf / Panako** — exercise detector-side pitch/time normalization through optional test adapters; do not bundle AGPL components.
+- **AudioMarkBench / RAW-Bench / OmniSealBench** — borrow declarative attacks, fixed seeds, raw JSON/CSV results, per-pass ablation, and perceptual-quality gates without importing their neural stacks.
+- **Archived direct peers** — retain their analysis-only and backup patterns, but never treat changed hashes or “patterns suppressed” as detector evidence.
+
+## Nice-to-Haves
+
+- Per-pass waveform/spectrogram preview in GUI
+- History panel with one-click reproduce, sidecar references, input/output hashes, and explicit user-recorded outcomes (`accepted`, `match_block`, `timeout`, `account_restriction`, `inconclusive`, `unknown`)
+- Portable build target: single-file exe <= 50 MB with no undeclared torch/test/scientific packages; depends on the isolated release-chain item below
+- Process-isolated pass SDK with a narrow typed protocol, permissions, time/memory limits, and explicit trust prompts; never import arbitrary `.py` files into the GUI process
+- VST/CLAP plugin wrapper for use inside a DAW as an effect chain
+
+## Research-Driven Additions
+
+### P2
+
+- [ ] P2 — Make diagnostics deletion, redaction, and retention trustworthy
+  Why: Clear Logs is unconfirmed, ignores deletion failures, can delete the active log and immediately recreate it, and diagnostics retain absolute paths indefinitely.
+  Evidence: `sunojump.py` `RunDiagnostics`, `_clear_all_logs`, `_start_run_log`; privacy expectations from ShazamKit/offline recognition products.
+  Touches: diagnostics lifecycle, clear/export dialog, retention settings, redaction preview, GUI/CLI tests.
+  Acceptance: active handles close before confirmed deletion; failures and remaining files are reported; users can set retention, preview redaction, export a support bundle, and identify every local log/history/sidecar location.
+  Complexity: M
+
+- [ ] P2 — Move discovery off the UI thread and make empty/error states actionable
+  Why: recursive directory scans block the GUI, Process All is available with an empty queue, and render errors exist mainly in the session log.
+  Evidence: `sunojump.py` folder discovery, `_current_selected_item`, processing controls, error logging; Qt worker patterns.
+  Touches: cancellable scan worker, queue empty/loading/error UI, explicit preview target, failed-item summary/retry action, GUI tests.
+  Acceptance: large recursive scans show determinate or counted progress and can cancel; empty queues disable processing and explain the next action; preview/compare identify the selected file; render failures show per-file reason and retry without requiring log inspection.
+  Complexity: M
+
+- [ ] P2 — Add a dependency and native-library upgrade compatibility lane
+  Why: NumPy/SciPy/PyInstaller drift, SciPy's Python-floor/FFT changes, and hidden native wheel contents make ad hoc upgrades unsafe.
+  Evidence: `requirements-lock.txt`; NumPy 2.2.6 and SciPy 1.18.0 release notes; PyInstaller 6.21 documentation; SoundFile/native CVEs.
+  Touches: dependency-report tool, Python 3.11/3.12 test matrix, DSP golden fixtures, release inventory, upgrade documentation.
+  Acceptance: a command reports direct/transitive/native drift and security status; supported Python lanes run deterministic DSP golden, GUI, and packaging smoke tests; every lock update records compatibility, native versions, and an explicit rollback point.
+  Complexity: M
+
+### P3
+
+- [ ] P3 — Route UI and CLI strings through a localization catalog
+  Why: GUI labels, tooltips, status text, and CLI help are still hardcoded, blocking future localization and consistent microcopy cleanup.
+  Evidence: `sunojump.py` UI builders and CLI parser; Qt `QTranslator`/`QLocale`; 2026-07-29 source scan found no live localization catalog.
+  Touches: `sunojump.py` UI builders, CLI parser setup, tests for representative strings.
+  Acceptance: user-facing strings use a catalog compatible with Qt locale fallback and pluralization; English remains unchanged; pseudo-localized and RTL tests prove key GUI, status, error, and CLI strings resolve without clipping.
+  Complexity: M
+```
+
+</details>

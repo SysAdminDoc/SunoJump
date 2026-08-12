@@ -208,6 +208,8 @@ MAX_PARALLEL_FILE_WORKERS = 8
 COMPARE_HISTORY_SCHEMA_VERSION = 1
 MAX_COMPARE_HISTORY_ENTRIES = 200
 COMPARE_HISTORY_SETTINGS_KEY = "compare/history_json"
+WATCH_POLL_SECONDS = 0.5
+WATCH_STABILITY_SECONDS = 1.0
 
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
@@ -9165,6 +9167,14 @@ def _build_cli_parser():
     )
     parser.add_argument('-i', '--input', required=False,
                         help=_tr('Input audio file or directory'))
+    parser.add_argument(
+        '--watch',
+        metavar='DIRECTORY',
+        help=_tr(
+            'Continuously process stable supported files dropped directly '
+            'into this directory'
+        ),
+    )
     parser.add_argument('-o', '--output', default=None,
                         help=_tr('Output directory'))
     parser.add_argument('-p', '--preset', default='moderate',
@@ -9428,6 +9438,238 @@ def _argv_uses_any_option(tokens, options):
     )
 
 
+class WatchFolderTracker:
+    """Detect supported top-level files after their size/mtime stabilizes."""
+
+    def __init__(self, directory, stability_seconds=WATCH_STABILITY_SECONDS):
+        self.directory = Path(directory).resolve()
+        self.stability_seconds = max(0.0, float(stability_seconds))
+        self._observed = {}
+        self._submitted = {}
+
+    def scan(self, now=None):
+        observed_at = time.monotonic() if now is None else float(now)
+        ready = []
+        current_paths = set()
+        for path in sorted(
+            self.directory.iterdir(),
+            key=lambda candidate: candidate.name.casefold(),
+        ):
+            if path.suffix.lower() not in SUPPORTED_FORMATS:
+                continue
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            normalized = str(path.resolve())
+            current_paths.add(normalized)
+            signature = (int(stat.st_size), int(stat.st_mtime_ns))
+            previous = self._observed.get(normalized)
+            if previous is None or previous[0] != signature:
+                self._observed[normalized] = (signature, observed_at)
+                stable_since = observed_at
+            else:
+                stable_since = previous[1]
+            if self._submitted.get(normalized) == signature:
+                continue
+            if observed_at - stable_since >= self.stability_seconds:
+                ready.append((normalized, signature))
+
+        for normalized in set(self._observed) - current_paths:
+            self._observed.pop(normalized, None)
+            self._submitted.pop(normalized, None)
+        return ready
+
+    def mark_submitted(self, path, signature):
+        self._submitted[str(Path(path).resolve())] = tuple(signature)
+
+
+def _run_watch_folder_cli(
+    *,
+    watch_dir,
+    output_dir,
+    params,
+    preset_name,
+    workers,
+    compute_backend,
+    seed=None,
+    diagnostic_retention=MAX_RETAINED_LOGS,
+    redact_diagnostics=True,
+    stop_event=None,
+    poll_seconds=WATCH_POLL_SECONDS,
+    stability_seconds=WATCH_STABILITY_SECONDS,
+    max_cycles=None,
+    diagnostic_path=None,
+):
+    watch_root = Path(watch_dir).resolve()
+    output_root = Path(output_dir).resolve()
+    if not watch_root.is_dir():
+        raise ValueError(f"watch directory not found: {watch_root}")
+    if output_root == watch_root:
+        raise ValueError(
+            "watch output directory must differ from the watched directory"
+        )
+    output_root.mkdir(parents=True, exist_ok=True)
+    worker_count = _validated_parallel_workers(workers)
+    tracker = WatchFolderTracker(watch_root, stability_seconds)
+    requested_stop = stop_event or threading.Event()
+    cancel_event = threading.Event()
+    output_lock = threading.Lock()
+    log_lock = threading.Lock()
+    used_outputs = set()
+    results = []
+    started_at = time.monotonic()
+    run_log = RunDiagnostics(
+        "cli-watch",
+        path=diagnostic_path,
+        redact=redact_diagnostics,
+        max_logs=diagnostic_retention,
+    )
+
+    def watch_log(message):
+        with log_lock:
+            print(message)
+            run_log.write(message)
+
+    run_log.write_header(
+        "cli-watch",
+        [],
+        output_root,
+        params,
+        preset_name,
+        "generated per stable file",
+    )
+    watch_log(f"{APP_NAME} v{VERSION}")
+    watch_log(RIGHTS_ONLY_NOTICE)
+    watch_log(EVIDENCE_NOTICE)
+    watch_log(f"Watching: {watch_root}")
+    watch_log(f"Output: {output_root}")
+    watch_log(
+        f"Stable-file delay: {float(stability_seconds):.1f}s | "
+        f"Parallel workers: {worker_count}"
+    )
+    watch_log("Press Ctrl+C to stop.")
+
+    executor = ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="sunojump-watch-file",
+    )
+    inflight = {}
+    progress_buckets = {}
+    cycles = 0
+
+    def collect_finished():
+        for future in list(inflight):
+            if not future.done():
+                continue
+            path, _signature = inflight.pop(future)
+            try:
+                result = future.result()
+            except Exception as exc:
+                watch_log(traceback.format_exc().rstrip())
+                result = RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=path,
+                    error_code=RenderErrorCode.UNEXPECTED,
+                    message=str(exc),
+                )
+            results.append(result)
+            watch_log(format_render_result(result))
+
+    try:
+        while not requested_stop.is_set():
+            collect_finished()
+            available = max(0, worker_count - len(inflight))
+            if available:
+                for path, signature in tracker.scan()[:available]:
+                    tracker.mark_submitted(path, signature)
+                    effective_seed = (
+                        seed if seed is not None else secrets.randbits(64)
+                    )
+                    job = {
+                        "id": uuid.uuid4().hex,
+                        "input_path": path,
+                        "effective_seed": effective_seed,
+                    }
+                    try:
+                        manifest_store = BatchManifestStore.create(
+                            default_manifest_path(output_root),
+                            app_version=VERSION,
+                            output_dir=output_root,
+                            config=params,
+                            jobs=[job],
+                        )
+                    except (OSError, BatchManifestError) as exc:
+                        result = RenderResult(
+                            state=RenderState.FAILED,
+                            input_path=path,
+                            error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
+                            message=str(exc),
+                            effective_seed=effective_seed,
+                        )
+                        results.append(result)
+                        watch_log(format_render_result(result))
+                        continue
+                    label = f"[watch {Path(path).name}]"
+
+                    def progress(value, jid=job["id"], prefix=label):
+                        bucket = min(99, max(0, int(value))) // 10 * 10
+                        with log_lock:
+                            if bucket <= progress_buckets.get(jid, -10):
+                                return
+                            progress_buckets[jid] = bucket
+                            text = f"{prefix} Progress: {bucket}%"
+                            print(text)
+                            run_log.write(text)
+
+                    future = executor.submit(
+                        _run_batch_render_job,
+                        job_id=job["id"],
+                        filepath=path,
+                        effective_seed=effective_seed,
+                        params=params,
+                        output_dir=str(output_root),
+                        used_outputs=used_outputs,
+                        output_lock=output_lock,
+                        manifest_store=manifest_store,
+                        cancel_event=cancel_event,
+                        log_fn=lambda message, prefix=label: watch_log(
+                            f"{prefix} {message}"
+                        ),
+                        progress_fn=progress,
+                        started_fn=lambda prefix=label: watch_log(
+                            f"{prefix} Stable file accepted"
+                        ),
+                        compute_backend=compute_backend,
+                    )
+                    inflight[future] = (path, signature)
+            cycles += 1
+            if max_cycles is not None and cycles >= max_cycles:
+                requested_stop.set()
+                break
+            requested_stop.wait(max(0.01, float(poll_seconds)))
+    except KeyboardInterrupt:
+        watch_log("Stopping watch folder...")
+        requested_stop.set()
+    finally:
+        cancel_event.set()
+        executor.shutdown(wait=True, cancel_futures=False)
+        collect_finished()
+        run_log.close()
+
+    if results:
+        batch = BatchResult.from_results(
+            results,
+            time.monotonic() - started_at,
+        )
+        print(format_batch_result(batch))
+        return batch
+    print("Watch stopped; no stable audio files were processed.")
+    return None
+
+
 def cli_main():
     configure_locale(requested_locale_from_argv(sys.argv[1:]))
     parser = _build_cli_parser()
@@ -9440,10 +9682,17 @@ def cli_main():
         parser.error("--seed must be a non-negative integer")
     if args.retry and not args.resume:
         parser.error("--retry requires --resume")
+    if args.watch and (args.input or args.resume or args.manifest or args.retry):
+        parser.error(
+            "--watch cannot be combined with --input, --resume, "
+            "--manifest, or --retry"
+        )
     if args.resume and args.manifest:
         parser.error("--manifest cannot be combined with --resume")
-    if not args.resume and not args.input:
-        parser.error("--input is required unless --resume is used")
+    if not args.resume and not args.input and not args.watch:
+        parser.error(
+            "--input is required unless --resume or --watch is used"
+        )
 
     recovery_notes = []
     manifest_store = None
@@ -9527,6 +9776,51 @@ def cli_main():
         except ConfigurationError as exc:
             print(f"Error: invalid configuration: {exc}", file=sys.stderr)
             sys.exit(2)
+
+        if args.watch:
+            watch_path = Path(args.watch)
+            if not watch_path.is_dir():
+                print(f"Error: watch directory not found: {args.watch}")
+                sys.exit(1)
+            watch_format = params["output_format"]
+            if _format_requires_ffmpeg(watch_format):
+                if not _check_ffmpeg():
+                    print(
+                        f"Error: {watch_format.upper()} export requires "
+                        "ffmpeg in PATH. Use WAV/FLAC/OGG or install ffmpeg.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                if not _ffmpeg_encoder_available(watch_format):
+                    encoder = FFMPEG_FORMAT_ENCODERS.get(
+                        watch_format,
+                        watch_format,
+                    )
+                    print(
+                        f"Error: ffmpeg lacks {encoder} encoder for "
+                        f"{watch_format.upper()} export.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            watch_output = args.output or str(watch_path / "output")
+            try:
+                return _run_watch_folder_cli(
+                    watch_dir=watch_path,
+                    output_dir=watch_output,
+                    params=params,
+                    preset_name=preset_name,
+                    workers=args.workers,
+                    compute_backend=args.compute,
+                    seed=args.seed,
+                    diagnostic_retention=args.diagnostic_retention,
+                    redact_diagnostics=not args.no_redact_diagnostics,
+                )
+            except (OSError, ValueError) as exc:
+                print(
+                    f"Error: cannot start watch folder: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
 
         input_path = Path(args.input)
         files = []
@@ -9774,6 +10068,7 @@ if __name__ == '__main__':
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
         '--manifest', '--resume', '--retry', '--compute', '--workers',
+        '--watch',
     }
     if len(sys.argv) > 1 and _argv_uses_any_option(
         sys.argv[1:],

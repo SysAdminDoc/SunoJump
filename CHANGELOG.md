@@ -25,6 +25,8 @@
 - **Private comparison history.** The 200-entry settings history keys files by a normalized-path SHA-256 and stores only preset/timestamp metadata, never the source path itself; malformed or future history schemas fail empty.
 - **Arbitrary preview offsets.** The Monitor panel now selects any 0.1-second start point for Preview and A/B/C/D Compare clips; isolated decoding seeks before bounded reads, original playback aligns to the rendered segment, and the offset persists between sessions.
 - **Offset replay evidence.** Preview sidecars record the exact source start frame and actual offset, while out-of-range offsets fail closed without creating output.
+- **Watch-folder CLI.** `--watch DIRECTORY` continuously accepts stable supported top-level files, processes up to the selected worker count, and writes validated outputs to `DIRECTORY/output` by default until Ctrl+C.
+- **Safe watch ingestion.** Size/mtime stabilization prevents partial-copy reads, unchanged files are deduplicated while modifications can be reprocessed, each accepted drop receives an atomic one-job manifest, and output cannot equal the watched directory.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

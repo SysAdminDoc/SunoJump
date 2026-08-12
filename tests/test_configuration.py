@@ -188,6 +188,26 @@ class CliConfigurationTests(unittest.TestCase):
                             invalid,
                         ])
 
+    def test_cli_watch_mode_is_explicit_and_mutually_exclusive(self):
+        parser = sunojump._build_cli_parser()
+        args = parser.parse_args(["--watch", "incoming"])
+        self.assertEqual(args.watch, "incoming")
+
+        stderr = io.StringIO()
+        argv = [
+            "sunojump.py",
+            "--watch",
+            "incoming",
+            "--input",
+            "song.wav",
+        ]
+        with mock.patch.object(sys, "argv", argv):
+            with redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as context:
+                    sunojump.cli_main()
+        self.assertEqual(context.exception.code, 2)
+        self.assertIn("cannot be combined", stderr.getvalue())
+
     def test_cli_refuses_c2pa_source_before_creating_output(self):
         manifest = b"\x00\x00\x00\x18jumbcli-policy"
         chunk = (

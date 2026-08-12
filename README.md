@@ -151,6 +151,9 @@ python sunojump.py -i song.wav --pitch 1.5 --phase 0.5 --spectral 0.4
 # Batch process a directory
 python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
 
+# Watch a folder continuously; stable drops go to ./incoming/output/
+python sunojump.py --watch ./incoming -p moderate
+
 # With lossy re-encode
 python sunojump.py -i song.wav -p aggressive --reencode 128
 
@@ -168,7 +171,8 @@ python sunojump.py --locale en
 #### CLI Options
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-i, --input` | Input file or directory; required unless `--resume` is used | none |
+| `-i, --input` | Input file or directory; required unless `--resume` or `--watch` is used | none |
+| `--watch` | Continuously process stable supported files dropped directly into a directory; conflicts with input/resume/manifest | none |
 | `-o, --output` | Output directory | `~/Desktop/SunoJump_Output` |
 | `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
 | `-f, --format` | wav, flac, ogg, mp3, m4a (mp3/m4a require ffmpeg) | wav |
@@ -203,6 +207,8 @@ python sunojump.py --locale en
 | `--native-runtime` | Print machine-readable decoder version and containment policy, then exit | n/a |
 
 Every numeric override enables its corresponding pass. To disable one, use `--disable-pass` with a name shown by `--help`; combining a pass's numeric value with its disable flag is rejected. Values and preset files are validated strictly—unknown keys, wrong types, non-finite numbers, future schemas, and out-of-range values exit before an output directory or file is created.
+
+Watch mode scans only the selected directory's top level. A file must keep the same size and modification time for one second before it is accepted, which avoids reading an in-progress copy. Existing files are eligible, unchanged files run once per watch session, and a later modification is eligible again. The default output is the watched directory's `output/` child; using the watched directory itself as output is rejected to prevent generated files from feeding back into the watcher. Each accepted file gets an atomic one-job batch manifest and the normal C2PA, validation, sidecar, cancellation, and no-overwrite safeguards. Press `Ctrl+C` to stop and cancel active work safely.
 
 GUI labels, tooltips, status/error text, accessibility descriptions, and CLI help share the JSON catalogs in `locales/`. Locale selection follows Qt-style fallback (`language-region` → `language` → English), and plural forms plus right-to-left layout direction are catalog controlled. `--locale` overrides the system locale for one run; `SUNOJUMP_LOCALE` provides the same override for launches that cannot pass arguments.
 

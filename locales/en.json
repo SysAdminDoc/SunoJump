@@ -54,6 +54,7 @@
     "Start:": "Start:",
     " s": " s",
     "Start time for Preview and Compare clips": "Start time for Preview and Compare clips",
+    "Continuously process stable supported files dropped directly into this directory": "Continuously process stable supported files dropped directly into this directory",
     "No supported audio files found.": "No supported audio files found.",
     "Queue is empty. Browse for audio or drop files/folders here.": "Queue is empty. Browse for audio or drop files/folders here."
   }

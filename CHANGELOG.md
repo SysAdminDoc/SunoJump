@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+
+## v1.7.0 (2026-08-12)
 - **Responsive queue discovery.** Recursive folder discovery now runs in a cancellable background worker with counted progress, bounded scan-error reporting, deterministic deduplication, and retained partial results after cancellation.
 - **Actionable queue states.** Empty queues disable processing and explain how to begin; preview and preset comparison name their selected target; failed and partial rows expose typed reasons directly in the queue.
 - **One-click failed retry.** Retry Failed now reuses the latest batch manifest when available, while retaining manifest selection as the recovery fallback.
@@ -17,7 +19,7 @@
 - **Compute provenance.** Replay sidecar schema v3 records backend/library/device/CUDA evidence and marks accelerated renders dependency-sensitive across GPU environments.
 - **Bounded long-file rendering.** Full renders now decode into caller-owned NPY memory maps and automatically switch large payloads to disk-backed, overlap-blended chunks across the complete pass pipeline instead of retaining the whole source and every pass in RAM.
 - **Streaming evidence and safety.** Replay sidecar schema v4 records decode/processing strategies, chunk geometry, and per-chunk pass traces; temporary disk capacity, cancellation, atomic output promotion, and fail-closed cleanup are enforced throughout the streaming path.
-- **Streaming regression coverage.** Added caller-owned chunked-decode, bounded multi-chunk stereo, mono metadata-only, configuration, provenance, and pass-failure cleanup tests (251 total tests).
+- **Streaming regression coverage.** Added caller-owned chunked-decode, bounded multi-chunk stereo, mono metadata-only, configuration, provenance, and pass-failure cleanup tests.
 - **Parallel file rendering.** GUI and CLI batches now use an operator-bounded 1–8 thread pool (default 2), retain deterministic result ordering, prefix interleaved logs by queue job, and reserve collision-free outputs safely across concurrent renders.
 - **Per-file progress.** Queue rows display progress for their stable job IDs while the batch bar aggregates all active and completed files; CLI batches emit independently labeled progress checkpoints.
 - **Concurrent batch durability.** Batch-manifest attempts and terminal evidence are serialized through a re-entrant lock, preserving every distinct job update under parallel completion and cancellation.

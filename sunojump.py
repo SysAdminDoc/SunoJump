@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.6.1 - local audio variation and evidence tool."""
+"""SunoJump v1.7.0 - local audio variation and evidence tool."""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -74,7 +74,7 @@ from render_results import (
 )
 from verifiers import ConstellationVerifier, format_verifier_result
 
-VERSION = "1.6.1"
+VERSION = "1.7.0"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 PROFILE_SCHEMA_VERSION = 1

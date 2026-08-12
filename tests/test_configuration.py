@@ -262,6 +262,28 @@ class CliConfigurationTests(unittest.TestCase):
                             invalid,
                         ])
 
+    def test_spectrogram_export_is_explicit(self):
+        parser = sunojump._build_cli_parser()
+        default = parser.parse_args(["--input", "unused.wav"])
+        enabled = parser.parse_args([
+            "--input", "unused.wav", "--spectrogram",
+        ])
+
+        self.assertFalse(default.spectrogram)
+        self.assertTrue(enabled.spectrogram)
+        self.assertEqual(
+            sunojump._validated_audit_options({"spectrogram": True}),
+            {"spectrogram": True},
+        )
+        for invalid in (
+            {"spectrogram": "true"},
+            {"unknown": True},
+            [],
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ConfigurationError):
+                    sunojump._validated_audit_options(invalid)
+
     def test_cli_watch_mode_is_explicit_and_mutually_exclusive(self):
         parser = sunojump._build_cli_parser()
         args = parser.parse_args(["--watch", "incoming"])

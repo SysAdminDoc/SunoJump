@@ -14,7 +14,7 @@ import uuid
 
 
 BATCH_MANIFEST_SCHEMA_ID = "com.sunojump.batch-manifest"
-BATCH_MANIFEST_SCHEMA_VERSION = 2
+BATCH_MANIFEST_SCHEMA_VERSION = 3
 BATCH_MANIFEST_SUFFIX = ".sunojump-batch.json"
 
 JOB_STATES = {"pending", "running", "succeeded", "partial", "failed", "cancelled"}
@@ -122,6 +122,7 @@ class BatchManifestStore:
         output_dir: str | os.PathLike[str],
         config: dict,
         jobs: list[dict],
+        audit_options: dict | None = None,
     ) -> "BatchManifestStore":
         destination = Path(path).resolve()
         if destination.exists():
@@ -154,6 +155,7 @@ class BatchManifestStore:
             "updated_at": created_at,
             "output_dir": str(Path(output_dir).resolve()),
             "config": deepcopy(config),
+            "audit_options": deepcopy(audit_options or {}),
             "jobs": normalized_jobs,
         }
         store = cls(destination, payload)
@@ -174,9 +176,10 @@ class BatchManifestStore:
             ) from exc
         if not isinstance(payload, dict):
             raise BatchManifestError("batch manifest root must be an object")
-        if payload.get("schema_version") == 1:
+        if payload.get("schema_version") in {1, 2}:
             payload = deepcopy(payload)
             payload["schema_version"] = BATCH_MANIFEST_SCHEMA_VERSION
+            payload.setdefault("audit_options", {})
         return cls(manifest_path, payload)
 
     def _validate(self) -> None:
@@ -201,6 +204,10 @@ class BatchManifestStore:
                 )
         if not isinstance(payload.get("config"), dict):
             raise BatchManifestError("batch manifest config must be an object")
+        if not isinstance(payload.get("audit_options"), dict):
+            raise BatchManifestError(
+                "batch manifest audit options must be an object"
+            )
         if (
             not isinstance(payload.get("output_dir"), str)
             or not payload["output_dir"]
@@ -254,6 +261,37 @@ class BatchManifestStore:
                 raise BatchManifestError(
                     f"job {job_id} has an invalid preset name"
                 )
+            artifacts = job.get("artifacts", [])
+            if not isinstance(artifacts, list):
+                raise BatchManifestError(
+                    f"job {job_id} has invalid audit artifacts"
+                )
+            for artifact in artifacts:
+                if not isinstance(artifact, dict):
+                    raise BatchManifestError(
+                        f"job {job_id} has an invalid audit artifact"
+                    )
+                for key in ("kind", "path", "media_type", "sha256"):
+                    if (
+                        not isinstance(artifact.get(key), str)
+                        or not artifact[key]
+                    ):
+                        raise BatchManifestError(
+                            f"job {job_id} audit artifact requires {key}"
+                        )
+                digest = artifact["sha256"]
+                if len(digest) != 64 or any(
+                    ch not in "0123456789abcdef" for ch in digest
+                ):
+                    raise BatchManifestError(
+                        f"job {job_id} audit artifact has invalid sha256"
+                    )
+                if "metadata" in artifact and not isinstance(
+                    artifact["metadata"], dict
+                ):
+                    raise BatchManifestError(
+                        f"job {job_id} audit artifact metadata is invalid"
+                    )
             for key in ("output_sha256", "sidecar_sha256", "input_sha256"):
                 digest = job.get(key)
                 if digest is not None and (
@@ -300,6 +338,10 @@ class BatchManifestStore:
     def config(self) -> dict:
         return deepcopy(self.payload["config"])
 
+    @property
+    def audit_options(self) -> dict:
+        return deepcopy(self.payload["audit_options"])
+
     def save(self) -> None:
         with self._lock:
             self._validate()
@@ -341,6 +383,7 @@ class BatchManifestStore:
                         "output_sha256",
                         "sidecar_path",
                         "sidecar_sha256",
+                        "artifacts",
                         "error_code",
                         "message",
                     )
@@ -353,6 +396,7 @@ class BatchManifestStore:
                 "output_sha256",
                 "sidecar_path",
                 "sidecar_sha256",
+                "artifacts",
                 "error_code",
                 "message",
                 "recovered_at",
@@ -374,6 +418,7 @@ class BatchManifestStore:
         sidecar_path: str | None = None,
         sidecar_sha256: str | None = None,
         input_sha256: str | None = None,
+        artifacts: tuple[dict, ...] | list[dict] | None = None,
         error_code: str | None = None,
         message: str = "",
     ) -> None:
@@ -396,6 +441,10 @@ class BatchManifestStore:
                     job.pop(key, None)
                 else:
                     job[key] = value
+            if artifacts:
+                job["artifacts"] = deepcopy(list(artifacts))
+            else:
+                job.pop("artifacts", None)
             if message:
                 job["message"] = message
             else:
@@ -444,6 +493,21 @@ class BatchManifestStore:
                 if actual != expected:
                     failures.append(
                         f"{label} SHA-256 mismatch "
+                        f"(expected {expected}, found {actual})"
+                    )
+            for artifact in job.get("artifacts", []):
+                path = artifact["path"]
+                expected = artifact["sha256"]
+                try:
+                    actual = _sha256_file(path)
+                except OSError as exc:
+                    failures.append(
+                        f"{artifact['kind']} artifact is unavailable: {exc}"
+                    )
+                    continue
+                if actual != expected:
+                    failures.append(
+                        f"{artifact['kind']} artifact SHA-256 mismatch "
                         f"(expected {expected}, found {actual})"
                     )
             if failures:

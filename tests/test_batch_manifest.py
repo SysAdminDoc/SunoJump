@@ -117,24 +117,64 @@ class BatchManifestStoreTests(unittest.TestCase):
                 "Custom snapshot",
             )
 
-    def test_schema_one_manifest_migrates_in_memory(self):
+    def test_older_manifest_schemas_migrate_in_memory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             store = self._create(temp_path)
             payload = json.loads(store.path.read_text(encoding="utf-8"))
-            payload["schema_version"] = 1
-            store.path.write_text(
-                json.dumps(payload),
-                encoding="utf-8",
-            )
+            for old_version in (1, 2):
+                with self.subTest(old_version=old_version):
+                    old_payload = deepcopy(payload)
+                    old_payload["schema_version"] = old_version
+                    old_payload.pop("audit_options", None)
+                    store.path.write_text(
+                        json.dumps(old_payload),
+                        encoding="utf-8",
+                    )
 
-            loaded = BatchManifestStore.load(store.path)
+                    loaded = BatchManifestStore.load(store.path)
 
-            self.assertEqual(
-                loaded.payload["schema_version"],
-                BATCH_MANIFEST_SCHEMA_VERSION,
+                    self.assertEqual(
+                        loaded.payload["schema_version"],
+                        BATCH_MANIFEST_SCHEMA_VERSION,
+                    )
+                    self.assertEqual(loaded.audit_options, {})
+                    self.assertEqual(loaded.jobs[0]["id"], "job-0")
+
+    def test_reconcile_revalidates_audit_artifact_hashes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            store = self._create(temp_path)
+            output = temp_path / "output.wav"
+            sidecar = temp_path / "output.sidecar.json"
+            artifact = temp_path / "output.spectrogram.png"
+            output.write_bytes(b"audio")
+            sidecar.write_bytes(b"sidecar")
+            artifact.write_bytes(b"png")
+            store.begin_attempt("job-0", output)
+            store.finish_job(
+                "job-0",
+                state="succeeded",
+                output_path=str(output),
+                output_sha256=_digest(output),
+                sidecar_path=str(sidecar),
+                sidecar_sha256=_digest(sidecar),
+                artifacts=({
+                    "kind": "spectrogram_comparison",
+                    "path": str(artifact),
+                    "media_type": "image/png",
+                    "sha256": _digest(artifact),
+                    "metadata": {"schema_version": 1},
+                },),
             )
-            self.assertEqual(loaded.jobs[0]["id"], "job-0")
+            self.assertEqual(store.reconcile(), [])
+
+            artifact.write_bytes(b"changed")
+            recovered = BatchManifestStore.load(store.path)
+            notes = recovered.reconcile()
+
+            self.assertEqual(recovered.jobs[0]["state"], "failed")
+            self.assertIn("spectrogram_comparison artifact SHA-256", notes[0])
 
     def test_invalid_per_file_config_or_preset_name_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp_dir:

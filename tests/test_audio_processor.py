@@ -450,6 +450,21 @@ class OutputPathTests(unittest.TestCase):
             self.assertEqual(Path(path).name, 'song_sj_2.wav')
             self.assertTrue(renamed)
 
+    def test_output_path_avoids_existing_spectrogram_artifact(self):
+        used = set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            existing = out_dir / 'song_sj.spectrogram.png'
+            existing.write_bytes(b'existing audit artifact')
+
+            path, renamed = _planned_output_path(
+                out_dir / 'song.wav', out_dir, '.wav', used,
+            )
+
+            self.assertEqual(Path(path).name, 'song_sj_2.wav')
+            self.assertTrue(renamed)
+
     def test_reservations_are_unique_across_processes(self):
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)

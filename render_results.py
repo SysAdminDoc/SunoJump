@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 import math
@@ -38,6 +39,7 @@ class RenderErrorCode(str, Enum):
     OUTPUT_HASH_FAILED = "output_hash_failed"
     SIDECAR_WRITE_FAILED = "sidecar_write_failed"
     MANIFEST_WRITE_FAILED = "manifest_write_failed"
+    AUDIT_ARTIFACT_FAILED = "audit_artifact_failed"
     OUTPUT_DIR_UNAVAILABLE = "output_dir_unavailable"
     UNEXPECTED = "unexpected"
 
@@ -104,6 +106,7 @@ class RenderResult:
     effective_seed: int | None = None
     sidecar_path: str | None = None
     sidecar_sha256: str | None = None
+    artifacts: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, RenderState):
@@ -145,6 +148,29 @@ class RenderResult:
                 raise ValueError("sidecar_sha256 must be a lowercase SHA-256 digest")
             if not self.usable_output:
                 raise ValueError("failed/cancelled render cannot expose a sidecar")
+        if not isinstance(self.artifacts, tuple):
+            raise ValueError("render artifacts must be a tuple")
+        if self.artifacts and not self.usable_output:
+            raise ValueError("failed/cancelled render cannot expose artifacts")
+        for artifact in self.artifacts:
+            if not isinstance(artifact, dict):
+                raise ValueError("render artifact must be an object")
+            for key in ("kind", "path", "media_type", "sha256"):
+                if not isinstance(artifact.get(key), str) or not artifact[key]:
+                    raise ValueError(
+                        f"render artifact requires a non-empty {key}"
+                    )
+            digest = artifact["sha256"]
+            if len(digest) != 64 or any(
+                ch not in "0123456789abcdef" for ch in digest
+            ):
+                raise ValueError(
+                    "render artifact sha256 must be a lowercase digest"
+                )
+            if "metadata" in artifact and not isinstance(
+                artifact["metadata"], dict
+            ):
+                raise ValueError("render artifact metadata must be an object")
 
     @property
     def usable_output(self) -> bool:
@@ -173,6 +199,8 @@ class RenderResult:
         if self.sidecar_path is not None:
             payload["sidecar_path"] = self.sidecar_path
             payload["sidecar_sha256"] = self.sidecar_sha256
+        if self.artifacts:
+            payload["artifacts"] = deepcopy(list(self.artifacts))
         return payload
 
 
@@ -244,6 +272,11 @@ def format_render_result(result: RenderResult) -> str:
         text += f" — seed:{result.effective_seed}"
     if result.sidecar_sha256 is not None:
         text += f" — sidecar:{result.sidecar_sha256[:12]}"
+    for artifact in result.artifacts:
+        text += (
+            f" — {artifact['kind']}:"
+            f"{artifact['sha256'][:12]}"
+        )
     return text
 
 

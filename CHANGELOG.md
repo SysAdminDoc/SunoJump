@@ -32,6 +32,8 @@
 - **Composable CLI profiles.** Added `--profile <json>` for a versioned built-in-preset plus sparse-overrides document; explicit value/pass flags apply last, while ambiguous configuration sources and operation-level policy keys fail closed.
 - **Machine-readable CLI results.** Added `--result-format json|jsonl` with schema-versioned job-linked render records and a final batch record; stdout remains pure machine data while all human progress and diagnostics use stderr.
 - **Stable CLI status contract.** Centralized exit mapping as 0 for complete success, 1 when a batch is partial but has a usable output, and 2 when every job fails or setup prevents rendering; release smoke now validates the JSON result contract.
+- **Before/after spectrogram artifacts.** GUI and CLI can opt into deterministic side-by-side full-file PNGs using bounded uniform Hann-window sampling, a logarithmic frequency axis, and a shared fixed dBFS color scale without adding a plotting dependency.
+- **Audit artifact integrity.** Spectrograms publish atomically, carry SHA-256 plus schema/sampling metadata in typed and structured results, persist in batch manifest schema v3, and are hash-revalidated during recovery; export failures are typed partial outcomes that retain usable audio and sidecars.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

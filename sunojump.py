@@ -34,6 +34,7 @@ from config_schema import (
     default_render_config,
     validate_render_config,
 )
+from audio_reports import render_spectrogram_comparison_png
 from batch_manifest import (
     BATCH_MANIFEST_SUFFIX,
     RETRY_POLICIES,
@@ -1419,6 +1420,11 @@ def _sidecar_path_for_output(output_path):
     return Path(output_path).with_suffix('.sidecar.json')
 
 
+def _spectrogram_path_for_output(output_path):
+    path = Path(output_path)
+    return path.with_suffix(".spectrogram.png")
+
+
 def _reservation_path_for_output(output_path):
     path = Path(output_path)
     return path.with_name(f".{path.name}.sunojump-reservation")
@@ -1430,6 +1436,7 @@ def _output_candidate_is_occupied(candidate, used_paths):
         normalized in used_paths
         or os.path.lexists(candidate)
         or os.path.lexists(_sidecar_path_for_output(candidate))
+        or os.path.lexists(_spectrogram_path_for_output(candidate))
         or os.path.lexists(_reservation_path_for_output(candidate))
     )
 
@@ -1559,6 +1566,7 @@ def _reserve_output_path(input_path, output_dir, ext, used_paths=None):
         if (
             os.path.lexists(candidate)
             or os.path.lexists(_sidecar_path_for_output(candidate))
+            or os.path.lexists(_spectrogram_path_for_output(candidate))
         ):
             reservation.release()
             continue
@@ -1730,6 +1738,32 @@ def _write_json_atomic_no_replace(path, payload):
                 default=str,
             )
             handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        _promote_file_no_replace(temp_path, destination)
+        temp_path = None
+        _fsync_directory(directory)
+        return _sha256_file(destination)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        _remove_file_silent(temp_path)
+
+
+def _write_binary_atomic_no_replace(path, payload):
+    destination = os.path.abspath(path)
+    directory = os.path.dirname(destination) or os.getcwd()
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{Path(destination).stem}.",
+        suffix=".tmp.bin",
+        dir=directory,
+    )
+    try:
+        descriptor = fd
+        fd = None
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         _promote_file_no_replace(temp_path, destination)
@@ -2031,6 +2065,7 @@ class AudioProcessor:
         cancel_event=None,
         seed=None,
         compute_backend=None,
+        audit_options=None,
         streaming_threshold_bytes=STREAMING_THRESHOLD_BYTES,
         streaming_chunk_seconds=STREAMING_CHUNK_SECONDS,
     ):
@@ -2044,6 +2079,7 @@ class AudioProcessor:
         self._seed = seed
         self.rng = np.random.default_rng(self._seed)
         self._compute_backend = resolve_compute_backend(compute_backend)
+        self._audit_options = _validated_audit_options(audit_options)
         if streaming_threshold_bytes < 0:
             raise ValueError("streaming threshold must be non-negative")
         if streaming_chunk_seconds <= STREAMING_OVERLAP_SECONDS:
@@ -2083,6 +2119,35 @@ class AudioProcessor:
     def _is_cancelled(self):
         return self._cancel_event.is_set()
 
+    def _write_spectrogram_artifact(
+        self,
+        output_path,
+        before,
+        after,
+        sample_rate,
+    ):
+        if not self._audit_options["spectrogram"]:
+            return ()
+        self.log("Generating before/after spectrogram...")
+        png, metadata = render_spectrogram_comparison_png(
+            before,
+            after,
+            sample_rate,
+        )
+        artifact_path = _spectrogram_path_for_output(output_path)
+        digest = _write_binary_atomic_no_replace(artifact_path, png)
+        self.log(
+            f"Spectrogram written atomically: {artifact_path.name} "
+            f"(sha256:{digest[:12]})"
+        )
+        return ({
+            "kind": "spectrogram_comparison",
+            "path": str(artifact_path),
+            "media_type": "image/png",
+            "sha256": digest,
+            "metadata": metadata,
+        },)
+
     # --- Main pipeline ---
     def process(
         self,
@@ -2110,6 +2175,7 @@ class AudioProcessor:
             validation=None,
             sidecar_path=None,
             sidecar_sha256=None,
+            artifacts=(),
         ):
             nonlocal decode_temp
             usable = state in {RenderState.SUCCEEDED, RenderState.PARTIAL}
@@ -2124,6 +2190,7 @@ class AudioProcessor:
                 effective_seed=self._seed,
                 sidecar_path=sidecar_path if usable else None,
                 sidecar_sha256=sidecar_sha256 if usable else None,
+                artifacts=artifacts if usable else (),
             )
             if decode_temp is not None:
                 try:
@@ -2572,12 +2639,33 @@ class AudioProcessor:
                 validation,
             )
 
+        try:
+            artifacts = self._write_spectrogram_artifact(
+                output_path,
+                original,
+                audio,
+                sr,
+            )
+        except Exception as exc:
+            self.log(f"  Spectrogram export failed: {exc}")
+            self.log(traceback.format_exc().rstrip())
+            return finish(
+                RenderState.PARTIAL,
+                RenderErrorCode.AUDIT_ARTIFACT_FAILED,
+                f"validated audio and sidecar exist, but spectrogram "
+                f"export failed: {exc}",
+                validation,
+                sidecar_path=sidecar_evidence["path"],
+                sidecar_sha256=sidecar_evidence["sha256"],
+            )
+
         self.progress(100)
         return finish(
             RenderState.SUCCEEDED,
             validation=validation,
             sidecar_path=sidecar_evidence["path"],
             sidecar_sha256=sidecar_evidence["sha256"],
+            artifacts=artifacts,
         )
 
     @staticmethod
@@ -3227,12 +3315,32 @@ class AudioProcessor:
                     "validated audio was promoted, but its sidecar could not be written",
                     validation,
                 )
+            try:
+                artifacts = self._write_spectrogram_artifact(
+                    output_path,
+                    original,
+                    current,
+                    sample_rate,
+                )
+            except Exception as exc:
+                self.log(f"  Spectrogram export failed: {exc}")
+                self.log(traceback.format_exc().rstrip())
+                return stream_finish(
+                    RenderState.PARTIAL,
+                    RenderErrorCode.AUDIT_ARTIFACT_FAILED,
+                    f"validated audio and sidecar exist, but spectrogram "
+                    f"export failed: {exc}",
+                    validation,
+                    sidecar_path=sidecar_evidence["path"],
+                    sidecar_sha256=sidecar_evidence["sha256"],
+                )
             self.progress(100)
             return stream_finish(
                 RenderState.SUCCEEDED,
                 validation=validation,
                 sidecar_path=sidecar_evidence["path"],
                 sidecar_sha256=sidecar_evidence["sha256"],
+                artifacts=artifacts,
             )
         except DecodeCancelled:
             return stream_finish(
@@ -4623,6 +4731,7 @@ def _finish_manifest_job(manifest_store, job_id, result):
         ),
         sidecar_path=result.sidecar_path,
         sidecar_sha256=result.sidecar_sha256,
+        artifacts=result.artifacts,
         input_sha256=(
             validation.input_sha256 if validation is not None else None
         ),
@@ -4651,6 +4760,7 @@ def _manifest_failure_result(result, exc):
             effective_seed=result.effective_seed,
             sidecar_path=result.sidecar_path,
             sidecar_sha256=result.sidecar_sha256,
+            artifacts=result.artifacts,
         )
     return RenderResult(
         state=RenderState.FAILED,
@@ -4671,6 +4781,23 @@ def _validated_parallel_workers(value):
             f"{MAX_PARALLEL_FILE_WORKERS}"
         )
     return value
+
+
+def _validated_audit_options(value=None):
+    if value is None:
+        return {"spectrogram": False}
+    if not isinstance(value, dict):
+        raise ConfigurationError("audit options must be an object")
+    unknown = sorted(set(value) - {"spectrogram"})
+    if unknown:
+        raise ConfigurationError(
+            "unknown audit option(s): " + ", ".join(unknown)
+        )
+    normalized = {"spectrogram": False, **value}
+    for key, enabled in normalized.items():
+        if not isinstance(enabled, bool):
+            raise ConfigurationError(f"audit option {key} must be a boolean")
+    return normalized
 
 
 def _validated_manifest_jobs(jobs, batch_params):
@@ -4708,6 +4835,7 @@ def _run_batch_render_job(
     progress_fn,
     started_fn,
     compute_backend=None,
+    audit_options=None,
 ):
     if cancel_event.is_set():
         result = RenderResult(
@@ -4746,6 +4874,7 @@ def _run_batch_render_job(
                 cancel_event=cancel_event,
                 seed=effective_seed,
                 compute_backend=compute_backend,
+                audit_options=audit_options,
             )
             result = processor.process(filepath, out_path)
             if not isinstance(result, RenderResult):
@@ -4799,6 +4928,7 @@ class ProcessWorker(QThread):
         output_dir,
         manifest_store=None,
         max_workers=DEFAULT_PARALLEL_FILE_WORKERS,
+        audit_options=None,
     ):
         super().__init__()
         self.jobs = []
@@ -4834,6 +4964,7 @@ class ProcessWorker(QThread):
         self.output_dir = output_dir
         self.manifest_store = manifest_store
         self.max_workers = _validated_parallel_workers(max_workers)
+        self.audit_options = _validated_audit_options(audit_options)
         self._cancel_event = threading.Event()
         self.seeds = seeds
 
@@ -4943,6 +5074,7 @@ class ProcessWorker(QThread):
                     started_fn=lambda jid=job_id: queue_event(
                         "started", jid
                     ),
+                    audit_options=self.audit_options,
                 )
                 pending[future] = (idx, job_id, filepath)
 
@@ -6555,6 +6687,14 @@ class MainWindow(QMainWindow):
                 "from 1 to 8. Higher values use more CPU, memory, and disk."
             ),
         )
+        _set_accessibility(
+            self.spectrogram_check,
+            "Export spectrogram comparison",
+            (
+                "Write a bounded side-by-side before and after PNG for each "
+                "usable full render."
+            ),
+        )
         _set_accessibility(self.btn_open_output, "Open output folder", "Open the current output directory in the file manager.")
         _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
         _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
@@ -6664,6 +6804,7 @@ class MainWindow(QMainWindow):
         order.extend([
             self.format_combo,
             self.worker_count_spin,
+            self.spectrogram_check,
             self.btn_open_output,
             self.output_dir,
             self.btn_browse_output,
@@ -6699,6 +6840,12 @@ class MainWindow(QMainWindow):
             )
         except (TypeError, ValueError):
             self.worker_count_spin.setValue(DEFAULT_PARALLEL_FILE_WORKERS)
+        spectrogram = settings.value("session/export_spectrogram", False)
+        if isinstance(spectrogram, str):
+            spectrogram = spectrogram.strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        self.spectrogram_check.setChecked(bool(spectrogram))
         try:
             preview_offset = float(settings.value(
                 "session/preview_offset_seconds",
@@ -6762,6 +6909,10 @@ class MainWindow(QMainWindow):
         settings.setValue(
             "session/parallel_file_workers",
             self.worker_count_spin.value(),
+        )
+        settings.setValue(
+            "session/export_spectrogram",
+            self.spectrogram_check.isChecked(),
         )
         settings.setValue(
             "session/preview_offset_seconds",
@@ -7216,6 +7367,18 @@ class MainWindow(QMainWindow):
             ((2, 1),),
         )
         lay.addLayout(self._format_controls_grid)
+
+        self.spectrogram_check = QCheckBox(
+            _tr("Export before/after spectrogram PNG")
+        )
+        self.spectrogram_check.setChecked(False)
+        self.spectrogram_check.setToolTip(
+            _tr(
+                "Write a bounded full-file comparison image beside each "
+                "usable output"
+            )
+        )
+        lay.addWidget(self.spectrogram_check)
 
         self._directory_controls_grid = QGridLayout()
         self._directory_controls_grid.setSpacing(8)
@@ -8148,6 +8311,7 @@ class MainWindow(QMainWindow):
         self.btn_clear_logs.setEnabled(enabled)
         self.retention_spin.setEnabled(enabled)
         self.worker_count_spin.setEnabled(enabled)
+        self.spectrogram_check.setEnabled(enabled)
         self.preview_offset_spin.setEnabled(enabled)
         if enabled:
             self._sync_queue_preset_control()
@@ -8204,6 +8368,9 @@ class MainWindow(QMainWindow):
                 output_dir=out_dir,
                 config=params,
                 jobs=manifest_jobs,
+                audit_options={
+                    "spectrogram": self.spectrogram_check.isChecked(),
+                },
             )
         except (OSError, BatchManifestError) as exc:
             self._set_render_state("Manifest failed")
@@ -8247,6 +8414,7 @@ class MainWindow(QMainWindow):
             out_dir,
             manifest_store=manifest_store,
             max_workers=self.worker_count_spin.value(),
+            audit_options=manifest_store.audit_options,
         )
         active_worker = self.worker
         self.worker.log_signal.connect(self._log)
@@ -8291,6 +8459,7 @@ class MainWindow(QMainWindow):
                 require_complete=True,
                 allow_output_format=True,
             )
+            audit_options = _validated_audit_options(store.audit_options)
             jobs = _validated_manifest_jobs(
                 store.select(policy),
                 params,
@@ -8336,6 +8505,7 @@ class MainWindow(QMainWindow):
         }
         self._apply_config(config_without_format)
         self.format_combo.setCurrentText(output_format)
+        self.spectrogram_check.setChecked(audit_options["spectrogram"])
         self.output_dir.setText(store.output_dir)
         self.preset_combo.blockSignals(True)
         self.preset_combo.setCurrentText("Custom")
@@ -9551,6 +9721,14 @@ def _build_cli_parser():
         ),
     )
     parser.add_argument(
+        '--spectrogram',
+        action='store_true',
+        help=_tr(
+            'Export a bounded before/after side-by-side spectrogram PNG '
+            'for each usable render'
+        ),
+    )
+    parser.add_argument(
         '--manifest',
         default=None,
         help=_tr('Path for the new atomic batch manifest'),
@@ -9944,6 +10122,7 @@ def _run_watch_folder_cli(
     max_cycles=None,
     diagnostic_path=None,
     result_format="human",
+    audit_options=None,
 ):
     watch_root = Path(watch_dir).resolve()
     output_root = Path(output_dir).resolve()
@@ -9955,6 +10134,7 @@ def _run_watch_folder_cli(
         )
     output_root.mkdir(parents=True, exist_ok=True)
     worker_count = _validated_parallel_workers(workers)
+    audit_options = _validated_audit_options(audit_options)
     tracker = WatchFolderTracker(watch_root, stability_seconds)
     requested_stop = stop_event or threading.Event()
     cancel_event = threading.Event()
@@ -10045,6 +10225,7 @@ def _run_watch_folder_cli(
                             output_dir=output_root,
                             config=params,
                             jobs=[job],
+                            audit_options=audit_options,
                         )
                     except (OSError, BatchManifestError) as exc:
                         result = RenderResult(
@@ -10089,6 +10270,7 @@ def _run_watch_folder_cli(
                             f"{prefix} Stable file accepted"
                         ),
                         compute_backend=compute_backend,
+                        audit_options=audit_options,
                     )
                     inflight[future] = (job, signature)
             cycles += 1
@@ -10151,6 +10333,9 @@ def cli_main():
 
     recovery_notes = []
     manifest_store = None
+    audit_options = _validated_audit_options({
+        "spectrogram": bool(args.spectrogram),
+    })
     if args.resume:
         forbidden = {
             "-i", "--input", "-o", "--output", "-p", "--preset",
@@ -10161,7 +10346,7 @@ def cli_main():
             "--spectral-sub-bass", "--spectral-low-mids",
             "--spectral-presence", "--spectral-air", "--dynamic-eq",
             "--pitch", "--tempo", "--phase", "--stereo", "--noise",
-            "--dynamics", "--humanize", "--reencode",
+            "--dynamics", "--humanize", "--reencode", "--spectrogram",
         }
         if _argv_uses_any_option(sys.argv[1:], forbidden):
             parser.error(
@@ -10175,6 +10360,9 @@ def cli_main():
                 manifest_store.config,
                 require_complete=True,
                 allow_output_format=True,
+            )
+            audit_options = _validated_audit_options(
+                manifest_store.audit_options
             )
             policy = args.retry or "pending"
             jobs = _validated_manifest_jobs(
@@ -10302,6 +10490,7 @@ def cli_main():
                     diagnostic_retention=args.diagnostic_retention,
                     redact_diagnostics=not args.no_redact_diagnostics,
                     result_format=args.result_format,
+                    audit_options=audit_options,
                 )
                 if watch_result is None:
                     return
@@ -10426,6 +10615,7 @@ def cli_main():
                 output_dir=out_dir,
                 config=params,
                 jobs=jobs,
+                audit_options=audit_options,
             )
             jobs = manifest_store.select("pending")
     except (OSError, BatchManifestError) as exc:
@@ -10521,6 +10711,7 @@ def cli_main():
                     f"{prefix} Started"
                 ),
                 compute_backend=args.compute,
+                audit_options=audit_options,
             )
             future_jobs[future] = (index, job_id, filepath)
 
@@ -10568,7 +10759,7 @@ if __name__ == '__main__':
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
         '--manifest', '--resume', '--retry', '--compute', '--workers',
-        '--watch', '--result-format',
+        '--watch', '--result-format', '--spectrogram',
     }
     if len(sys.argv) > 1 and _argv_uses_any_option(
         sys.argv[1:],

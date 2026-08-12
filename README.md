@@ -125,6 +125,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Bounded long-file processing** — isolated decoding writes fixed-size blocks to a disk-backed memory map; payloads above 256 MiB run every enabled transform in overlap-blended chunks with a bounded working set and atomic cleanup
 - **Open Output** — one-click to output folder in your file manager
 - **Versioned signal-change metric** — inspect a sample-domain difference value with explicit scope
+- **Before/after spectrogram export** — opt in to a bounded, full-file, side-by-side PNG with a shared dBFS color scale and hash-linked result/manifest evidence
 
 ## Usage
 
@@ -137,7 +138,7 @@ python sunojump.py
 2. Select a preset or customize individual parameters
 3. (Optional) Select one or more queue rows and use **Selected preset** to assign a built-in preset or a snapshot of the current controls only to those files; **Batch settings** keeps them linked to the main controls
 4. (Optional) Choose a **Start** offset and click **Render Preview** to process up to 30 seconds from that point so you can hear the result before committing; Compare uses the same offset
-5. Choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
+5. Optionally enable **Export before/after spectrogram PNG**, choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
 6. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
 
 Keyboard shortcuts cover the primary workflow: `Ctrl+O` browse, `Ctrl+P` preview, `Ctrl+Shift+P` compare, `Ctrl+R` resume, `Ctrl+Shift+R` retry failed, `Ctrl+S` save a preset, `Ctrl+Enter` process, and `Esc` cancel. In the queue, `Delete`/`Backspace` removes the selection and `Alt+Up`/`Alt+Down` reorders it.
@@ -158,6 +159,9 @@ python sunojump.py -i ./my_songs --result-format json > results.json
 
 # Emit one record per file plus a final batch record
 python sunojump.py -i ./my_songs --result-format jsonl > results.jsonl
+
+# Export a bounded side-by-side audit image beside every usable output
+python sunojump.py -i ./my_songs --spectrogram
 
 # Batch process a directory
 python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
@@ -193,6 +197,7 @@ python sunojump.py --locale en
 | `--compute` | `cpu`, `auto` (CUDA with CPU fallback), or strict `cuda` for FFT-heavy passes | cpu |
 | `--workers` | Queued files to render concurrently, from 1 to 8 | 2 |
 | `--result-format` | `human` for stderr logs, `json` for one batch document, or `jsonl` for per-file records plus a final batch record | human |
+| `--spectrogram` | Export a before/after side-by-side PNG beside each usable output | off |
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
@@ -250,6 +255,8 @@ The standard frozen release remains CPU-only: Torch is deliberately excluded fro
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs. Legacy partial presets are migrated and completed from the documented Moderate defaults; saved Custom sessions persist the full validated configuration rather than only the word `Custom`.
 
 CLI exit status is `0` only when every job succeeds, `1` when a batch has at least one usable output but is partial, and `2` when no job produces a usable output. Human-readable progress, per-file summaries, and diagnostics always go to stderr, leaving stdout uncontaminated for `--result-format json` or `jsonl`. The `com.sunojump.cli-results` schema includes stable job IDs, states, error codes, effective seeds, validation evidence, artifact paths/hashes, counts, and the final batch state. Each independently versioned replay sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
+
+Spectrogram export uses uniformly distributed Hann-window snapshots across the full file, at most a 2048-point FFT per image column, a logarithmic 20 Hz–20 kHz (or Nyquist) axis, and one fixed -100–0 dBFS color scale for both panels. The PNG is atomically published as `<output-stem>.spectrogram.png`; its SHA-256 and sampling metadata appear in JSON/JSONL results and batch manifests. A missing or changed audit image invalidates a previously successful manifest during recovery. Report failure leaves validated audio and its replay sidecar usable but returns a typed partial result.
 
 Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
 

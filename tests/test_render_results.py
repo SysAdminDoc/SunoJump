@@ -184,6 +184,35 @@ class RenderResultContractTests(unittest.TestCase):
             2,
         )
 
+    def test_render_artifacts_are_validated_and_serialized(self):
+        artifact = {
+            "kind": "spectrogram_comparison",
+            "path": "output.spectrogram.png",
+            "media_type": "image/png",
+            "sha256": "d" * 64,
+            "metadata": {"schema_version": 1},
+        }
+        result = RenderResult(
+            state=RenderState.SUCCEEDED,
+            input_path="input.wav",
+            output_path="output.wav",
+            validation=_validation(),
+            artifacts=(artifact,),
+        )
+
+        self.assertEqual(result.to_dict()["artifacts"][0], artifact)
+        self.assertIn(
+            "spectrogram_comparison:dddddddddddd",
+            format_render_result(result),
+        )
+        with self.assertRaises(ValueError):
+            RenderResult(
+                state=RenderState.FAILED,
+                input_path="input.wav",
+                error_code=RenderErrorCode.DECODE_FAILED,
+                artifacts=(artifact,),
+            )
+
 
 class OutputValidationTests(unittest.TestCase):
     @staticmethod

@@ -39,6 +39,7 @@ class BoundedStreamingTests(unittest.TestCase):
                 },
                 log_fn=logs.append,
                 seed=123,
+                audit_options={"spectrogram": True},
                 streaming_threshold_bytes=1,
                 streaming_chunk_seconds=4.0,
             )
@@ -69,6 +70,11 @@ class BoundedStreamingTests(unittest.TestCase):
                 "bounded-overlap-memmap",
             )
             self.assertEqual(sidecar["streaming"]["chunk_samples"], 32000)
+            self.assertEqual(
+                result.artifacts[0]["kind"],
+                "spectrogram_comparison",
+            )
+            self.assertTrue(Path(result.artifacts[0]["path"]).is_file())
 
     def test_streaming_supports_mono_metadata_only_render(self):
         with tempfile.TemporaryDirectory() as temp_dir:

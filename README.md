@@ -111,6 +111,8 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
 - **Truthful terminal states** — jobs and batches report `succeeded`, `partial`, `failed`, or `cancelled` with stable error codes; only an all-success batch reaches 100%
 - **Lifecycle-safe cancellation** — one Cancel control covers batches, previews, and preset comparisons; closing waits for confirmed worker exit and never removes active temp storage
+- **Responsive queue discovery** — recursive folder scans run off the UI thread with counted progress and cancellation; empty and partial states explain the next action
+- **Actionable failures** — queue rows show typed failure reasons, and Retry Failed immediately reuses the latest saved batch manifest
 - **Replayable output evidence** — every render displays its effective seed; WAV/FLAC same-environment replays are byte-tested, while sidecars name exact muxer/codec dependencies when bytes are build-sensitive
 - **Identity-safe batch queue** — drag/drop multiple files, reorder them, and process them sequentially; stable job IDs prevent late worker results from attaching to replacement rows
 - **Resumable batch manifests** — every batch atomically persists inputs, seeds, configuration, attempts, terminal states, and artifact hashes; interrupted and failed-only work can be resumed without replacing existing files

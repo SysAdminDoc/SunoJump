@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- **Responsive queue discovery.** Recursive folder discovery now runs in a cancellable background worker with counted progress, bounded scan-error reporting, deterministic deduplication, and retained partial results after cancellation.
+- **Actionable queue states.** Empty queues disable processing and explain how to begin; preview and preset comparison name their selected target; failed and partial rows expose typed reasons directly in the queue.
+- **One-click failed retry.** Retry Failed now reuses the latest batch manifest when available, while retaining manifest selection as the recovery fallback.
+- **Regression coverage.** Added offscreen GUI and worker tests for empty queues, background discovery, cancellation, target labeling, visible failure summaries, and recent-batch retry.
+
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.
 - **Lossy re-encode encoder guard.** The internal MP3 re-encode pass now checks for `libmp3lame` availability before attempting the encode, matching the export path behavior.

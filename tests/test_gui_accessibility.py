@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -19,7 +20,14 @@ from render_results import (
     RenderState,
 )
 import sunojump
-from sunojump import MainWindow, ROLE_INPUT, ROLE_JOB_ID, ROLE_OUTPUT
+from sunojump import (
+    FileDiscoveryResult,
+    FileDiscoveryWorker,
+    MainWindow,
+    ROLE_INPUT,
+    ROLE_JOB_ID,
+    ROLE_OUTPUT,
+)
 import verifiers
 
 
@@ -80,6 +88,73 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertIn("Rights-owned audio only", text)
         self.assertIn("do not predict platform outcomes", text)
         self.assertIn("do not predict or guarantee", self.window.scope_label.toolTip())
+
+    def test_empty_queue_disables_processing_and_explains_next_action(self):
+        self.assertEqual(self.window.file_list.count(), 0)
+        self.assertFalse(self.window.btn_process.isEnabled())
+        self.assertIn("Queue is empty", self.window.queue_activity_label.text())
+        self.assertIn("Browse", self.window.queue_activity_label.text())
+
+    def test_directory_discovery_is_counted_deduplicated_and_cancellable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            nested = root / "nested"
+            nested.mkdir()
+            first = root / "first.wav"
+            second = nested / "second.flac"
+            first.write_bytes(b"wave")
+            second.write_bytes(b"flac")
+            (nested / "notes.txt").write_text("skip", encoding="utf-8")
+
+            results = []
+            progress = []
+            worker = FileDiscoveryWorker(
+                [root, first],
+                existing_paths=[second],
+            )
+            worker.discovery_done.connect(results.append)
+            worker.progress_signal.connect(
+                lambda scanned, matched, current:
+                    progress.append((scanned, matched, current))
+            )
+            worker.run()
+
+            self.assertEqual(len(results), 1)
+            result = results[0]
+            self.assertIsInstance(result, FileDiscoveryResult)
+            self.assertEqual(result.paths, (str(first.resolve()),))
+            self.assertGreaterEqual(result.scanned_entries, 3)
+            self.assertEqual(result.unsupported_count, 1)
+            self.assertFalse(result.cancelled)
+            self.assertTrue(progress)
+
+            cancelled = []
+            cancelled_worker = FileDiscoveryWorker([root])
+            cancelled_worker.discovery_done.connect(cancelled.append)
+            cancelled_worker.cancel()
+            cancelled_worker.run()
+            self.assertTrue(cancelled[0].cancelled)
+            self.assertEqual(cancelled[0].paths, ())
+
+    def test_add_files_uses_background_discovery_and_updates_queue_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio = Path(temp_dir) / "track.wav"
+            audio.write_bytes(b"fixture")
+            self.window._add_files([temp_dir])
+            self.assertIsNotNone(self.window.discovery_worker)
+            self.assertFalse(self.window.btn_process.isEnabled())
+            deadline = time.monotonic() + 3
+            while (
+                self.window.discovery_worker is not None
+                and time.monotonic() < deadline
+            ):
+                self.app.processEvents()
+                QTest.qWait(10)
+
+            self.assertIsNone(self.window.discovery_worker)
+            self.assertEqual(self.window.file_list.count(), 1)
+            self.assertTrue(self.window.btn_process.isEnabled())
+            self.assertIn("Added 1 audio files", self.window.queue_activity_label.text())
 
     @staticmethod
     def _present_c2pa():
@@ -331,6 +406,41 @@ class GuiAccessibilityTests(unittest.TestCase):
                 self.assertIn(result.state.value, item.toolTip())
                 if result.effective_seed is not None:
                     self.assertIn("seed:42", item.toolTip())
+                if result.state is RenderState.FAILED:
+                    self.assertIn("decode_failed", item.text())
+
+    def test_batch_failure_summary_offers_one_click_recent_retry(self):
+        failed = RenderResult(
+            state=RenderState.FAILED,
+            input_path="bad.wav",
+            error_code=RenderErrorCode.DECODE_FAILED,
+            message="header unreadable",
+        )
+        self.window._on_all_done(BatchResult.from_results([failed], 1.0))
+        self.assertIn("Retry Failed", self.window.queue_activity_label.text())
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest = Path(temp_dir) / "run.sunojump-batch.json"
+            manifest.write_text("{}", encoding="utf-8")
+            self.window._last_batch_manifest_path = str(manifest)
+            with mock.patch.object(
+                self.window,
+                "_load_batch_manifest",
+            ) as load_manifest:
+                self.window._retry_failed_batch()
+            load_manifest.assert_called_once_with(
+                "failed",
+                path=str(manifest),
+            )
+
+    def test_monitor_names_preview_and_compare_target(self):
+        self.window._append_item("selected.wav")
+        item = self.window.file_list.item(0)
+        self.window.file_list.setCurrentItem(item)
+        item.setSelected(True)
+        self.window._update_preview_ui()
+        self.assertIn("selected.wav", self.window.preview_label.text())
+        self.assertIn("selected.wav", self.window.compare_label.text())
 
     def test_batch_failure_and_cancellation_never_show_complete_or_100(self):
         failed = RenderResult(
@@ -496,6 +606,11 @@ class GuiAccessibilityTests(unittest.TestCase):
                 self.cancelled = True
 
         for attribute, set_running, expected_text in (
+            (
+                "discovery_worker",
+                self.window._set_discovery_ui,
+                "Cancel Scan",
+            ),
             ("worker", self.window._set_processing_ui, "Cancel"),
             (
                 "preview_worker",

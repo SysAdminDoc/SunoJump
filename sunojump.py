@@ -21,6 +21,7 @@ import re, zipfile
 import secrets, uuid
 import platform, traceback
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timezone
 from config_schema import (
@@ -184,6 +185,7 @@ DECODE_TIMEOUT_SECONDS = 120.0
 ROLE_INPUT = Qt.ItemDataRole.UserRole
 ROLE_OUTPUT = Qt.ItemDataRole.UserRole + 1
 ROLE_JOB_ID = Qt.ItemDataRole.UserRole + 2
+ROLE_RESULT = Qt.ItemDataRole.UserRole + 3
 
 PRESETS = {
     'Gentle': {
@@ -4520,6 +4522,125 @@ class ParamRow(QWidget):
 
 
 # ============================================================
+#  File Discovery Worker
+# ============================================================
+@dataclass(frozen=True)
+class FileDiscoveryResult:
+    paths: tuple[str, ...]
+    scanned_entries: int
+    unsupported_count: int
+    errors: tuple[str, ...]
+    error_count: int
+    cancelled: bool
+
+
+class FileDiscoveryWorker(QThread):
+    """Discover supported audio without blocking the Qt event loop."""
+
+    progress_signal = pyqtSignal(int, int, str)
+    discovery_done = pyqtSignal(object)
+
+    def __init__(self, paths, existing_paths=()):
+        super().__init__()
+        self.paths = tuple(str(path) for path in paths if str(path))
+        self.existing_paths = {
+            os.path.normcase(os.path.abspath(str(path)))
+            for path in existing_paths
+        }
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def run(self):
+        discovered = []
+        seen = set(self.existing_paths)
+        scanned_entries = 0
+        unsupported_count = 0
+        errors = []
+        error_count = 0
+
+        def remember_error(message):
+            nonlocal error_count
+            error_count += 1
+            if len(errors) < 20:
+                errors.append(str(message))
+
+        def report(current_path):
+            self.progress_signal.emit(
+                scanned_entries,
+                len(discovered),
+                str(current_path),
+            )
+
+        def consider_file(file_path):
+            nonlocal scanned_entries, unsupported_count
+            if self._cancel_event.is_set():
+                return
+            scanned_entries += 1
+            path = Path(file_path)
+            if path.suffix.lower() not in SUPPORTED_FORMATS:
+                unsupported_count += 1
+                return
+            normalized = os.path.normcase(os.path.abspath(str(path)))
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            discovered.append(str(path.resolve()))
+            if scanned_entries % 100 == 0:
+                report(path)
+
+        for raw_path in self.paths:
+            if self._cancel_event.is_set():
+                break
+            path = Path(raw_path)
+            try:
+                if path.is_file():
+                    consider_file(path)
+                    continue
+                if not path.is_dir():
+                    remember_error(f"Not found or inaccessible: {path}")
+                    continue
+
+                walk_errors = []
+
+                def on_walk_error(exc):
+                    walk_errors.append(exc)
+
+                for root, directories, files in os.walk(
+                    path,
+                    topdown=True,
+                    onerror=on_walk_error,
+                    followlinks=False,
+                ):
+                    if self._cancel_event.is_set():
+                        break
+                    directories.sort(key=str.casefold)
+                    files.sort(key=str.casefold)
+                    for name in files:
+                        if self._cancel_event.is_set():
+                            break
+                        consider_file(Path(root) / name)
+                    report(root)
+                for exc in walk_errors:
+                    remember_error(
+                        f"Cannot scan {getattr(exc, 'filename', path)}: {exc}"
+                    )
+            except OSError as exc:
+                remember_error(f"Cannot scan {path}: {exc}")
+
+        report(self.paths[-1] if self.paths else "")
+        self.discovery_done.emit(FileDiscoveryResult(
+            paths=tuple(discovered),
+            scanned_entries=scanned_entries,
+            unsupported_count=unsupported_count,
+            errors=tuple(errors),
+            error_count=error_count,
+            cancelled=self._cancel_event.is_set(),
+        ))
+
+
+# ============================================================
 #  Main Window
 # ============================================================
 class MainWindow(QMainWindow):
@@ -4531,6 +4652,9 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.preview_worker = None
         self.compare_worker = None
+        self.discovery_worker = None
+        self._last_batch_manifest_path = None
+        self._discovery_terminal_state = "Ready"
         self._preview_tempdir = None  # created lazily on first preview
         self._preview_job_id = None
         self._preview_run_id = None
@@ -4628,6 +4752,7 @@ class MainWindow(QMainWindow):
         self._configure_shortcuts()
         self._configure_tab_order()
         self._restore_session_state()
+        self._update_file_count()
         self._responsive_compact = None
         self._update_responsive_layout()
 
@@ -5523,11 +5648,10 @@ class MainWindow(QMainWindow):
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_retry_failed.setToolTip(
-            "Load a batch manifest and retry only failed/partial jobs"
+            "Retry failed/partial jobs from the latest batch, or choose a "
+            "batch manifest when no recent batch is available"
         )
-        self.btn_retry_failed.clicked.connect(
-            lambda: self._load_batch_manifest("failed")
-        )
+        self.btn_retry_failed.clicked.connect(self._retry_failed_batch)
         self._place_grid(
             self._queue_history_grid,
             (
@@ -5551,6 +5675,16 @@ class MainWindow(QMainWindow):
         )
         self.file_list.itemSelectionChanged.connect(self._update_preview_ui)
         lay.addWidget(self.file_list)
+
+        self.queue_activity_label = QLabel(
+            "Queue is empty. Browse for audio or drop files/folders here."
+        )
+        self.queue_activity_label.setObjectName("hintLabel")
+        self.queue_activity_label.setWordWrap(True)
+        self.queue_activity_label.setAccessibleName(
+            "Queue status: Queue is empty. Add audio to begin."
+        )
+        lay.addWidget(self.queue_activity_label)
 
         hint = QLabel("Drop files here - drag to reorder - WAV, MP3, FLAC, OGG, AIFF, Opus")
         hint.setObjectName("hintLabel")
@@ -6019,34 +6153,106 @@ class MainWindow(QMainWindow):
         )
 
     def _add_files(self, paths):
+        paths = [str(path) for path in paths if str(path)]
+        if not paths:
+            return
+        if self._active_workers():
+            self._log(
+                "Cannot start file discovery while another operation is active."
+            )
+            return
         existing = set()
         for i in range(self.file_list.count()):
             raw = self.file_list.item(i).data(ROLE_INPUT)
             if raw:
                 existing.add(os.path.normcase(os.path.abspath(raw)))
 
-        added = 0
-        for p in paths:
-            p_path = Path(p)
-            if p_path.is_dir():
-                for f in sorted(p_path.rglob('*')):
-                    norm = os.path.normcase(os.path.abspath(str(f)))
-                    if f.suffix.lower() in SUPPORTED_FORMATS and norm not in existing:
-                        self._append_item(str(f))
-                        existing.add(norm)
-                        added += 1
-            elif p_path.is_file():
-                if p_path.suffix.lower() not in SUPPORTED_FORMATS:
-                    self._log(f"Unsupported format: {p_path.name}")
-                    continue
-                norm = os.path.normcase(os.path.abspath(str(p_path)))
-                if norm in existing:
-                    continue
-                self._append_item(str(p_path))
-                existing.add(norm)
-                added += 1
+        self._discovery_terminal_state = "Scan failed"
+        self.discovery_worker = FileDiscoveryWorker(paths, existing)
+        active_worker = self.discovery_worker
+        self.discovery_worker.progress_signal.connect(
+            self._on_discovery_progress
+        )
+        self.discovery_worker.discovery_done.connect(
+            self._on_discovery_done
+        )
+        self.discovery_worker.finished.connect(
+            lambda worker=active_worker:
+                self._on_discovery_thread_finished(worker)
+        )
+        self._set_discovery_ui(True)
+        self.discovery_worker.start()
+
+    def _set_queue_notice(self, text):
+        self.queue_activity_label.setText(str(text))
+        self.queue_activity_label.setAccessibleName(
+            f"Queue status: {text}"
+        )
+
+    def _on_discovery_progress(self, scanned, matched, current_path):
+        current_name = Path(current_path).name if current_path else ""
+        suffix = f" Current folder: {current_name}." if current_name else ""
+        self._set_queue_notice(
+            f"Scanning: {scanned} entries checked, "
+            f"{matched} supported audio files found.{suffix}"
+        )
+
+    def _on_discovery_done(self, result):
+        if not isinstance(result, FileDiscoveryResult):
+            self._discovery_terminal_state = "Scan failed"
+            self._set_queue_notice(
+                "File discovery failed without a typed result. Try the "
+                "folder again or add files individually."
+            )
+            return
+        for path in result.paths:
+            self._append_item(path)
         self._update_file_count()
         self._update_preview_ui()
+
+        if result.cancelled:
+            self._discovery_terminal_state = "Scan cancelled"
+            summary = (
+                f"Scan cancelled after {result.scanned_entries} entries; "
+                f"kept {len(result.paths)} discovered audio files."
+            )
+        elif result.error_count:
+            self._discovery_terminal_state = "Scan partial"
+            summary = (
+                f"Added {len(result.paths)} audio files after checking "
+                f"{result.scanned_entries} entries; "
+                f"{result.error_count} location(s) could not be read."
+            )
+        else:
+            self._discovery_terminal_state = "Ready"
+            summary = (
+                f"Added {len(result.paths)} audio files after checking "
+                f"{result.scanned_entries} entries."
+            )
+        if result.unsupported_count:
+            summary += (
+                f" Skipped {result.unsupported_count} unsupported file(s)."
+            )
+        self._set_queue_notice(summary)
+        self._log(f"Discovery: {summary}")
+        for message in result.errors:
+            self._log(f"Discovery warning: {message}")
+        if result.error_count > len(result.errors):
+            self._log(
+                "Discovery warning: "
+                f"{result.error_count - len(result.errors)} additional "
+                "scan errors were omitted."
+            )
+
+    def _on_discovery_thread_finished(self, worker):
+        if self.discovery_worker is not worker:
+            return
+        self.discovery_worker = None
+        self._set_discovery_ui(
+            False,
+            state=self._discovery_terminal_state,
+        )
+        self._on_render_thread_finished()
 
     def _append_item(self, path, job_id=None):
         item = QListWidgetItem(f"READY    {Path(path).name}")
@@ -6054,6 +6260,7 @@ class MainWindow(QMainWindow):
         item.setData(ROLE_INPUT, path)
         item.setData(ROLE_OUTPUT, None)
         item.setData(ROLE_JOB_ID, job_id or uuid.uuid4().hex)
+        item.setData(ROLE_RESULT, None)
         self.file_list.addItem(item)
 
     def _update_file_count(self):
@@ -6064,6 +6271,18 @@ class MainWindow(QMainWindow):
             f"Queue count: {count_text}"
         )
         self._sync_header_stats()
+        if hasattr(self, "btn_process"):
+            self.btn_process.setEnabled(
+                n > 0 and not bool(self._active_workers())
+            )
+        if (
+            n == 0
+            and hasattr(self, "queue_activity_label")
+            and not bool(self.discovery_worker and self.discovery_worker.isRunning())
+        ):
+            self._set_queue_notice(
+                "Queue is empty. Browse for audio or drop files/folders here."
+            )
 
     # --- Preset slots ---
     def _on_preset(self, name):
@@ -6261,7 +6480,9 @@ class MainWindow(QMainWindow):
             return None
 
     def _set_processing_ui(self, processing, state=None):
-        self.btn_process.setEnabled(not processing)
+        self.btn_process.setEnabled(
+            (not processing) and self.file_list.count() > 0
+        )
         self.btn_cancel.setEnabled(processing)
         self.btn_cancel.setText("Cancel")
         self._set_general_controls(not processing)
@@ -6288,7 +6509,9 @@ class MainWindow(QMainWindow):
         self._set_render_state(
             state or ("Previewing" if running else "Ready")
         )
-        self.btn_process.setEnabled(not running)
+        self.btn_process.setEnabled(
+            (not running) and self.file_list.count() > 0
+        )
         self._set_general_controls(not running)
         self.file_list.setDragEnabled(not running)
 
@@ -6307,9 +6530,28 @@ class MainWindow(QMainWindow):
         self._set_render_state(
             state or ("Comparing" if running else "Ready")
         )
-        self.btn_process.setEnabled(not running)
+        self.btn_process.setEnabled(
+            (not running) and self.file_list.count() > 0
+        )
         self._set_general_controls(not running)
         self.file_list.setDragEnabled(not running)
+
+    def _set_discovery_ui(self, scanning, state=None):
+        self.btn_process.setEnabled(
+            (not scanning) and self.file_list.count() > 0
+        )
+        self.btn_cancel.setEnabled(scanning)
+        self.btn_cancel.setText("Cancel Scan" if scanning else "Cancel")
+        self._set_general_controls(not scanning)
+        self.file_list.setDragEnabled(not scanning)
+        self._set_render_state(
+            state or ("Scanning" if scanning else "Ready")
+        )
+        if scanning:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
 
     def _set_general_controls(self, enabled):
         self.btn_browse.setEnabled(enabled)
@@ -6329,7 +6571,10 @@ class MainWindow(QMainWindow):
     def _on_process(self):
         if self.file_list.count() == 0:
             self._set_render_state("Add files")
-            self._log("No files to process.")
+            self._set_queue_notice(
+                "Queue is empty. Browse for audio or drop files/folders here."
+            )
+            self._log("No files to process. Add audio to the queue first.")
             return
 
         self._stop_playback()
@@ -6396,6 +6641,7 @@ class MainWindow(QMainWindow):
         self._log(f"Starting -- {len(files)} file(s), preset: {label}")
         self._log(f"Output: {out_dir}\n")
         self._log(f"Batch manifest: {manifest_store.path}")
+        self._last_batch_manifest_path = str(manifest_store.path)
         for note in recovery_notes or ():
             self._log(f"Recovery: {note}")
 
@@ -6418,19 +6664,27 @@ class MainWindow(QMainWindow):
         )
         self.worker.start()
 
-    def _load_batch_manifest(self, policy):
-        if self._active_render_workers():
+    def _retry_failed_batch(self):
+        recent = self._last_batch_manifest_path
+        if recent and os.path.isfile(recent):
+            self._load_batch_manifest("failed", path=recent)
+            return
+        self._load_batch_manifest("failed")
+
+    def _load_batch_manifest(self, policy, path=None):
+        if self._active_workers():
             self._log("Cannot load batch history while a render is active.")
             return
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load Batch Manifest",
-            self.output_dir.text().strip() or DEFAULT_OUTPUT,
-            (
-                f"SunoJump Batch (*{BATCH_MANIFEST_SUFFIX});;"
-                "JSON Files (*.json)"
-            ),
-        )
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Load Batch Manifest",
+                self.output_dir.text().strip() or DEFAULT_OUTPUT,
+                (
+                    f"SunoJump Batch (*{BATCH_MANIFEST_SUFFIX});;"
+                    "JSON Files (*.json)"
+                ),
+            )
         if not path:
             return
         try:
@@ -6497,6 +6751,7 @@ class MainWindow(QMainWindow):
     def _on_cancel(self):
         active = []
         for label, worker in (
+            ("file scan", self.discovery_worker),
             ("batch", self.worker),
             ("preview", self.preview_worker),
             ("comparison", self.compare_worker),
@@ -6504,7 +6759,7 @@ class MainWindow(QMainWindow):
             if worker is not None and worker.isRunning():
                 active.append((label, worker))
         if not active:
-            self._log("No active render to cancel.")
+            self._log("No active operation to cancel.")
             return
         self._set_render_state("Cancelling")
         self.btn_cancel.setEnabled(False)
@@ -6537,16 +6792,27 @@ class MainWindow(QMainWindow):
                 )
                 item.setData(ROLE_OUTPUT, result.output_path)
             elif result.state is RenderState.PARTIAL:
+                code = result.error_code.value
+                reason = result.message or code
                 item.setText(
-                    f"PARTIAL   {name} -> {Path(result.output_path).name}"
+                    f"PARTIAL   {name} -> {Path(result.output_path).name} "
+                    f"— {code}: {reason}"
                 )
                 item.setData(ROLE_OUTPUT, result.output_path)
             elif result.state is RenderState.CANCELLED:
-                item.setText(f"CANCELLED {name}")
+                reason = result.message or "cancelled"
+                item.setText(f"CANCELLED {name} — {reason}")
                 item.setData(ROLE_OUTPUT, None)
             else:
-                item.setText(f"FAILED    {name}")
+                code = (
+                    result.error_code.value
+                    if result.error_code is not None
+                    else "unknown_error"
+                )
+                reason = result.message or code
+                item.setText(f"FAILED    {name} — {code}: {reason}")
                 item.setData(ROLE_OUTPUT, None)
+            item.setData(ROLE_RESULT, result)
             detail = format_render_result(result)
             item.setToolTip(detail)
             item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, detail)
@@ -6576,6 +6842,25 @@ class MainWindow(QMainWindow):
             self.progress.setValue(min(self.progress.value(), 99))
             self._batch_terminal_state = "Failed"
             self._set_render_state("Failed")
+        counts = result.counts
+        retryable = counts[RenderState.FAILED.value] + counts[
+            RenderState.PARTIAL.value
+        ]
+        if retryable:
+            self._set_queue_notice(
+                f"{retryable} failed/partial job(s). Each row shows its "
+                "reason; choose Retry Failed to run them again."
+            )
+        elif counts[RenderState.CANCELLED.value]:
+            self._set_queue_notice(
+                f"{counts[RenderState.CANCELLED.value]} job(s) cancelled. "
+                "Use Resume Batch to continue the saved batch."
+            )
+        else:
+            self._set_queue_notice(
+                f"All {counts[RenderState.SUCCEEDED.value]} queued job(s) "
+                "finished successfully."
+            )
         self._log(f"\n{format_batch_result(result)}")
 
     def _on_batch_thread_finished(self, worker):
@@ -7325,6 +7610,7 @@ class MainWindow(QMainWindow):
             self.preview_label.setAccessibleName(
                 "Preview target: Select a file"
             )
+            self.compare_label.setText("A/B: select a file")
             return
 
         orig_path = item.data(ROLE_INPUT)
@@ -7339,6 +7625,11 @@ class MainWindow(QMainWindow):
         self.preview_label.setText(display_name)
         self.preview_label.setAccessibleName(
             f"Preview target: {display_name}"
+        )
+        compare_target = Path(orig_path).name if orig_path else "unknown file"
+        self.compare_label.setText(f"A/B for {compare_target}:")
+        self.compare_label.setAccessibleName(
+            f"Preset comparison target: {compare_target}"
         )
 
         processed_label = "Preview" if is_preview else "Processed"
@@ -7370,8 +7661,17 @@ class MainWindow(QMainWindow):
             if worker is not None and worker.isRunning()
         ]
 
+    def _active_workers(self):
+        workers = list(self._active_render_workers())
+        if (
+            self.discovery_worker is not None
+            and self.discovery_worker.isRunning()
+        ):
+            workers.insert(0, ("file scan", self.discovery_worker))
+        return workers
+
     def _on_render_thread_finished(self):
-        if self._close_pending and not self._active_render_workers():
+        if self._close_pending and not self._active_workers():
             self._close_pending = False
             self._set_render_state("Safe to close")
             self._log(
@@ -7393,7 +7693,7 @@ class MainWindow(QMainWindow):
         return True
 
     def closeEvent(self, event):
-        active = self._active_render_workers()
+        active = self._active_workers()
         if active:
             for _, worker in active:
                 worker.cancel()
@@ -7401,7 +7701,7 @@ class MainWindow(QMainWindow):
             self.btn_cancel.setEnabled(False)
             for _, worker in active:
                 worker.wait(3000)
-            still_running = self._active_render_workers()
+            still_running = self._active_workers()
             if still_running:
                 self._close_pending = True
                 labels = ", ".join(label for label, _ in still_running)

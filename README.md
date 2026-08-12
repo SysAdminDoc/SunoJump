@@ -103,7 +103,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Coupled non-uniform pitch/tempo processing** — varies pitch and timing together while keeping segment boundaries aligned
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
 - **Per-pass toggles and strength sliders** — fine-grained control
-- **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing
+- **Render Preview** — choose any 0.1-second start offset and hear up to 30 seconds with your current settings before committing to full-file processing
 - **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, save a per-file winner, and restore that choice when the source is re-added
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
 - **Responsive, keyboard-complete GUI** — panels reflow down to 560×360, long labels wrap at enlarged font sizes and in RTL layouts, focus is visible, queue actions have keyboard equivalents, and sliders expose displayed units to screen readers
@@ -134,7 +134,7 @@ python sunojump.py
 
 1. Drop audio files into the file list (or click Browse)
 2. Select a preset or customize individual parameters
-3. (Optional) Click **Render Preview** to process the first 30 seconds of the selected file so you can hear the result before committing; adjust settings and re-render as needed
+3. (Optional) Choose a **Start** offset and click **Render Preview** to process up to 30 seconds from that point so you can hear the result before committing; Compare uses the same offset
 4. Choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
 5. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
 

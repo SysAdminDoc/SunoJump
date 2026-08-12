@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import struct
@@ -226,7 +227,12 @@ def inspect_audio_path(
     return details
 
 
-def _validate_audio_info(info: object, preview_seconds: float | None, limits: DecodeLimits) -> dict[str, object]:
+def _validate_audio_info(
+    info: object,
+    preview_seconds: float | None,
+    limits: DecodeLimits,
+    preview_offset_seconds: float = 0.0,
+) -> dict[str, object]:
     frames = int(getattr(info, "frames", 0) or 0)
     samplerate = int(getattr(info, "samplerate", 0) or 0)
     channels = int(getattr(info, "channels", 0) or 0)
@@ -248,15 +254,30 @@ def _validate_audio_info(info: object, preview_seconds: float | None, limits: De
 
     duration = frames / float(samplerate)
     preview_requested = preview_seconds is not None and preview_seconds > 0
+    try:
+        preview_offset = float(preview_offset_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("preview offset must be a finite number") from exc
+    if not math.isfinite(preview_offset) or preview_offset < 0:
+        raise ValueError("preview offset must be a non-negative finite number")
+    if preview_offset and not preview_requested:
+        raise ValueError("preview offset requires a preview duration")
     if not preview_requested and duration > limits.max_duration_seconds:
         raise ValueError(
             f"audio duration too long ({duration / 60.0:.1f} min > "
             f"{limits.max_duration_seconds / 60.0:.1f} min)"
         )
+    start_frame = 0
     read_frames = frames
     if preview_requested:
+        start_frame = int(preview_offset * samplerate)
+        if start_frame >= frames:
+            raise ValueError(
+                f"preview offset {preview_offset:.3f}s is at or beyond "
+                f"the {duration:.3f}s input duration"
+            )
         read_frames = min(
-            frames,
+            frames - start_frame,
             max(1, int(float(preview_seconds) * samplerate)),
         )
     decoded_bytes = read_frames * channels * 8
@@ -270,6 +291,8 @@ def _validate_audio_info(info: object, preview_seconds: float | None, limits: De
         "samplerate": samplerate,
         "channels": channels,
         "duration": duration,
+        "start_frame": start_frame,
+        "preview_offset_seconds": start_frame / float(samplerate),
         "read_frames": read_frames,
         "decoded_bytes": decoded_bytes,
         "format": str(getattr(info, "format", "") or ""),
@@ -384,6 +407,7 @@ def _decode_worker(
     result_path: str,
     preview_seconds: float | None,
     limits: DecodeLimits,
+    preview_offset_seconds: float = 0.0,
 ) -> None:
     try:
         _apply_worker_memory_limit(limits.worker_memory_bytes)
@@ -410,7 +434,12 @@ def _decode_worker(
             )
             source.seek(0)
             info = sf.info(source)
-            metadata = _validate_audio_info(info, preview_seconds, limits)
+            metadata = _validate_audio_info(
+                info,
+                preview_seconds,
+                limits,
+                preview_offset_seconds,
+            )
             source.seek(0)
             read_frames = int(metadata["read_frames"])
             channels = int(metadata["channels"])
@@ -431,6 +460,9 @@ def _decode_worker(
                     raise ValueError(
                         "decoder sample rate changed between inspection and read"
                     )
+                start_frame = int(metadata["start_frame"])
+                if start_frame and int(decoder.seek(start_frame)) != start_frame:
+                    raise ValueError("decoder could not seek to preview offset")
                 while offset < read_frames:
                     block = decoder.read(
                         frames=min(DECODE_CHUNK_FRAMES, read_frames - offset),
@@ -489,6 +521,7 @@ def worker_cli_main(argv: list[str] | None = None) -> int:
             request["result_path"],
             request.get("preview_seconds"),
             limits,
+            request.get("preview_offset_seconds", 0.0),
         )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return 2
@@ -518,6 +551,7 @@ def decode_audio_isolated(
     preview_seconds: float | None,
     limits: DecodeLimits,
     *,
+    preview_offset_seconds: float = 0.0,
     cancel_event: object | None = None,
     _worker_command: list[str] | None = None,
 ) -> tuple[object, int, dict[str, object]]:
@@ -529,6 +563,7 @@ def decode_audio_isolated(
             preview_seconds,
             limits,
             audio_path,
+            preview_offset_seconds=preview_offset_seconds,
             cancel_event=cancel_event,
             _worker_command=_worker_command,
         )
@@ -544,6 +579,7 @@ def decode_audio_isolated_to_path(
     limits: DecodeLimits,
     audio_path: str | os.PathLike[str],
     *,
+    preview_offset_seconds: float = 0.0,
     cancel_event: object | None = None,
     _worker_command: list[str] | None = None,
 ) -> tuple[int, dict[str, object]]:
@@ -565,6 +601,7 @@ def decode_audio_isolated_to_path(
                     "audio_path": str(target),
                     "result_path": result_path,
                     "preview_seconds": preview_seconds,
+                    "preview_offset_seconds": preview_offset_seconds,
                     "limits": asdict(limits),
                 },
                 sort_keys=True,

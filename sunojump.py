@@ -121,7 +121,7 @@ try:
         QPushButton, QLabel, QListWidget, QListWidgetItem,
         QComboBox, QLineEdit, QCheckBox, QSlider, QProgressBar,
         QTextEdit, QFileDialog, QAbstractItemView, QFrame, QSizePolicy,
-        QStyle, QScrollArea, QSpinBox,
+        QStyle, QScrollArea, QSpinBox, QDoubleSpinBox,
         QMessageBox,
     )
     from PyQt6.QtCore import (
@@ -215,6 +215,7 @@ ROLE_OUTPUT = Qt.ItemDataRole.UserRole + 1
 ROLE_JOB_ID = Qt.ItemDataRole.UserRole + 2
 ROLE_RESULT = Qt.ItemDataRole.UserRole + 3
 ROLE_COMPARE_WINNER = Qt.ItemDataRole.UserRole + 4
+ROLE_PREVIEW_OFFSET = Qt.ItemDataRole.UserRole + 5
 
 PRESETS = {
     'Gentle': {
@@ -2003,12 +2004,18 @@ class AudioProcessor:
         return self._cancel_event.is_set()
 
     # --- Main pipeline ---
-    def process(self, input_path, output_path, preview_seconds=None):
+    def process(
+        self,
+        input_path,
+        output_path,
+        preview_seconds=None,
+        preview_offset_seconds=0.0,
+    ):
         """Process audio file.
 
-        If preview_seconds is set and > 0, only the first N seconds of the
-        input are loaded and processed. This keeps render time short enough
-        for interactive preset A/B auditioning.
+        If preview_seconds is set and > 0, only that duration beginning at
+        preview_offset_seconds is loaded and processed. This keeps render
+        time short enough for interactive preset A/B auditioning.
         """
         started_at = time.monotonic()
         input_path = str(input_path)
@@ -2133,6 +2140,7 @@ class AudioProcessor:
                     input_path,
                     preview_seconds,
                     _decode_limits(),
+                    preview_offset_seconds=preview_offset_seconds,
                     cancel_event=self._cancel_event,
                 )
                 self._decode_metadata["processing_strategy"] = "in-memory-preview"
@@ -2194,7 +2202,15 @@ class AudioProcessor:
                 audio = audio[:max_samples] if len(audio) > max_samples else audio
             else:
                 audio = audio[:max_samples] if audio.shape[0] > max_samples else audio
-            self.log(f"  Preview mode: first {preview_seconds:.0f}s ({audio.shape[0]/sr:.1f}s actual)")
+            offset = float(
+                self._decode_metadata.get("preview_offset_seconds", 0.0)
+            )
+            actual_duration = audio.shape[0] / sr
+            self.log(
+                f"  Preview mode: {offset:.1f}s–"
+                f"{offset + actual_duration:.1f}s "
+                f"({actual_duration:.1f}s actual)"
+            )
 
         mono = audio.ndim == 1
         if mono:
@@ -4883,6 +4899,7 @@ class PreviewWorker(QThread):
         job_id,
         run_id,
         duration_sec=PREVIEW_DURATION_SEC,
+        offset_sec=0.0,
     ):
         super().__init__()
         self.input_path = str(input_path)
@@ -4891,6 +4908,7 @@ class PreviewWorker(QThread):
         self.job_id = str(job_id)
         self.run_id = str(run_id)
         self.duration_sec = duration_sec
+        self.offset_sec = float(offset_sec)
         self._cancel_event = threading.Event()
         self.seed = secrets.randbits(64)
 
@@ -4936,6 +4954,7 @@ class PreviewWorker(QThread):
                 self.input_path,
                 out_path,
                 preview_seconds=self.duration_sec,
+                preview_offset_seconds=self.offset_sec,
             )
             if not isinstance(result, RenderResult):
                 raise TypeError("preview processor returned an untyped result")
@@ -4979,6 +4998,7 @@ class PresetCompareWorker(QThread):
         run_id,
         c2pa_policy=C2PA_POLICY_BLOCK,
         duration_sec=COMPARE_DURATION_SEC,
+        offset_sec=0.0,
     ):
         super().__init__()
         self.input_path = str(input_path)
@@ -4986,6 +5006,7 @@ class PresetCompareWorker(QThread):
         self.job_id = str(job_id)
         self.run_id = str(run_id)
         self.duration_sec = duration_sec
+        self.offset_sec = float(offset_sec)
         if c2pa_policy not in C2PA_POLICIES:
             raise ValueError(f"unsupported C2PA policy: {c2pa_policy}")
         self.c2pa_policy = c2pa_policy
@@ -5075,7 +5096,10 @@ class PresetCompareWorker(QThread):
             )
             try:
                 result = proc.process(
-                    self.input_path, out_path, preview_seconds=self.duration_sec,
+                    self.input_path,
+                    out_path,
+                    preview_seconds=self.duration_sec,
+                    preview_offset_seconds=self.offset_sec,
                 )
                 if not isinstance(result, RenderResult):
                     raise TypeError("compare processor returned an untyped result")
@@ -5642,10 +5666,12 @@ class MainWindow(QMainWindow):
         self._preview_job_id = None
         self._preview_run_id = None
         self._preview_terminal_state = "Failed"
+        self._preview_offset_seconds = 0.0
         self._compare_results = {}  # preset_name -> path
         self._compare_job_id = None
         self._compare_run_id = None
         self._compare_terminal_state = "Failed"
+        self._compare_offset_seconds = 0.0
         self._batch_terminal_state = "Failed"
         self._batch_result_received = False
         self._deferred_preview_cleanup = set()
@@ -6028,7 +6054,9 @@ class MainWindow(QMainWindow):
                     (self.btn_compare, 0, 1, 1, 1),
                     (self.btn_play_orig, 1, 0, 1, 1),
                     (self.btn_play_proc, 1, 1, 1, 1),
-                    (self.preview_label, 2, 0, 1, 2),
+                    (self.preview_offset_label, 2, 0, 1, 1),
+                    (self.preview_offset_spin, 2, 1, 1, 1),
+                    (self.preview_label, 3, 0, 1, 2),
                 )
                 stretches = ((0, 1), (1, 1))
             else:
@@ -6037,9 +6065,11 @@ class MainWindow(QMainWindow):
                     (self.btn_compare, 0, 1, 1, 1),
                     (self.btn_play_orig, 0, 2, 1, 1),
                     (self.btn_play_proc, 0, 3, 1, 1),
-                    (self.preview_label, 0, 4, 1, 1),
+                    (self.preview_offset_label, 0, 4, 1, 1),
+                    (self.preview_offset_spin, 0, 5, 1, 1),
+                    (self.preview_label, 1, 0, 1, 6),
                 )
-                stretches = ((4, 1),)
+                stretches = ((5, 1),)
             self._place_grid(
                 self._preview_controls_grid,
                 placements,
@@ -6305,6 +6335,14 @@ class MainWindow(QMainWindow):
                 "is selected. Shortcut Control plus Shift plus P."
             ),
         )
+        _set_accessibility(
+            self.preview_offset_spin,
+            "Preview start offset",
+            (
+                "Choose where preview and preset-comparison clips begin, "
+                "from 0 to 7199 seconds."
+            ),
+        )
         _set_accessibility(self.btn_play_orig, "Play original", "Play the selected original file; disabled until audio is available.")
         _set_accessibility(self.btn_play_proc, "Play processed", "Play the selected processed file; disabled until output is available.")
         _set_accessibility(self.btn_open_log, "Open run log", "Open the latest persistent run log; disabled until a run starts.")
@@ -6476,6 +6514,7 @@ class MainWindow(QMainWindow):
             self.btn_compare,
             self.btn_play_orig,
             self.btn_play_proc,
+            self.preview_offset_spin,
             self.btn_open_log,
             self.btn_export_support,
             self.btn_clear_logs,
@@ -6528,6 +6567,16 @@ class MainWindow(QMainWindow):
             )
         except (TypeError, ValueError):
             self.worker_count_spin.setValue(DEFAULT_PARALLEL_FILE_WORKERS)
+        try:
+            preview_offset = float(settings.value(
+                "session/preview_offset_seconds",
+                0.0,
+            ))
+            if not np.isfinite(preview_offset) or preview_offset < 0:
+                raise ValueError("invalid preview offset")
+            self.preview_offset_spin.setValue(preview_offset)
+        except (TypeError, ValueError):
+            self.preview_offset_spin.setValue(0.0)
         preset = settings.value("session/preset")
         if preset and isinstance(preset, str):
             if preset in PRESETS:
@@ -6581,6 +6630,10 @@ class MainWindow(QMainWindow):
         settings.setValue(
             "session/parallel_file_workers",
             self.worker_count_spin.value(),
+        )
+        settings.setValue(
+            "session/preview_offset_seconds",
+            self.preview_offset_spin.value(),
         )
         settings.setValue("session/preset", self.preset_combo.currentText())
         settings.setValue(
@@ -7080,7 +7133,8 @@ class MainWindow(QMainWindow):
         )
         self.btn_render_preview.setToolTip(
             _tr(
-                "Process the first {seconds} seconds of the selected file "
+                "Process {seconds} seconds of the selected file from the "
+                "chosen start offset "
                 "with current settings so you can hear the result before committing.",
                 seconds=int(PREVIEW_DURATION_SEC),
             )
@@ -7094,7 +7148,8 @@ class MainWindow(QMainWindow):
         )
         self.btn_compare.setToolTip(
             _tr(
-                "Render a {seconds}s sample with each built-in preset so you "
+                "Render a {seconds}s sample from the chosen start offset "
+                "with each built-in preset so you "
                 "can A/B/C/D audition them, then apply your favorite.",
                 seconds=int(COMPARE_DURATION_SEC),
             )
@@ -7115,6 +7170,19 @@ class MainWindow(QMainWindow):
         )
         self.btn_play_proc.clicked.connect(lambda: self._toggle_play('processed'))
         self.btn_play_proc.setEnabled(False)
+        self.preview_offset_label = QLabel(_tr("Start:"))
+        self.preview_offset_spin = QDoubleSpinBox()
+        self.preview_offset_spin.setRange(
+            0.0,
+            MAX_AUDIO_DURATION_SECONDS - 1.0,
+        )
+        self.preview_offset_spin.setDecimals(1)
+        self.preview_offset_spin.setSingleStep(5.0)
+        self.preview_offset_spin.setSuffix(_tr(" s"))
+        self.preview_offset_label.setBuddy(self.preview_offset_spin)
+        self.preview_offset_spin.setToolTip(
+            _tr("Start time for Preview and Compare clips")
+        )
         self.preview_label = QLabel(_tr("Select a file"))
         self.preview_label.setObjectName("nowPlaying")
         self.preview_label.setWordWrap(True)
@@ -7125,9 +7193,11 @@ class MainWindow(QMainWindow):
                 (self.btn_compare, 0, 1, 1, 1),
                 (self.btn_play_orig, 0, 2, 1, 1),
                 (self.btn_play_proc, 0, 3, 1, 1),
-                (self.preview_label, 0, 4, 1, 1),
+                (self.preview_offset_label, 0, 4, 1, 1),
+                (self.preview_offset_spin, 0, 5, 1, 1),
+                (self.preview_label, 1, 0, 1, 6),
             ),
-            ((4, 1),),
+            ((5, 1),),
         )
         outer.addLayout(self._preview_controls_grid)
 
@@ -7467,6 +7537,7 @@ class MainWindow(QMainWindow):
         item.setData(ROLE_JOB_ID, job_id or uuid.uuid4().hex)
         item.setData(ROLE_RESULT, None)
         item.setData(ROLE_COMPARE_WINNER, self._compare_winner_for_path(path))
+        item.setData(ROLE_PREVIEW_OFFSET, None)
         self._decorate_compare_winner_item(item)
         self.file_list.addItem(item)
 
@@ -7781,6 +7852,7 @@ class MainWindow(QMainWindow):
         self.btn_clear_logs.setEnabled(enabled)
         self.retention_spin.setEnabled(enabled)
         self.worker_count_spin.setEnabled(enabled)
+        self.preview_offset_spin.setEnabled(enabled)
         self.redact_logs_check.setEnabled(enabled)
 
     def _on_process(self):
@@ -7815,6 +7887,7 @@ class MainWindow(QMainWindow):
             })
             # Clear any previous processed-path marker
             item.setData(ROLE_OUTPUT, None)
+            item.setData(ROLE_PREVIEW_OFFSET, None)
 
         out_dir = self.output_dir.text().strip() or DEFAULT_OUTPUT
         try:
@@ -8036,6 +8109,7 @@ class MainWindow(QMainWindow):
                 item.setText(f"FAILED    {name} — {code}: {reason}")
                 item.setData(ROLE_OUTPUT, None)
             item.setData(ROLE_RESULT, result)
+            item.setData(ROLE_PREVIEW_OFFSET, None)
             detail = format_render_result(result)
             item.setToolTip(detail)
             item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, detail)
@@ -8439,6 +8513,7 @@ class MainWindow(QMainWindow):
             self._queue_preview_cleanup(prev)
             self._flush_deferred_preview_cleanup()
             item.setData(ROLE_OUTPUT, None)
+            item.setData(ROLE_PREVIEW_OFFSET, None)
 
         params = self._authorize_source_provenance(
             [input_path],
@@ -8446,8 +8521,13 @@ class MainWindow(QMainWindow):
         )
         if params is None:
             return
+        self._preview_offset_seconds = self.preview_offset_spin.value()
+        preview_log_params = {
+            **params,
+            "preview_offset_seconds": self._preview_offset_seconds,
+        }
         self._start_run_log(
-            "gui-preview", [input_path], self._preview_tempdir, params,
+            "gui-preview", [input_path], self._preview_tempdir, preview_log_params,
             self.preset_combo.currentText(),
         )
         self._preview_job_id = self._ensure_item_job_id(item)
@@ -8455,7 +8535,8 @@ class MainWindow(QMainWindow):
         self._preview_terminal_state = "Failed"
         self._set_preview_running_ui(True)
         self._log(
-            f"Rendering {int(PREVIEW_DURATION_SEC)}s preview of "
+            f"Rendering {int(PREVIEW_DURATION_SEC)}s preview at "
+            f"{self._preview_offset_seconds:.1f}s of "
             f"{Path(input_path).name} with current settings..."
         )
 
@@ -8465,6 +8546,7 @@ class MainWindow(QMainWindow):
             self._preview_tempdir,
             self._preview_job_id,
             self._preview_run_id,
+            offset_sec=self._preview_offset_seconds,
         )
         active_worker = self.preview_worker
         self.preview_worker.log_signal.connect(self._log)
@@ -8514,6 +8596,7 @@ class MainWindow(QMainWindow):
 
         self._preview_terminal_state = "Ready"
         item.setData(ROLE_OUTPUT, result.output_path)
+        item.setData(ROLE_PREVIEW_OFFSET, self._preview_offset_seconds)
         self._update_preview_ui()
         self._log(f"Preview ready: {Path(result.output_path).name}")
 
@@ -8576,6 +8659,7 @@ class MainWindow(QMainWindow):
         self._compare_job_id = self._ensure_item_job_id(item)
         self._compare_run_id = uuid.uuid4().hex
         self._compare_terminal_state = "Failed"
+        self._compare_offset_seconds = self.preview_offset_spin.value()
         self.compare_panel.setVisible(True)
         self._update_compare_history_label(item)
         for name, btn in self.compare_buttons.items():
@@ -8590,12 +8674,14 @@ class MainWindow(QMainWindow):
             {
                 'presets': list(PRESETS.keys()),
                 'duration_sec': COMPARE_DURATION_SEC,
+                'preview_offset_seconds': self._compare_offset_seconds,
                 'c2pa_policy': policy_params["c2pa_policy"],
             },
             "Compare Presets",
         )
         self._log(
-            f"Rendering {int(COMPARE_DURATION_SEC)}s sample per preset "
+            f"Rendering {int(COMPARE_DURATION_SEC)}s sample at "
+            f"{self._compare_offset_seconds:.1f}s per preset "
             f"({len(PRESETS)} presets)..."
         )
 
@@ -8605,6 +8691,7 @@ class MainWindow(QMainWindow):
             self._compare_job_id,
             self._compare_run_id,
             c2pa_policy=policy_params["c2pa_policy"],
+            offset_sec=self._compare_offset_seconds,
         )
         active_worker = self.compare_worker
         self.compare_worker.log_signal.connect(self._log)
@@ -8766,6 +8853,18 @@ class MainWindow(QMainWindow):
             self.player.stop()
             self.player.setSource(QUrl.fromLocalFile(os.path.abspath(path)))
             self.player.play()
+            if source == 'original':
+                if (
+                    self.compare_panel.isVisible()
+                    and item.data(ROLE_JOB_ID) == self._compare_job_id
+                    and self._compare_results
+                ):
+                    preview_offset = self._compare_offset_seconds
+                else:
+                    preview_offset = item.data(ROLE_PREVIEW_OFFSET)
+                if preview_offset is None:
+                    preview_offset = self.preview_offset_spin.value()
+                self.player.setPosition(max(0, int(float(preview_offset) * 1000)))
             self._playing_source = source
             self._playing_compare_preset = None
         finally:
@@ -8862,7 +8961,11 @@ class MainWindow(QMainWindow):
 
         display_name = Path(orig_path).name if orig_path else ""
         if is_preview and proc_ok:
-            display_name = f"{display_name}  (preview: {int(PREVIEW_DURATION_SEC)}s)"
+            preview_offset = float(item.data(ROLE_PREVIEW_OFFSET) or 0.0)
+            display_name = (
+                f"{display_name}  (preview from {preview_offset:.1f}s, "
+                f"up to {int(PREVIEW_DURATION_SEC)}s)"
+            )
         self.preview_label.setText(display_name)
         self.preview_label.setAccessibleName(
             _tr("Preview target: {name}", name=display_name)

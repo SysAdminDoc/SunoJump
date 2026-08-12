@@ -59,6 +59,7 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.btn_compare,
             self.window.btn_play_orig,
             self.window.btn_play_proc,
+            self.window.preview_offset_spin,
             self.window.btn_open_log,
             self.window.btn_export_support,
             self.window.btn_clear_logs,

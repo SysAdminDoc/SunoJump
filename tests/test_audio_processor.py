@@ -342,6 +342,42 @@ class AudioPreflightTests(unittest.TestCase):
         )
         self.assertEqual(metadata["read_frames"], 96000)
 
+    def test_processor_preview_renders_from_arbitrary_offset(self):
+        samplerate = 8000
+        source = np.concatenate([
+            np.full(samplerate, -0.25, dtype=np.float64),
+            np.full(samplerate, 0.25, dtype=np.float64),
+            np.full(samplerate, -0.5, dtype=np.float64),
+        ])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "input.wav"
+            output_path = Path(temp_dir) / "preview.wav"
+            sf.write(input_path, source, samplerate, subtype="PCM_16")
+
+            result = AudioProcessor(
+                {"strip_metadata": True, "output_format": "wav"},
+                seed=123,
+            ).process(
+                input_path,
+                output_path,
+                preview_seconds=0.5,
+                preview_offset_seconds=1.25,
+            )
+
+            rendered, rate = sf.read(output_path)
+            sidecar = json.loads(
+                output_path.with_suffix(".sidecar.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(result.state, sunojump.RenderState.SUCCEEDED)
+        self.assertEqual(rate, samplerate)
+        self.assertEqual(rendered.shape, (samplerate // 2,))
+        self.assertGreater(float(np.mean(rendered)), 0.24)
+        self.assertEqual(sidecar["decode"]["start_frame"], 10000)
+        self.assertEqual(sidecar["decode"]["preview_offset_seconds"], 1.25)
+
 
 class FailClosedProcessingTests(unittest.TestCase):
     def test_enabled_pass_failure_aborts_without_output(self):

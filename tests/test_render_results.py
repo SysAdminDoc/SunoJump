@@ -684,6 +684,65 @@ class PreviewAndCompareWorkerOutcomeTests(unittest.TestCase):
             len(sunojump.PRESETS),
         )
 
+    def test_preview_and_compare_forward_the_selected_offset(self):
+        original_processor = sunojump.AudioProcessor
+        calls = []
+
+        class FakeProcessor:
+            def __init__(self, _params, **_kwargs):
+                pass
+
+            def process(
+                self,
+                input_path,
+                _output_path,
+                preview_seconds=None,
+                preview_offset_seconds=0.0,
+            ):
+                calls.append((
+                    str(input_path),
+                    preview_seconds,
+                    preview_offset_seconds,
+                ))
+                return RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=str(input_path),
+                    error_code=RenderErrorCode.DECODE_FAILED,
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            preview = sunojump.PreviewWorker(
+                "input.wav",
+                {"strip_metadata": True},
+                temp_dir,
+                "job-preview",
+                "run-preview",
+                offset_sec=12.5,
+            )
+            compare = sunojump.PresetCompareWorker(
+                "input.wav",
+                temp_dir,
+                "job-compare",
+                "run-compare",
+                offset_sec=42.25,
+            )
+            sunojump.AudioProcessor = FakeProcessor
+            try:
+                preview.run()
+                compare.run()
+            finally:
+                sunojump.AudioProcessor = original_processor
+
+        self.assertEqual(calls[0][1:], (sunojump.PREVIEW_DURATION_SEC, 12.5))
+        self.assertEqual(len(calls), 1 + len(sunojump.PRESETS))
+        self.assertTrue(
+            all(
+                duration == sunojump.COMPARE_DURATION_SEC
+                and offset == 42.25
+                for _, duration, offset in calls[1:]
+            )
+        )
+
     @staticmethod
     def _tone(sr=8000):
         t = np.arange(sr, dtype=np.float64) / sr

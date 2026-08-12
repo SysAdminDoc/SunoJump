@@ -324,6 +324,8 @@ class CustomSessionTests(unittest.TestCase):
             first.param_rows["pitch_range"].set_enabled_check(False)
             first.param_rows["noise_level"].set_value(-43.0)
             first.meta_check.setChecked(False)
+            first.preview_offset_spin.setValue(123.5)
+            first.worker_count_spin.setValue(3)
             self.assertEqual(first.preset_combo.currentText(), "Custom")
             expected = first._get_params()
             first._save_session_state()
@@ -344,6 +346,8 @@ class CustomSessionTests(unittest.TestCase):
                     "Custom",
                 )
                 self.assertEqual(second._get_params(), expected)
+                self.assertEqual(second.preview_offset_spin.value(), 123.5)
+                self.assertEqual(second.worker_count_spin.value(), 3)
             finally:
                 second.close()
 

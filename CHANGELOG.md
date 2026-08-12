@@ -23,6 +23,8 @@
 - **Concurrent batch durability.** Batch-manifest attempts and terminal evidence are serialized through a re-entrant lock, preserving every distinct job update under parallel completion and cancellation.
 - **Per-file A/B winners.** Saving the currently playing comparison preset now records a bounded per-file winner, restores it when that source is re-added, annotates the queue row, and applies the winner to Process All.
 - **Private comparison history.** The 200-entry settings history keys files by a normalized-path SHA-256 and stores only preset/timestamp metadata, never the source path itself; malformed or future history schemas fail empty.
+- **Arbitrary preview offsets.** The Monitor panel now selects any 0.1-second start point for Preview and A/B/C/D Compare clips; isolated decoding seeks before bounded reads, original playback aligns to the rendered segment, and the offset persists between sessions.
+- **Offset replay evidence.** Preview sidecars record the exact source start frame and actual offset, while out-of-range offsets fail closed without creating output.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

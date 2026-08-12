@@ -144,6 +144,45 @@ class IsolatedDecodeTests(unittest.TestCase):
             self.assertEqual(metadata["decode_strategy"], "chunked-npy-memmap")
             decoded._mmap.close()
 
+    def test_decode_preview_starts_at_requested_offset(self):
+        samplerate = 8000
+        source = np.linspace(-0.8, 0.8, samplerate * 3, dtype=np.float64)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "input.wav"
+            sf.write(input_path, source, samplerate, subtype="PCM_16")
+            encoded, _ = sf.read(input_path, dtype="float64")
+
+            decoded, decoded_rate, metadata = safe_audio.decode_audio_isolated(
+                input_path,
+                0.5,
+                sunojump._decode_limits(),
+                preview_offset_seconds=1.25,
+            )
+
+        start = int(1.25 * samplerate)
+        self.assertEqual(decoded_rate, samplerate)
+        self.assertEqual(decoded.shape, (samplerate // 2,))
+        np.testing.assert_allclose(
+            decoded,
+            encoded[start:start + samplerate // 2],
+            rtol=0,
+            atol=0,
+        )
+        self.assertEqual(metadata["start_frame"], start)
+        self.assertEqual(metadata["preview_offset_seconds"], 1.25)
+
+    def test_decode_preview_rejects_offset_beyond_duration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "input.wav"
+            sf.write(input_path, np.ones(8000) * 0.1, 8000)
+            with self.assertRaisesRegex(ValueError, "at or beyond"):
+                safe_audio.decode_audio_isolated(
+                    input_path,
+                    0.5,
+                    sunojump._decode_limits(),
+                    preview_offset_seconds=1.0,
+                )
+
     def test_decode_honors_cancellation_before_spawn(self):
         cancel = threading.Event()
         cancel.set()

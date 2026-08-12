@@ -267,21 +267,29 @@ class CliConfigurationTests(unittest.TestCase):
         default = parser.parse_args(["--input", "unused.wav"])
         enabled = parser.parse_args([
             "--input", "unused.wav", "--spectrogram", "--loudness-report",
+            "--signal-report",
         ])
 
         self.assertFalse(default.spectrogram)
         self.assertTrue(enabled.spectrogram)
         self.assertTrue(enabled.loudness_report)
+        self.assertTrue(enabled.signal_report)
         self.assertEqual(
             sunojump._validated_audit_options({
                 "spectrogram": True,
                 "loudness": True,
+                "signal_statistics": True,
             }),
-            {"spectrogram": True, "loudness": True},
+            {
+                "spectrogram": True,
+                "loudness": True,
+                "signal_statistics": True,
+            },
         )
         for invalid in (
             {"spectrogram": "true"},
             {"loudness": "true"},
+            {"signal_statistics": "true"},
             {"unknown": True},
             [],
         ):

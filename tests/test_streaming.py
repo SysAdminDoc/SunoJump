@@ -39,7 +39,11 @@ class BoundedStreamingTests(unittest.TestCase):
                 },
                 log_fn=logs.append,
                 seed=123,
-                audit_options={"spectrogram": True, "loudness": True},
+                audit_options={
+                    "spectrogram": True,
+                    "loudness": True,
+                    "signal_statistics": True,
+                },
                 streaming_threshold_bytes=1,
                 streaming_chunk_seconds=4.0,
             )
@@ -78,6 +82,10 @@ class BoundedStreamingTests(unittest.TestCase):
             self.assertEqual(
                 result.artifacts[1]["kind"],
                 "loudness_comparison",
+            )
+            self.assertEqual(
+                result.artifacts[2]["kind"],
+                "signal_statistics_comparison",
             )
 
     def test_streaming_supports_mono_metadata_only_render(self):

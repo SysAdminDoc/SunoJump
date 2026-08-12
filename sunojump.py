@@ -36,6 +36,7 @@ from config_schema import (
 )
 from audio_reports import (
     measure_loudness_comparison,
+    measure_signal_statistics_comparison,
     render_spectrogram_comparison_png,
 )
 from batch_manifest import (
@@ -1433,6 +1434,11 @@ def _loudness_report_path_for_output(output_path):
     return path.with_suffix(".loudness.json")
 
 
+def _signal_report_path_for_output(output_path):
+    path = Path(output_path)
+    return path.with_suffix(".signal.json")
+
+
 def _reservation_path_for_output(output_path):
     path = Path(output_path)
     return path.with_name(f".{path.name}.sunojump-reservation")
@@ -1446,6 +1452,7 @@ def _output_candidate_is_occupied(candidate, used_paths):
         or os.path.lexists(_sidecar_path_for_output(candidate))
         or os.path.lexists(_spectrogram_path_for_output(candidate))
         or os.path.lexists(_loudness_report_path_for_output(candidate))
+        or os.path.lexists(_signal_report_path_for_output(candidate))
         or os.path.lexists(_reservation_path_for_output(candidate))
     )
 
@@ -1577,6 +1584,7 @@ def _reserve_output_path(input_path, output_dir, ext, used_paths=None):
             or os.path.lexists(_sidecar_path_for_output(candidate))
             or os.path.lexists(_spectrogram_path_for_output(candidate))
             or os.path.lexists(_loudness_report_path_for_output(candidate))
+            or os.path.lexists(_signal_report_path_for_output(candidate))
         ):
             reservation.release()
             continue
@@ -2187,6 +2195,35 @@ class AudioProcessor:
             "metadata": report,
         },)
 
+    def _write_signal_statistics_artifact(
+        self,
+        output_path,
+        before,
+        after,
+        sample_rate,
+    ):
+        if not self._audit_options["signal_statistics"]:
+            return ()
+        self.log("Measuring crest factor and stereo width...")
+        report = measure_signal_statistics_comparison(
+            before,
+            after,
+            sample_rate,
+        )
+        artifact_path = _signal_report_path_for_output(output_path)
+        digest = _write_json_atomic_no_replace(artifact_path, report)
+        self.log(
+            f"Signal statistics written atomically: {artifact_path.name} "
+            f"(sha256:{digest[:12]})"
+        )
+        return ({
+            "kind": "signal_statistics_comparison",
+            "path": str(artifact_path),
+            "media_type": "application/json",
+            "sha256": digest,
+            "metadata": report,
+        },)
+
     # --- Main pipeline ---
     def process(
         self,
@@ -2687,6 +2724,12 @@ class AudioProcessor:
                 sr,
             )
             artifacts += self._write_loudness_artifact(
+                output_path,
+                original,
+                audio,
+                sr,
+            )
+            artifacts += self._write_signal_statistics_artifact(
                 output_path,
                 original,
                 audio,
@@ -3371,6 +3414,12 @@ class AudioProcessor:
                     sample_rate,
                 )
                 artifacts += self._write_loudness_artifact(
+                    output_path,
+                    original,
+                    current,
+                    sample_rate,
+                )
+                artifacts += self._write_signal_statistics_artifact(
                     output_path,
                     original,
                     current,
@@ -4840,10 +4889,16 @@ def _validated_parallel_workers(value):
 
 def _validated_audit_options(value=None):
     if value is None:
-        return {"spectrogram": False, "loudness": False}
+        return {
+            "spectrogram": False,
+            "loudness": False,
+            "signal_statistics": False,
+        }
     if not isinstance(value, dict):
         raise ConfigurationError("audit options must be an object")
-    unknown = sorted(set(value) - {"spectrogram", "loudness"})
+    unknown = sorted(
+        set(value) - {"spectrogram", "loudness", "signal_statistics"}
+    )
     if unknown:
         raise ConfigurationError(
             "unknown audit option(s): " + ", ".join(unknown)
@@ -4851,6 +4906,7 @@ def _validated_audit_options(value=None):
     normalized = {
         "spectrogram": False,
         "loudness": False,
+        "signal_statistics": False,
         **value,
     }
     for key, enabled in normalized.items():
@@ -6762,6 +6818,15 @@ class MainWindow(QMainWindow):
                 "loudness and true-peak JSON report for each usable render."
             ),
         )
+        _set_accessibility(
+            self.signal_report_check,
+            "Export crest-factor and stereo-width report",
+            (
+                "Write a bounded before and after crest-factor, mid-side "
+                "width, and interchannel-correlation JSON report for each "
+                "usable render."
+            ),
+        )
         _set_accessibility(self.btn_open_output, "Open output folder", "Open the current output directory in the file manager.")
         _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
         _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
@@ -6873,6 +6938,7 @@ class MainWindow(QMainWindow):
             self.worker_count_spin,
             self.spectrogram_check,
             self.loudness_report_check,
+            self.signal_report_check,
             self.btn_open_output,
             self.output_dir,
             self.btn_browse_output,
@@ -6923,6 +6989,15 @@ class MainWindow(QMainWindow):
                 "1", "true", "yes", "on",
             }
         self.loudness_report_check.setChecked(bool(loudness_report))
+        signal_report = settings.value(
+            "session/export_signal_report",
+            False,
+        )
+        if isinstance(signal_report, str):
+            signal_report = signal_report.strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        self.signal_report_check.setChecked(bool(signal_report))
         try:
             preview_offset = float(settings.value(
                 "session/preview_offset_seconds",
@@ -6994,6 +7069,10 @@ class MainWindow(QMainWindow):
         settings.setValue(
             "session/export_loudness_report",
             self.loudness_report_check.isChecked(),
+        )
+        settings.setValue(
+            "session/export_signal_report",
+            self.signal_report_check.isChecked(),
         )
         settings.setValue(
             "session/preview_offset_seconds",
@@ -7471,6 +7550,17 @@ class MainWindow(QMainWindow):
             )
         )
         lay.addWidget(self.loudness_report_check)
+        self.signal_report_check = QCheckBox(
+            _tr("Export crest + stereo-width JSON")
+        )
+        self.signal_report_check.setChecked(False)
+        self.signal_report_check.setToolTip(
+            _tr(
+                "Write before/after crest factor, mid-side width, and "
+                "interchannel correlation beside each usable output"
+            )
+        )
+        lay.addWidget(self.signal_report_check)
 
         self._directory_controls_grid = QGridLayout()
         self._directory_controls_grid.setSpacing(8)
@@ -8405,6 +8495,7 @@ class MainWindow(QMainWindow):
         self.worker_count_spin.setEnabled(enabled)
         self.spectrogram_check.setEnabled(enabled)
         self.loudness_report_check.setEnabled(enabled)
+        self.signal_report_check.setEnabled(enabled)
         self.preview_offset_spin.setEnabled(enabled)
         if enabled:
             self._sync_queue_preset_control()
@@ -8464,6 +8555,7 @@ class MainWindow(QMainWindow):
                 audit_options={
                     "spectrogram": self.spectrogram_check.isChecked(),
                     "loudness": self.loudness_report_check.isChecked(),
+                    "signal_statistics": self.signal_report_check.isChecked(),
                 },
             )
         except (OSError, BatchManifestError) as exc:
@@ -8601,6 +8693,9 @@ class MainWindow(QMainWindow):
         self.format_combo.setCurrentText(output_format)
         self.spectrogram_check.setChecked(audit_options["spectrogram"])
         self.loudness_report_check.setChecked(audit_options["loudness"])
+        self.signal_report_check.setChecked(
+            audit_options["signal_statistics"]
+        )
         self.output_dir.setText(store.output_dir)
         self.preset_combo.blockSignals(True)
         self.preset_combo.setCurrentText("Custom")
@@ -9832,6 +9927,14 @@ def _build_cli_parser():
         ),
     )
     parser.add_argument(
+        '--signal-report',
+        action='store_true',
+        help=_tr(
+            'Export a bounded before/after crest-factor and stereo-width '
+            'JSON report for each usable render'
+        ),
+    )
+    parser.add_argument(
         '--manifest',
         default=None,
         help=_tr('Path for the new atomic batch manifest'),
@@ -10439,6 +10542,7 @@ def cli_main():
     audit_options = _validated_audit_options({
         "spectrogram": bool(args.spectrogram),
         "loudness": bool(args.loudness_report),
+        "signal_statistics": bool(args.signal_report),
     })
     if args.resume:
         forbidden = {
@@ -10452,6 +10556,7 @@ def cli_main():
             "--pitch", "--tempo", "--phase", "--stereo", "--noise",
             "--dynamics", "--humanize", "--reencode", "--spectrogram",
             "--loudness-report",
+            "--signal-report",
         }
         if _argv_uses_any_option(sys.argv[1:], forbidden):
             parser.error(
@@ -10865,6 +10970,7 @@ if __name__ == '__main__':
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
         '--manifest', '--resume', '--retry', '--compute', '--workers',
         '--watch', '--result-format', '--spectrogram', '--loudness-report',
+        '--signal-report',
     }
     if len(sys.argv) > 1 and _argv_uses_any_option(
         sys.argv[1:],

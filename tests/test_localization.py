@@ -63,6 +63,7 @@ class LocalizationTests(unittest.TestCase):
         self.assertIn("--result-format", help_text)
         self.assertIn("--spectrogram", help_text)
         self.assertIn("--loudness-report", help_text)
+        self.assertIn("--signal-report", help_text)
 
     def test_pseudo_rtl_compact_gui_has_no_horizontal_clipping(self):
         configure_locale("qps-ploc", self.app)

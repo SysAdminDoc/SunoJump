@@ -127,6 +127,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Versioned signal-change metric** — inspect a sample-domain difference value with explicit scope
 - **Before/after spectrogram export** — opt in to a bounded, full-file, side-by-side PNG with a shared dBFS color scale and hash-linked result/manifest evidence
 - **BS.1770-5 loudness audit** — opt in to a bounded before/after integrated-loudness and oversampled true-peak JSON report with explicit deltas and hash-linked evidence
+- **Crest and stereo-width audit** — opt in to bounded before/after crest factor, mid-side energy ratio, and interchannel-correlation JSON evidence with explicit deltas
 
 ## Usage
 
@@ -167,6 +168,9 @@ python sunojump.py -i ./my_songs --spectrogram
 # Export before/after integrated loudness and true-peak evidence
 python sunojump.py -i ./my_songs --loudness-report
 
+# Export crest-factor and stereo-width evidence
+python sunojump.py -i ./my_songs --signal-report
+
 # Batch process a directory
 python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
 
@@ -203,6 +207,7 @@ python sunojump.py --locale en
 | `--result-format` | `human` for stderr logs, `json` for one batch document, or `jsonl` for per-file records plus a final batch record | human |
 | `--spectrogram` | Export a before/after side-by-side PNG beside each usable output | off |
 | `--loudness-report` | Export an ITU-R BS.1770-5 before/after integrated-loudness and true-peak JSON report | off |
+| `--signal-report` | Export before/after crest-factor, mid-side-width, and stereo-correlation JSON evidence | off |
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
@@ -264,6 +269,8 @@ CLI exit status is `0` only when every job succeeds, `1` when a batch has at lea
 Spectrogram export uses uniformly distributed Hann-window snapshots across the full file, at most a 2048-point FFT per image column, a logarithmic 20 Hz–20 kHz (or Nyquist) axis, and one fixed -100–0 dBFS color scale for both panels. The PNG is atomically published as `<output-stem>.spectrogram.png`; its SHA-256 and sampling metadata appear in JSON/JSONL results and batch manifests. A missing or changed audit image invalidates a previously successful manifest during recovery. Report failure leaves validated audio and its replay sidecar usable but returns a typed partial result.
 
 The loudness report reuses the regression suite's ITU-R BS.1770-5 K-weighting, 400 ms absolute/relative gated integrated loudness, and sample-rate-aware 4×/2× true-peak oversampling. Filtering, power aggregation, and oversampling run in fixed-size blocks for long files. The atomically published `<output-stem>.loudness.json` records before/after LUFS, dBTP, oversampling factors, and after-minus-before deltas; its complete schema metadata and SHA-256 flow through the same structured results and recovery checks as spectrograms.
+
+The signal-statistics report defines whole-signal and per-channel crest factor as `20×log10(absolute peak/RMS)`. For stereo material it also reports `10×log10(side energy/mid energy)` with `mid=(L+R)/√2` and `side=(L−R)/√2`, plus normalized interchannel energy correlation from −1 to +1. Mono, zero-side, and zero-mid cases are explicit rather than substituted with arbitrary values. Fixed-size accumulation keeps memory bounded; `<output-stem>.signal.json` includes before/after values, after-minus-before deltas, definitions, channel coverage, and hash-linked manifest/result evidence.
 
 Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
 

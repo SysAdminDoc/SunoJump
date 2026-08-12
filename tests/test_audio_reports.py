@@ -13,6 +13,7 @@ import soundfile as sf
 
 from audio_reports import (
     measure_loudness_comparison,
+    measure_signal_statistics_comparison,
     render_spectrogram_comparison_png,
 )
 from batch_manifest import BatchManifestStore
@@ -175,6 +176,92 @@ class LoudnessComparisonTests(unittest.TestCase):
         self.assertIsNone(report["true_peak_delta_db"])
 
 
+class SignalStatisticsComparisonTests(unittest.TestCase):
+    def test_report_contains_crest_width_correlation_and_deltas(self):
+        sample_rate = 8000
+        tone = SpectrogramComparisonTests._tone(440.0, sample_rate)
+        before = np.column_stack((tone, tone * 0.8))
+        after = np.column_stack((tone, tone * -0.2))
+
+        report = measure_signal_statistics_comparison(
+            before,
+            after,
+            sample_rate,
+        )
+
+        self.assertEqual(
+            report["schema_id"],
+            "com.sunojump.signal-statistics-comparison",
+        )
+        self.assertEqual(report["schema_version"], 1)
+        self.assertAlmostEqual(
+            report["before"]["crest_factor_db"],
+            3.8722,
+            delta=0.01,
+        )
+        self.assertEqual(
+            report["before"]["stereo_width"]["mid_side_ratio_state"],
+            "measured",
+        )
+        self.assertLess(
+            report["before"]["stereo_width"]["mid_side_energy_ratio_db"],
+            report["after"]["stereo_width"]["mid_side_energy_ratio_db"],
+        )
+        self.assertAlmostEqual(
+            report["before"]["stereo_width"][
+                "interchannel_energy_correlation"
+            ],
+            1.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            report["after"]["stereo_width"][
+                "interchannel_energy_correlation"
+            ],
+            -1.0,
+            places=5,
+        )
+        self.assertIsNotNone(report["stereo_width_delta_db"])
+        self.assertAlmostEqual(
+            report["interchannel_correlation_delta"],
+            -2.0,
+            places=5,
+        )
+
+    def test_mono_and_dual_mono_width_states_are_explicit(self):
+        tone = SpectrogramComparisonTests._tone(440.0)
+        mono = measure_signal_statistics_comparison(tone, tone, 8000)
+        dual_mono = measure_signal_statistics_comparison(
+            np.column_stack((tone, tone)),
+            np.column_stack((tone, tone)),
+            8000,
+        )
+
+        self.assertEqual(
+            mono["before"]["stereo_width"]["state"],
+            "unavailable",
+        )
+        self.assertEqual(
+            mono["before"]["stereo_width"]["reason"],
+            "mono_input",
+        )
+        self.assertEqual(
+            dual_mono["before"]["stereo_width"][
+                "mid_side_ratio_reason"
+            ],
+            "zero_side_energy",
+        )
+        self.assertIsNone(dual_mono["stereo_width_delta_db"])
+
+    def test_nonfinite_signal_statistics_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "finite"):
+            measure_signal_statistics_comparison(
+                np.asarray([0.0, np.nan]),
+                np.zeros(2),
+                8000,
+            )
+
+
 class SpectrogramCliIntegrationTests(unittest.TestCase):
     def test_cli_exports_job_linked_png_and_manifest_evidence(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -267,6 +354,52 @@ class SpectrogramCliIntegrationTests(unittest.TestCase):
             self.assertIn("integrated_loudness_delta_lu", report)
             self.assertIn("true_peak_delta_db", report)
             self.assertTrue(manifest.audit_options["loudness"])
+
+    def test_cli_exports_crest_and_stereo_width_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "input.wav"
+            output_dir = temp_path / "output"
+            tone = SpectrogramComparisonTests._tone(440.0)
+            sf.write(input_path, np.column_stack((tone, tone * 0.8)), 8000)
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "sunojump.py",
+                    "--input",
+                    str(input_path),
+                    "--output",
+                    str(output_dir),
+                    "--preset",
+                    "gentle",
+                    "--seed",
+                    "7",
+                    "--signal-report",
+                    "--result-format",
+                    "json",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+
+            payload = json.loads(completed.stdout)
+            artifact = payload["results"][0]["artifacts"][0]
+            report = json.loads(Path(artifact["path"]).read_text("utf-8"))
+            manifest = BatchManifestStore.load(payload["manifest_path"])
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                artifact["kind"],
+                "signal_statistics_comparison",
+            )
+            self.assertIsNotNone(report["before"]["crest_factor_db"])
+            self.assertIn("stereo_width_delta_db", report)
+            self.assertIn("interchannel_correlation_delta", report)
+            self.assertTrue(manifest.audit_options["signal_statistics"])
 
 
 if __name__ == "__main__":

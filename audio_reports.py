@@ -17,6 +17,9 @@ SPECTROGRAM_DB_FLOOR = -100.0
 SPECTROGRAM_DB_CEILING = 0.0
 LOUDNESS_REPORT_SCHEMA_ID = "com.sunojump.loudness-comparison"
 LOUDNESS_REPORT_SCHEMA_VERSION = 1
+SIGNAL_REPORT_SCHEMA_ID = "com.sunojump.signal-statistics-comparison"
+SIGNAL_REPORT_SCHEMA_VERSION = 1
+SIGNAL_MEASUREMENT_CHUNK_FRAMES = 65536
 
 _FONT = {
     " ": ("00000",) * 7,
@@ -247,5 +250,153 @@ def measure_loudness_comparison(before, after, sample_rate):
         "true_peak_delta_db": delta(
             before_measurement.true_peak_dbtp,
             after_measurement.true_peak_dbtp,
+        ),
+    }
+
+
+def _signal_statistics(audio, sample_rate):
+    values = np.asarray(audio, dtype=np.float64)
+    if values.ndim == 1:
+        values = values[:, np.newaxis]
+    if values.ndim != 2:
+        raise ValueError("audio must be a one- or two-dimensional array")
+    if sample_rate <= 0:
+        raise ValueError("sample rate must be positive")
+    if values.shape[0] == 0:
+        raise ValueError("signal statistics require audio frames")
+    peak = 0.0
+    energy = 0.0
+    sample_count = 0
+    channel_peak = np.zeros(values.shape[1], dtype=np.float64)
+    channel_energy = np.zeros(values.shape[1], dtype=np.float64)
+    mid_energy = 0.0
+    side_energy = 0.0
+    left_energy = 0.0
+    right_energy = 0.0
+    cross_energy = 0.0
+    for start in range(0, values.shape[0], SIGNAL_MEASUREMENT_CHUNK_FRAMES):
+        chunk = np.asarray(
+            values[start:start + SIGNAL_MEASUREMENT_CHUNK_FRAMES],
+            dtype=np.float64,
+        )
+        if not np.all(np.isfinite(chunk)):
+            raise ValueError("audio must contain only finite samples")
+        absolute = np.abs(chunk)
+        if chunk.size:
+            peak = max(peak, float(np.max(absolute)))
+            channel_peak = np.maximum(channel_peak, np.max(absolute, axis=0))
+        squares = chunk ** 2
+        energy += float(np.sum(squares))
+        channel_energy += np.sum(squares, axis=0)
+        sample_count += int(chunk.size)
+        if values.shape[1] >= 2:
+            left = chunk[:, 0]
+            right = chunk[:, 1]
+            mid = (left + right) / np.sqrt(2.0)
+            side = (left - right) / np.sqrt(2.0)
+            mid_energy += float(np.sum(mid ** 2))
+            side_energy += float(np.sum(side ** 2))
+            left_energy += float(np.sum(left ** 2))
+            right_energy += float(np.sum(right ** 2))
+            cross_energy += float(np.sum(left * right))
+
+    def crest(peak_value, rms_value):
+        if peak_value <= 0.0 or rms_value <= 0.0:
+            return None
+        return round(float(20.0 * np.log10(peak_value / rms_value)), 4)
+
+    rms = np.sqrt(energy / sample_count) if sample_count else 0.0
+    channel_rms = np.sqrt(channel_energy / values.shape[0])
+    stereo_width_db = None
+    correlation = None
+    ratio_state = "unavailable"
+    ratio_reason = "mono_input" if values.shape[1] < 2 else None
+    if values.shape[1] >= 2 and mid_energy > 0.0 and side_energy > 0.0:
+        stereo_width_db = round(
+            10.0 * np.log10(side_energy / mid_energy),
+            4,
+        )
+        ratio_state = "measured"
+    elif values.shape[1] >= 2 and mid_energy <= 0.0:
+        ratio_reason = "zero_mid_energy"
+    elif values.shape[1] >= 2:
+        ratio_reason = "zero_side_energy"
+    correlation_denominator = np.sqrt(left_energy * right_energy)
+    if values.shape[1] >= 2 and correlation_denominator > 0.0:
+        correlation = round(
+            float(np.clip(
+                cross_energy / correlation_denominator,
+                -1.0,
+                1.0,
+            )),
+            6,
+        )
+    return {
+        "sample_rate_hz": int(sample_rate),
+        "channels": int(values.shape[1]),
+        "frames": int(values.shape[0]),
+        "duration_seconds": round(values.shape[0] / sample_rate, 6),
+        "peak_amplitude": round(peak, 9),
+        "rms_amplitude": round(float(rms), 9),
+        "crest_factor_db": crest(peak, rms),
+        "per_channel": [
+            {
+                "channel_index": index,
+                "peak_amplitude": round(float(channel_peak[index]), 9),
+                "rms_amplitude": round(float(channel_rms[index]), 9),
+                "crest_factor_db": crest(
+                    float(channel_peak[index]),
+                    float(channel_rms[index]),
+                ),
+            }
+            for index in range(values.shape[1])
+        ],
+        "stereo_width": {
+            "state": "measured" if values.shape[1] >= 2 else "unavailable",
+            "reason": None if values.shape[1] >= 2 else "mono_input",
+            "channels_analyzed": [0, 1] if values.shape[1] >= 2 else [],
+            "mid_side_ratio_state": ratio_state,
+            "mid_side_ratio_reason": ratio_reason,
+            "mid_side_energy_ratio_db": stereo_width_db,
+            "interchannel_energy_correlation": correlation,
+        },
+    }
+
+
+def measure_signal_statistics_comparison(before, after, sample_rate):
+    """Return bounded before/after crest and stereo-width statistics."""
+    before_measurement = _signal_statistics(before, sample_rate)
+    after_measurement = _signal_statistics(after, sample_rate)
+
+    def delta(before_value, after_value):
+        if before_value is None or after_value is None:
+            return None
+        return round(after_value - before_value, 4)
+
+    before_width = before_measurement["stereo_width"]
+    after_width = after_measurement["stereo_width"]
+    return {
+        "schema_id": SIGNAL_REPORT_SCHEMA_ID,
+        "schema_version": SIGNAL_REPORT_SCHEMA_VERSION,
+        "definitions": {
+            "crest_factor_db": "20*log10(absolute_peak/whole_signal_rms)",
+            "stereo_width_db": "10*log10(side_energy/mid_energy)",
+            "mid_side_scaling": "mid=(L+R)/sqrt(2), side=(L-R)/sqrt(2)",
+            "correlation": "sum(L*R)/sqrt(sum(L^2)*sum(R^2))",
+            "stereo_channel_policy": "first_left_right_pair",
+        },
+        "before": before_measurement,
+        "after": after_measurement,
+        "crest_factor_delta_db": delta(
+            before_measurement["crest_factor_db"],
+            after_measurement["crest_factor_db"],
+        ),
+        "stereo_width_delta_db": delta(
+            before_width["mid_side_energy_ratio_db"],
+            after_width["mid_side_energy_ratio_db"],
+        ),
+        "interchannel_correlation_delta": delta(
+            before_width["interchannel_energy_correlation"],
+            after_width["interchannel_energy_correlation"],
         ),
     }

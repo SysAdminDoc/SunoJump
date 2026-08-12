@@ -36,6 +36,8 @@
 - **Audit artifact integrity.** Spectrograms publish atomically, carry SHA-256 plus schema/sampling metadata in typed and structured results, persist in batch manifest schema v3, and are hash-revalidated during recovery; export failures are typed partial outcomes that retain usable audio and sidecars.
 - **BS.1770-5 comparison reports.** GUI and CLI can opt into atomic before/after JSON reports containing gated integrated loudness, oversampled true peak, and explicit LU/dB deltas, with hashes and complete measurements propagated through result and manifest evidence.
 - **Bounded quality measurement.** K-weighting filter state, loudness block powers, and true-peak resampling now process fixed-size chunks, preserving the long-file memory ceiling while matching the existing reference measurements.
+- **Crest and stereo-width reports.** GUI and CLI can opt into atomic before/after JSON reports for whole-signal/per-channel crest factor, mid-side energy ratio, and normalized interchannel correlation, including explicit deltas and mono/degenerate states.
+- **Bounded signal statistics.** Peak, RMS, mid/side energy, and correlation accumulate in fixed-size chunks over arrays or memory maps; reports carry formulas, channel policy, SHA-256, typed-result metadata, and manifest recovery evidence.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

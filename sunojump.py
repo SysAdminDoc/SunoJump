@@ -67,7 +67,7 @@ from verifiers import ConstellationVerifier, format_verifier_result
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
-SIDECAR_SCHEMA_VERSION = 2
+SIDECAR_SCHEMA_VERSION = 3
 SIDECAR_SCHEMA_ID = "com.sunojump.replay-evidence"
 SIDECAR_AUDIO_TAG = "SUNOJUMP_SIDECAR_PAYLOAD_SHA256"
 SIGNAL_CHANGE_METRIC = {
@@ -103,6 +103,12 @@ except ImportError as e:
     print(f"ERROR: Missing required Python dependency: {missing}", file=sys.stderr)
     print("Install dependencies with:  python -m pip install -r requirements.txt", file=sys.stderr)
     sys.exit(1)
+
+from compute_backend import (
+    COMPUTE_BACKEND_CHOICES,
+    ComputeBackendError,
+    resolve_compute_backend,
+)
 
 try:
     from PyQt6.QtWidgets import (
@@ -1916,7 +1922,15 @@ class AudioProcessor:
     # boundaries) so the output is indistinguishable from whole-file rendering.
     _HUMANIZE_CHUNK_SEC = 60.0
 
-    def __init__(self, params, log_fn=None, progress_fn=None, cancel_event=None, seed=None):
+    def __init__(
+        self,
+        params,
+        log_fn=None,
+        progress_fn=None,
+        cancel_event=None,
+        seed=None,
+        compute_backend=None,
+    ):
         self.params = params
         self.log = log_fn or print
         self.progress = progress_fn or (lambda v: None)
@@ -1926,6 +1940,7 @@ class AudioProcessor:
             raise ValueError("seed must be a non-negative integer")
         self._seed = seed
         self.rng = np.random.default_rng(self._seed)
+        self._compute_backend = resolve_compute_backend(compute_backend)
         self._cancel_event = cancel_event or threading.Event()
         self._spectral_candidates = []
         self._trace = self._new_trace()
@@ -1939,6 +1954,7 @@ class AudioProcessor:
                 "algorithm": type(self.rng.bit_generator).__name__,
                 "seed": self._seed,
             },
+            "compute": self._compute_backend.evidence,
             "passes": {},
         }
 
@@ -1998,6 +2014,13 @@ class AudioProcessor:
         self._verifier_results = []
         self._source_provenance = None
         self.log(f"Loading {Path(input_path).name}...")
+        compute_evidence = self._compute_backend.evidence
+        compute_message = (
+            f"Compute backend: {compute_evidence['selected']}"
+        )
+        if compute_evidence.get("fallback_reason"):
+            compute_message += " (auto fallback to CPU)"
+        self.log(compute_message)
         self.log(f"  Effective seed: {self._seed}")
 
         try:
@@ -2396,6 +2419,18 @@ class AudioProcessor:
 
     def _replay_report(self, fmt):
         nondeterministic_dependencies = []
+        compute_evidence = self._compute_backend.evidence
+        if compute_evidence.get("accelerated"):
+            nondeterministic_dependencies.append({
+                "dependency": (
+                    f"{compute_evidence.get('library', 'GPU')}/"
+                    f"{compute_evidence.get('cuda_runtime', 'CUDA')}"
+                ),
+                "reason": (
+                    "GPU FFT results depend on the exact device, driver, "
+                    "compute library, and CUDA runtime"
+                ),
+            })
         if fmt == 'ogg':
             nondeterministic_dependencies.append({
                 "dependency": "libsndfile/libvorbis Ogg muxer",
@@ -2430,6 +2465,7 @@ class AudioProcessor:
             "effective_seed": self._seed,
             "rng_algorithm": type(self.rng.bit_generator).__name__,
             "required_environment": _native_runtime_report(),
+            "compute_backend": compute_evidence,
             "nondeterministic_dependencies": nondeterministic_dependencies,
         }
 
@@ -2473,6 +2509,7 @@ class AudioProcessor:
                 "decode_policy": _native_runtime_report(),
                 "mutagen": getattr(mutagen, 'version_string', 'unknown'),
                 "ffmpeg": _ffmpeg_version_line(),
+                "compute_backend": self._compute_backend.evidence,
             },
             "decode": self._decode_metadata,
             "source_provenance": self._source_provenance_report(),
@@ -2642,7 +2679,12 @@ class AudioProcessor:
         noverlap = int(nperseg * 0.75)
 
         try:
-            f, _, Zxx = signal.stft(mono, sr, nperseg=nperseg, noverlap=noverlap)
+            f, _, Zxx = self._compute_backend.stft(
+                mono,
+                sr,
+                nperseg=nperseg,
+                noverlap=noverlap,
+            )
         except Exception:
             return []
 
@@ -2798,7 +2840,12 @@ class AudioProcessor:
             return channel.copy()
         noverlap = nperseg // 2
 
-        f, t, Zxx = signal.stft(channel, sr, nperseg=nperseg, noverlap=noverlap)
+        f, t, Zxx = self._compute_backend.stft(
+            channel,
+            sr,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
         mag = np.abs(Zxx)
         phase = np.angle(Zxx)
 
@@ -2838,7 +2885,12 @@ class AudioProcessor:
                     )
 
         Zxx_new = mag * np.exp(1j * phase)
-        _, result = signal.istft(Zxx_new, sr, nperseg=nperseg, noverlap=noverlap)
+        _, result = self._compute_backend.istft(
+            Zxx_new,
+            sr,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
 
         orig_len = len(channel)
         if len(result) > orig_len:
@@ -2890,7 +2942,12 @@ class AudioProcessor:
             return channel.copy()
         noverlap = nperseg // 2
 
-        f, _, Zxx = signal.stft(channel, sr, nperseg=nperseg, noverlap=noverlap)
+        f, _, Zxx = self._compute_backend.stft(
+            channel,
+            sr,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
         mag = np.abs(Zxx)
         phase = np.angle(Zxx)
         eps = 1e-12
@@ -2919,7 +2976,12 @@ class AudioProcessor:
             mag[band_mask] *= gain[np.newaxis, :]
 
         Zxx_new = mag * np.exp(1j * phase)
-        _, result = signal.istft(Zxx_new, sr, nperseg=nperseg, noverlap=noverlap)
+        _, result = self._compute_backend.istft(
+            Zxx_new,
+            sr,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
         if len(result) > len(channel):
             result = result[:len(channel)]
         elif len(result) < len(channel):
@@ -3211,8 +3273,10 @@ class AudioProcessor:
                 return signal_1d.copy()
         hop = nperseg // 4
 
-        _, _, Z = signal.stft(
-            signal_1d, nperseg=nperseg, noverlap=nperseg - hop,
+        _, _, Z = self._compute_backend.stft(
+            signal_1d,
+            nperseg=nperseg,
+            noverlap=nperseg - hop,
         )
         n_bins, n_frames = Z.shape
         if n_frames < 2:
@@ -3246,8 +3310,10 @@ class AudioProcessor:
             dphase = np.mod(dphase + np.pi, 2.0 * np.pi) - np.pi
             phase_acc = phase_acc + phi_advance + dphase
 
-        _, result = signal.istft(
-            Z_out, nperseg=nperseg, noverlap=nperseg - hop,
+        _, result = self._compute_backend.istft(
+            Z_out,
+            nperseg=nperseg,
+            noverlap=nperseg - hop,
         )
         return result
 
@@ -3320,7 +3386,12 @@ class AudioProcessor:
             return channel.copy()
         noverlap = nperseg // 2
 
-        f, t, Zxx = signal.stft(channel, sr, nperseg=nperseg, noverlap=noverlap)
+        f, t, Zxx = self._compute_backend.stft(
+            channel,
+            sr,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
         mag = np.abs(Zxx)
         phase = np.angle(Zxx)
 
@@ -3328,7 +3399,12 @@ class AudioProcessor:
         phase += phase_noise
 
         Zxx_new = mag * np.exp(1j * phase)
-        _, result = signal.istft(Zxx_new, sr, nperseg=nperseg, noverlap=noverlap)
+        _, result = self._compute_backend.istft(
+            Zxx_new,
+            sr,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
 
         orig_len = len(channel)
         if len(result) > orig_len:
@@ -3402,8 +3478,18 @@ class AudioProcessor:
         noverlap = nperseg // 2
 
         try:
-            f, t, audio_z = signal.stft(channel, sr, nperseg=nperseg, noverlap=noverlap)
-            _, _, noise_z = signal.stft(noise, sr, nperseg=nperseg, noverlap=noverlap)
+            f, t, audio_z = self._compute_backend.stft(
+                channel,
+                sr,
+                nperseg=nperseg,
+                noverlap=noverlap,
+            )
+            _, _, noise_z = self._compute_backend.stft(
+                noise,
+                sr,
+                nperseg=nperseg,
+                noverlap=noverlap,
+            )
         except Exception:
             return noise * level_lin
 
@@ -3421,7 +3507,12 @@ class AudioProcessor:
         threshold = np.maximum(masking_mag * 0.10, floor)
         shaped_z = noise_z * np.minimum(1.0, threshold / noise_mag)
 
-        _, shaped = signal.istft(shaped_z, sr, nperseg=nperseg, noverlap=noverlap)
+        _, shaped = self._compute_backend.istft(
+            shaped_z,
+            sr,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
         if len(shaped) > len(channel):
             shaped = shaped[:len(channel)]
         elif len(shaped) < len(channel):
@@ -3642,7 +3733,12 @@ class AudioProcessor:
         if nperseg < 512:
             return set()
         hop = nperseg // 4
-        f, _, Zxx = signal.stft(work, sr, nperseg=nperseg, noverlap=nperseg - hop)
+        f, _, Zxx = self._compute_backend.stft(
+            work,
+            sr,
+            nperseg=nperseg,
+            noverlap=nperseg - hop,
+        )
         mag = np.log1p(np.abs(Zxx))
         if mag.shape[1] < 4:
             return set()
@@ -7906,6 +8002,15 @@ def _build_cli_parser():
         ),
     )
     parser.add_argument(
+        '--compute',
+        choices=COMPUTE_BACKEND_CHOICES,
+        default='cpu',
+        help=_tr(
+            'FFT compute backend: cpu (release-safe default), auto '
+            '(CUDA with CPU fallback), or cuda (fail if unavailable)'
+        ),
+    )
+    parser.add_argument(
         '--manifest',
         default=None,
         help=_tr('Path for the new atomic batch manifest'),
@@ -8135,6 +8240,10 @@ def cli_main():
     configure_locale(requested_locale_from_argv(sys.argv[1:]))
     parser = _build_cli_parser()
     args = parser.parse_args()
+    try:
+        resolve_compute_backend(args.compute)
+    except ComputeBackendError as exc:
+        parser.error(str(exc))
     if args.seed is not None and args.seed < 0:
         parser.error("--seed must be a non-negative integer")
     if args.retry and not args.resume:
@@ -8404,6 +8513,7 @@ def cli_main():
                 log_fn=cli_log,
                 progress_fn=lambda value: None,
                 seed=effective_seed,
+                compute_backend=args.compute,
             )
             result = proc.process(filepath, out_path)
             if not isinstance(result, RenderResult):
@@ -8462,7 +8572,7 @@ if __name__ == '__main__':
     configure_locale(_requested_locale)
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
-        '--manifest', '--resume', '--retry',
+        '--manifest', '--resume', '--retry', '--compute',
     }
     if len(sys.argv) > 1 and _argv_uses_any_option(
         sys.argv[1:],

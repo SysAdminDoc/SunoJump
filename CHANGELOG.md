@@ -12,6 +12,9 @@
 - **Pseudo-localization coverage.** The bundled `qps-ploc` catalog now drives offscreen GUI, status, error, CLI-help, responsive-layout, screenshot, and frozen-package tests instead of hand-edited sample labels.
 - **Evidence-first A/B regression suite.** Added deterministic CC0 44.1/48 kHz stereo music cues, fixed-seed renders, unrelated-cue negative controls, schema-versioned per-detector score/coverage/alignment evidence, and local-only pass/fail thresholds.
 - **Objective quality contract.** Added ITU-R BS.1770-5 gated loudness and oversampled true-peak measurements plus an optional hash-identified Google ViSQOL audio-mode CLI adapter that reports missing tools as unavailable.
+- **Optional CUDA FFT backend.** Source runs can dispatch every STFT/ISTFT-heavy pass to a lazily loaded PyTorch CUDA runtime through `--compute` or `SUNOJUMP_COMPUTE_BACKEND`, with strict and fallback modes.
+- **GPU correctness and artifact gates.** CUDA selection must pass an on-device SciPy parity vector before rendering; fixed-seed CPU/Torch contract tests cover the full FFT-heavy pass chain, while frozen builds exclude Torch and enforce a 250 MiB executable ceiling.
+- **Compute provenance.** Replay sidecar schema v3 records backend/library/device/CUDA evidence and marks accelerated renders dependency-sensitive across GPU environments.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

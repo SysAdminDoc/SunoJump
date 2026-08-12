@@ -982,6 +982,13 @@ class SidecarTraceTests(unittest.TestCase):
                 self.assertIn('value', verifier)
             else:
                 self.assertNotIn('value', verifier)
+            compute = data['environment']['compute_backend']
+            self.assertEqual(compute['selected'], 'scipy-cpu')
+            self.assertFalse(compute['accelerated'])
+            self.assertEqual(
+                data['replay']['compute_backend']['selected'],
+                'scipy-cpu',
+            )
             self.assertEqual(ok.sidecar_path, str(sidecar_path))
             self.assertEqual(
                 ok.sidecar_sha256,

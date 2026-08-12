@@ -174,6 +174,7 @@ python sunojump.py --locale en
 | `-f, --format` | wav, flac, ogg, mp3, m4a (mp3/m4a require ffmpeg) | wav |
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
 | `--locale` | Locale catalog for GUI labels and CLI help; falls back from region to language to English | system locale |
+| `--compute` | `cpu`, `auto` (CUDA with CPU fallback), or strict `cuda` for FFT-heavy passes | cpu |
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
@@ -203,6 +204,12 @@ python sunojump.py --locale en
 Every numeric override enables its corresponding pass. To disable one, use `--disable-pass` with a name shown by `--help`; combining a pass's numeric value with its disable flag is rejected. Values and preset files are validated strictly—unknown keys, wrong types, non-finite numbers, future schemas, and out-of-range values exit before an output directory or file is created.
 
 GUI labels, tooltips, status/error text, accessibility descriptions, and CLI help share the JSON catalogs in `locales/`. Locale selection follows Qt-style fallback (`language-region` → `language` → English), and plural forms plus right-to-left layout direction are catalog controlled. `--locale` overrides the system locale for one run; `SUNOJUMP_LOCALE` provides the same override for launches that cannot pass arguments.
+
+### Optional CUDA Compute
+
+Source runs can move STFT/ISTFT work in spectral scanning/perturbation, Dynamic EQ, pitch phase-vocoder, phase scrambling, masking-aware noise, and constellation evidence to a CUDA-enabled PyTorch runtime. Install the platform-specific stable build using the [official PyTorch selector](https://docs.pytorch.org/get-started/locally/), then run `python sunojump.py -i song.wav --compute cuda`. `auto` uses CUDA when the on-device SciPy parity check passes and otherwise records an explicit CPU fallback; strict `cuda` exits before creating batch state when PyTorch, CUDA, or the parity gate is unavailable.
+
+The standard frozen release remains CPU-only: Torch is deliberately excluded from PyInstaller inventory, and release verification rejects executables above 250 MiB. Source GUI workers may opt in with `SUNOJUMP_COMPUTE_BACKEND=auto` or `cuda`. Sidecars record the selected library/device/runtime and treat accelerated renders as dependency-sensitive rather than promising byte identity across GPUs.
 
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs. Legacy partial presets are migrated and completed from the documented Moderate defaults; saved Custom sessions persist the full validated configuration rather than only the word `Custom`.
 

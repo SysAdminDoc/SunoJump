@@ -35,6 +35,8 @@ DIST_DIR = ROOT / "dist"
 LICENSE_TOOL = ROOT / "tools" / "audit_licenses.py"
 COMPATIBILITY_BASELINE = ROOT / "tools" / "compatibility_baseline.json"
 CYCLONEDX_SCHEMA = "https://cyclonedx.org/schema/bom-1.7.schema.json"
+MIN_RELEASE_EXECUTABLE_BYTES = 1024 * 1024
+MAX_RELEASE_EXECUTABLE_BYTES = 250 * 1024 * 1024
 LOCK_PATTERN = re.compile(
     r"^(?P<name>[A-Za-z0-9_.-]+)==(?P<version>[^\s]+)"
     r"\s+--hash=sha256:(?P<sha256>[a-f0-9]{64})$"
@@ -56,6 +58,7 @@ REQUIRED_SOURCE_FILES = {
     Path("audio_quality.py"),
     Path("batch_manifest.py"),
     Path("c2pa_provenance.py"),
+    Path("compute_backend.py"),
     Path("config_schema.py"),
     Path("locales/en.json"),
     Path("locales/qps-ploc.json"),
@@ -356,6 +359,18 @@ def _run_capture(
             time.sleep(0.25)
 
 
+def validate_release_executable_size(size_bytes: int) -> None:
+    if size_bytes < MIN_RELEASE_EXECUTABLE_BYTES:
+        raise ReleaseError(
+            f"release executable is unexpectedly small: {size_bytes} bytes"
+        )
+    if size_bytes > MAX_RELEASE_EXECUTABLE_BYTES:
+        raise ReleaseError(
+            "release executable exceeds the artifact-size gate: "
+            f"{size_bytes} > {MAX_RELEASE_EXECUTABLE_BYTES} bytes"
+        )
+
+
 def verify_executable(
     executable: Path,
     expected_version: str,
@@ -386,10 +401,7 @@ def verify_executable(
         raise ReleaseError(
             f"release executable is stale: {executable.name} predates this build"
         )
-    if stat.st_size < 1024 * 1024:
-        raise ReleaseError(
-            f"release executable is unexpectedly small: {stat.st_size} bytes"
-        )
+    validate_release_executable_size(stat.st_size)
 
     version_result = runner([str(executable), "--version"], timeout=120)
     expected_line = f"SunoJump v{expected_version}"

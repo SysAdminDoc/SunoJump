@@ -41,6 +41,7 @@
     "Print the application version and exit": "Print the application version and exit",
     "Print machine-readable native dependency versions and exit": "Print machine-readable native dependency versions and exit",
     "Locale name for translated GUI/CLI strings (for example en or qps-ploc)": "Locale name for translated GUI/CLI strings (for example en or qps-ploc)",
+    "FFT compute backend: cpu (release-safe default), auto (CUDA with CPU fallback), or cuda (fail if unavailable)": "FFT compute backend: cpu (release-safe default), auto (CUDA with CPU fallback), or cuda (fail if unavailable)",
     "No supported audio files found.": "No supported audio files found.",
     "Queue is empty. Browse for audio or drop files/folders here.": "Queue is empty. Browse for audio or drop files/folders here."
   }

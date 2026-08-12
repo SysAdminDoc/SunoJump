@@ -75,6 +75,12 @@ class ReleaseBuildTests(unittest.TestCase):
         ):
             self.assertIn(path, self.mod.REQUIRED_SOURCE_FILES)
 
+    def test_release_source_includes_cpu_safe_compute_dispatch(self):
+        self.assertIn(
+            pathlib.Path("compute_backend.py"),
+            self.mod.REQUIRED_SOURCE_FILES,
+        )
+
     def test_release_source_and_gate_include_compatibility_evidence(self):
         self.assertIn(
             pathlib.Path("tools/compatibility_baseline.json"),
@@ -170,6 +176,16 @@ class ReleaseBuildTests(unittest.TestCase):
                     "1.2.3",
                     0,
                 )
+
+    def test_release_artifact_size_gate_rejects_optional_gpu_runtime_bloat(self):
+        self.mod.validate_release_executable_size(
+            self.mod.MIN_RELEASE_EXECUTABLE_BYTES,
+        )
+        with self.assertRaises(self.mod.ReleaseError) as context:
+            self.mod.validate_release_executable_size(
+                self.mod.MAX_RELEASE_EXECUTABLE_BYTES + 1,
+            )
+        self.assertIn("artifact-size gate", str(context.exception))
 
     def test_stale_executable_fails_before_smoke_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:

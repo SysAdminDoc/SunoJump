@@ -46,10 +46,12 @@ from c2pa_provenance import (
     inspect_c2pa,
 )
 from safe_audio import (
+    DECODE_CHUNK_FRAMES,
     DecodeCancelled,
     DecodeLimits,
     MIN_LIBSNDFILE_VERSION,
     decode_audio_isolated,
+    decode_audio_isolated_to_path,
     inspect_audio_path,
     validate_libsndfile_version,
 )
@@ -67,7 +69,7 @@ from verifiers import ConstellationVerifier, format_verifier_result
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
-SIDECAR_SCHEMA_VERSION = 3
+SIDECAR_SCHEMA_VERSION = 4
 SIDECAR_SCHEMA_ID = "com.sunojump.replay-evidence"
 SIDECAR_AUDIO_TAG = "SUNOJUMP_SIDECAR_PAYLOAD_SHA256"
 SIGNAL_CHANGE_METRIC = {
@@ -195,6 +197,10 @@ MAX_AUDIO_SAMPLE_RATE = 384000
 MAX_AUDIO_DURATION_SECONDS = 2 * 60 * 60
 MAX_DECODE_WORKER_MEMORY_BYTES = MAX_DECODED_AUDIO_BYTES + 512 * 1024 ** 2
 DECODE_TIMEOUT_SECONDS = 120.0
+STREAMING_THRESHOLD_BYTES = 256 * 1024 ** 2
+STREAMING_WORKING_SET_BYTES = 64 * 1024 ** 2
+STREAMING_CHUNK_SECONDS = 20.0
+STREAMING_OVERLAP_SECONDS = 1.0
 
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
@@ -1901,10 +1907,16 @@ def _native_runtime_report():
         ),
         "runtime_gate": runtime_gate,
         "decode_isolation": "spawned-process",
+        "decode_strategy": "chunked-npy-memmap",
+        "decode_chunk_frames": DECODE_CHUNK_FRAMES,
         "header_inspection_bytes": 1024 * 1024,
         "decode_timeout_seconds": DECODE_TIMEOUT_SECONDS,
         "decode_memory_bytes": MAX_DECODE_WORKER_MEMORY_BYTES,
         "decode_output_bytes": MAX_DECODED_AUDIO_BYTES,
+        "streaming_threshold_bytes": STREAMING_THRESHOLD_BYTES,
+        "streaming_working_set_bytes": STREAMING_WORKING_SET_BYTES,
+        "streaming_chunk_seconds": STREAMING_CHUNK_SECONDS,
+        "streaming_overlap_seconds": STREAMING_OVERLAP_SECONDS,
         "blocked_native_formats": [
             "IRCAM",
             "WAV IMA ADPCM",
@@ -1930,6 +1942,8 @@ class AudioProcessor:
         cancel_event=None,
         seed=None,
         compute_backend=None,
+        streaming_threshold_bytes=STREAMING_THRESHOLD_BYTES,
+        streaming_chunk_seconds=STREAMING_CHUNK_SECONDS,
     ):
         self.params = params
         self.log = log_fn or print
@@ -1941,6 +1955,12 @@ class AudioProcessor:
         self._seed = seed
         self.rng = np.random.default_rng(self._seed)
         self._compute_backend = resolve_compute_backend(compute_backend)
+        if streaming_threshold_bytes < 0:
+            raise ValueError("streaming threshold must be non-negative")
+        if streaming_chunk_seconds <= STREAMING_OVERLAP_SECONDS:
+            raise ValueError("streaming chunk duration must exceed overlap")
+        self._streaming_threshold_bytes = int(streaming_threshold_bytes)
+        self._streaming_chunk_seconds = float(streaming_chunk_seconds)
         self._cancel_event = cancel_event or threading.Event()
         self._spectral_candidates = []
         self._trace = self._new_trace()
@@ -1986,6 +2006,7 @@ class AudioProcessor:
         input_path = str(input_path)
         output_path = str(output_path)
         fmt = self.params.get('output_format', 'wav').lower()
+        decode_temp = None
 
         def finish(
             state,
@@ -1995,8 +2016,9 @@ class AudioProcessor:
             sidecar_path=None,
             sidecar_sha256=None,
         ):
+            nonlocal decode_temp
             usable = state in {RenderState.SUCCEEDED, RenderState.PARTIAL}
-            return RenderResult(
+            result = RenderResult(
                 state=state,
                 input_path=input_path,
                 output_path=output_path if usable else None,
@@ -2008,6 +2030,13 @@ class AudioProcessor:
                 sidecar_path=sidecar_path if usable else None,
                 sidecar_sha256=sidecar_sha256 if usable else None,
             )
+            if decode_temp is not None:
+                try:
+                    decode_temp.cleanup()
+                except OSError:
+                    pass
+                decode_temp = None
+            return result
 
         self.rng = np.random.default_rng(self._seed)
         self._trace = self._new_trace()
@@ -2091,12 +2120,42 @@ class AudioProcessor:
             self.log("  C2PA source provenance: not detected")
 
         try:
-            audio, sr, self._decode_metadata = decode_audio_isolated(
-                input_path,
-                preview_seconds,
-                _decode_limits(),
-                cancel_event=self._cancel_event,
-            )
+            if preview_seconds is not None and preview_seconds > 0:
+                audio, sr, self._decode_metadata = decode_audio_isolated(
+                    input_path,
+                    preview_seconds,
+                    _decode_limits(),
+                    cancel_event=self._cancel_event,
+                )
+                self._decode_metadata["processing_strategy"] = "in-memory-preview"
+            else:
+                decode_temp = tempfile.TemporaryDirectory(
+                    prefix="sunojump-stream-"
+                )
+                decoded_path = Path(decode_temp.name) / "decoded.npy"
+                sr, self._decode_metadata = decode_audio_isolated_to_path(
+                    input_path,
+                    None,
+                    _decode_limits(),
+                    decoded_path,
+                    cancel_event=self._cancel_event,
+                )
+                decoded_bytes = int(
+                    self._decode_metadata.get("decoded_bytes", 0)
+                )
+                if decoded_bytes > self._streaming_threshold_bytes:
+                    return self._process_streaming_decoded(
+                        input_path=input_path,
+                        output_path=output_path,
+                        decoded_path=decoded_path,
+                        sample_rate=sr,
+                        output_format=fmt,
+                        finish=finish,
+                    )
+                audio = np.load(decoded_path, allow_pickle=False)
+                self._decode_metadata["processing_strategy"] = "in-memory"
+                decode_temp.cleanup()
+                decode_temp = None
         except DecodeCancelled:
             self.log("Cancelled.")
             return finish(
@@ -2417,6 +2476,675 @@ class AudioProcessor:
             sidecar_sha256=sidecar_evidence["sha256"],
         )
 
+    @staticmethod
+    def _close_stream_map(mapped):
+        mmap_handle = getattr(mapped, "_mmap", None)
+        if mmap_handle is not None:
+            mmap_handle.close()
+
+    def _stream_pass_names(self, mono):
+        names = []
+        if self.params.get("strip_metadata", True):
+            names.append("Metadata Strip")
+        if self.params.get("spectral_enabled"):
+            if self.params.get(
+                "spectral_scan_enabled",
+                self.params.get("watermark_scan_enabled", True),
+            ):
+                names.append("Narrowband Candidate Scan")
+            names.append("Spectral Perturbation")
+        if self.params.get("dynamic_eq_enabled"):
+            names.append("Dynamic EQ")
+        pitch_enabled = self.params.get("pitch_enabled")
+        tempo_enabled = self.params.get("tempo_enabled")
+        if pitch_enabled and tempo_enabled:
+            names.append("Coupled Pitch/Tempo Micro-Variation")
+        else:
+            if pitch_enabled:
+                names.append("Pitch Micro-Shift")
+            if tempo_enabled:
+                names.append("Tempo Micro-Variation")
+        if self.params.get("phase_enabled"):
+            names.append("Phase Scrambling")
+        if self.params.get("stereo_enabled") and not mono:
+            names.append("Stereo Manipulation")
+        if self.params.get("noise_enabled"):
+            names.append("Noise Injection")
+        if self.params.get("dynamics_enabled"):
+            names.append("Dynamics Modification")
+        if self.params.get("humanize_enabled"):
+            names.append("Humanization")
+        if self.params.get("reencode_enabled"):
+            names.append("Lossy Re-encode")
+        return names
+
+    def _stream_apply_pass(self, name, audio, sample_rate, mono):
+        if name == "Spectral Perturbation":
+            return self._spectral_perturb(audio, sample_rate)
+        if name == "Dynamic EQ":
+            return self._dynamic_eq(audio, sample_rate)
+        if name == "Coupled Pitch/Tempo Micro-Variation":
+            return self._pitch_tempo_coupled_microvar(audio, sample_rate)
+        if name == "Pitch Micro-Shift":
+            return self._pitch_microshift(audio, sample_rate)
+        if name == "Tempo Micro-Variation":
+            return self._tempo_microvar(audio, sample_rate)
+        if name == "Phase Scrambling":
+            return self._phase_scramble(audio, sample_rate)
+        if name == "Stereo Manipulation":
+            return self._stereo_manipulate(audio)
+        if name == "Noise Injection":
+            return self._inject_noise(audio, sample_rate)
+        if name == "Dynamics Modification":
+            return self._modify_dynamics(audio, sample_rate)
+        if name == "Humanization":
+            return self._humanize(audio, sample_rate)
+        if name == "Lossy Re-encode":
+            return self._lossy_reencode(audio, sample_rate, mono)
+        raise ValueError(f"unsupported streaming pass: {name}")
+
+    @staticmethod
+    def _stream_pass_trace_key(name):
+        return {
+            "Spectral Perturbation": "spectral_perturbation",
+            "Dynamic EQ": "dynamic_eq",
+            "Coupled Pitch/Tempo Micro-Variation": "coupled_pitch_tempo",
+            "Pitch Micro-Shift": "pitch_microshift",
+            "Tempo Micro-Variation": "tempo_microvar",
+            "Phase Scrambling": "phase_scramble",
+            "Stereo Manipulation": "stereo_manipulation",
+            "Noise Injection": "noise_injection",
+            "Dynamics Modification": "dynamics_modification",
+            "Humanization": "humanization",
+            "Lossy Re-encode": "lossy_reencode",
+        }.get(name)
+
+    @staticmethod
+    def _stream_chunk_view(source, start, end):
+        block = np.asarray(source[start:end], dtype=np.float64)
+        if block.ndim == 1:
+            block = block[:, np.newaxis]
+        return np.array(block, dtype=np.float64, copy=True)
+
+    def _stream_scan_candidates(self, source, sample_rate, chunk_samples):
+        candidates = []
+        for start in range(0, source.shape[0], chunk_samples):
+            if self._is_cancelled():
+                raise DecodeCancelled("streaming render cancelled")
+            chunk = self._stream_chunk_view(
+                source,
+                start,
+                min(source.shape[0], start + chunk_samples),
+            )
+            candidates.extend(
+                self._scan_spectral_candidates(chunk, sample_rate)
+            )
+        selected = []
+        for candidate in sorted(
+            candidates,
+            key=lambda item: item["score"],
+            reverse=True,
+        ):
+            if len(selected) >= SPECTRAL_SCAN_MAX_CANDIDATES:
+                break
+            if any(
+                candidate["low_hz"] <= item["high_hz"]
+                and candidate["high_hz"] >= item["low_hz"]
+                for item in selected
+            ):
+                continue
+            selected.append(candidate)
+        return selected
+
+    def _stream_transform_pass(
+        self,
+        source,
+        target_path,
+        weights_path,
+        name,
+        sample_rate,
+        mono,
+        chunk_samples,
+        overlap_samples,
+        pass_index,
+        pass_total,
+    ):
+        frame_count = int(source.shape[0])
+        channels = 1 if source.ndim == 1 else int(source.shape[1])
+        target_path.unlink(missing_ok=True)
+        weights_path.unlink(missing_ok=True)
+        target = np.lib.format.open_memmap(
+            target_path,
+            mode="w+",
+            dtype=np.float64,
+            shape=(frame_count, channels),
+        )
+        weights = np.lib.format.open_memmap(
+            weights_path,
+            mode="w+",
+            dtype=np.float32,
+            shape=(frame_count,),
+        )
+        target[:] = 0.0
+        weights[:] = 0.0
+        step = max(1, chunk_samples - overlap_samples)
+        starts = [0]
+        while starts[-1] + chunk_samples < frame_count:
+            starts.append(starts[-1] + step)
+        trace_key = self._stream_pass_trace_key(name)
+        chunk_traces = []
+        try:
+            for chunk_index, start in enumerate(starts):
+                if self._is_cancelled():
+                    raise DecodeCancelled("streaming render cancelled")
+                end = min(frame_count, start + chunk_samples)
+                chunk = self._stream_chunk_view(source, start, end)
+                processed = np.asarray(
+                    self._stream_apply_pass(name, chunk, sample_rate, mono),
+                    dtype=np.float64,
+                )
+                if processed.ndim == 1:
+                    processed = processed[:, np.newaxis]
+                if processed.shape != chunk.shape:
+                    raise ValueError(
+                        f"{name} changed streaming chunk shape from "
+                        f"{chunk.shape} to {processed.shape}"
+                    )
+                window = np.ones(end - start, dtype=np.float64)
+                fade = min(overlap_samples, len(window) // 2)
+                if start > 0 and fade:
+                    window[:fade] = np.linspace(0.0, 1.0, fade)
+                if end < frame_count and fade:
+                    window[-fade:] = np.linspace(1.0, 0.0, fade)
+                target[start:end] += processed * window[:, np.newaxis]
+                weights[start:end] += window.astype(np.float32)
+                chunk_record = {
+                    "index": chunk_index,
+                    "start": int(start),
+                    "end": int(end),
+                }
+                if trace_key:
+                    chunk_record["trace"] = copy.deepcopy(
+                        self._trace["passes"].get(trace_key, {})
+                    )
+                chunk_traces.append(chunk_record)
+                fraction = (chunk_index + 1) / max(1, len(starts))
+                self.progress(int(((pass_index + fraction) / pass_total) * 88))
+
+            for start in range(0, frame_count, chunk_samples):
+                end = min(frame_count, start + chunk_samples)
+                denominator = np.maximum(
+                    np.asarray(weights[start:end], dtype=np.float64),
+                    1e-8,
+                )
+                target[start:end] = (
+                    np.asarray(target[start:end])
+                    / denominator[:, np.newaxis]
+                )
+            target.flush()
+            if trace_key:
+                self._trace["passes"][trace_key] = {
+                    "streaming": True,
+                    "chunk_samples": int(chunk_samples),
+                    "overlap_samples": int(overlap_samples),
+                    "chunks": chunk_traces,
+                }
+            return target
+        except Exception:
+            self._close_stream_map(target)
+            raise
+        finally:
+            self._close_stream_map(weights)
+            weights_path.unlink(missing_ok=True)
+
+    def _stream_signal_change(
+        self,
+        original,
+        processed,
+        chunk_samples,
+    ):
+        signal_sum = 0.0
+        difference_sum = 0.0
+        sample_count = 0
+        for start in range(0, original.shape[0], chunk_samples):
+            end = min(original.shape[0], start + chunk_samples)
+            original_block = np.asarray(original[start:end])
+            original_channel = (
+                original_block
+                if original_block.ndim == 1
+                else original_block[:, 0]
+            )
+            processed_block = np.asarray(processed[start:end])
+            processed_channel = (
+                processed_block
+                if processed_block.ndim == 1
+                else processed_block[:, 0]
+            )
+            processed_channel = np.clip(processed_channel, -1.0, 1.0)
+            signal_sum += float(np.sum(original_channel ** 2))
+            difference_sum += float(np.sum(
+                (original_channel - processed_channel) ** 2
+            ))
+            sample_count += len(original_channel)
+        if sample_count == 0 or signal_sum / sample_count < 1e-12:
+            return 0.0
+        signal_power = signal_sum / sample_count
+        difference_power = difference_sum / sample_count + 1e-12
+        snr = 10.0 * np.log10(signal_power / difference_power)
+        return max(0.0, min(100.0, (40.0 - snr) * 2.5))
+
+    def _export_wav_with_ffmpeg(self, wav_input, output_path, fmt):
+        bitrate = max(
+            96,
+            min(320, int(self.params.get("reencode_bitrate", 192))),
+        )
+        if fmt == "mp3":
+            codec_args = ["-codec:a", "libmp3lame", "-b:a", f"{bitrate}k"]
+        elif fmt == "m4a":
+            codec_args = ["-codec:a", "aac", "-b:a", f"{bitrate}k"]
+        else:
+            raise ValueError(f"Unsupported ffmpeg export format: {fmt}")
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(wav_input),
+                "-vn",
+                *codec_args,
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "ffmpeg failed").strip()
+            raise RuntimeError(detail)
+
+    def _write_streamed_audio(
+        self,
+        source,
+        sample_rate,
+        output_path,
+        output_format,
+        mono,
+        chunk_samples,
+        temp_root,
+    ):
+        channels = (
+            1
+            if mono or source.ndim == 1
+            else int(source.shape[1])
+        )
+        write_path = output_path
+        if _format_requires_ffmpeg(output_format):
+            write_path = Path(temp_root) / "stream-export.wav"
+            write_path.unlink(missing_ok=True)
+            container = "WAV"
+            subtype = "PCM_24"
+        elif output_format == "flac":
+            container = "FLAC"
+            subtype = None
+        elif output_format == "ogg":
+            container = "OGG"
+            subtype = "VORBIS"
+        else:
+            container = "WAV"
+            subtype = "PCM_24"
+        options = {
+            "mode": "w",
+            "samplerate": sample_rate,
+            "channels": channels,
+            "format": container,
+        }
+        if subtype is not None:
+            options["subtype"] = subtype
+        with sf.SoundFile(str(write_path), **options) as destination:
+            for start in range(0, source.shape[0], chunk_samples):
+                if self._is_cancelled():
+                    raise DecodeCancelled("streaming render cancelled")
+                end = min(source.shape[0], start + chunk_samples)
+                block = np.clip(
+                    np.asarray(source[start:end], dtype=np.float64),
+                    -1.0,
+                    1.0,
+                )
+                if block.ndim == 1:
+                    destination.write(block)
+                else:
+                    destination.write(block[:, 0] if mono else block)
+        if _format_requires_ffmpeg(output_format):
+            self._export_wav_with_ffmpeg(
+                write_path,
+                output_path,
+                output_format,
+            )
+
+    def _process_streaming_decoded(
+        self,
+        *,
+        input_path,
+        output_path,
+        decoded_path,
+        sample_rate,
+        output_format,
+        finish,
+    ):
+        tracked_maps = []
+
+        def track(mapped):
+            tracked_maps.append(mapped)
+            return mapped
+
+        def close_map(mapped):
+            tracked_maps[:] = [
+                item for item in tracked_maps if item is not mapped
+            ]
+            self._close_stream_map(mapped)
+
+        def stream_finish(*args, **kwargs):
+            for mapped in list(reversed(tracked_maps)):
+                close_map(mapped)
+            return finish(*args, **kwargs)
+
+        try:
+            original = track(np.load(
+                decoded_path,
+                allow_pickle=False,
+                mmap_mode="r",
+            ))
+            if original.size == 0:
+                return stream_finish(
+                    RenderState.FAILED,
+                    RenderErrorCode.EMPTY_AUDIO,
+                    "empty audio file",
+                )
+            mono = original.ndim == 1
+            channels = 1 if mono else int(original.shape[1])
+            frames = int(original.shape[0])
+            target_samples = max(
+                1024,
+                STREAMING_WORKING_SET_BYTES // max(8, channels * 8 * 6),
+            )
+            chunk_samples = min(
+                int(self._streaming_chunk_seconds * sample_rate),
+                target_samples,
+            )
+            chunk_samples = max(1024, min(frames, chunk_samples))
+            overlap_samples = min(
+                int(STREAMING_OVERLAP_SECONDS * sample_rate),
+                chunk_samples // 4,
+            )
+            decoded_bytes = int(self._decode_metadata.get("decoded_bytes", 0))
+            disk_required = (
+                decoded_bytes * 3
+                + frames * 4
+                + STREAMING_WORKING_SET_BYTES
+            )
+            disk_free = shutil.disk_usage(decoded_path.parent).free
+            if disk_free < disk_required:
+                return stream_finish(
+                    RenderState.FAILED,
+                    RenderErrorCode.OUTPUT_WRITE_FAILED,
+                    "insufficient temporary disk space for bounded streaming "
+                    f"({disk_free} bytes free; {disk_required} required)",
+                )
+            self.log(
+                "  Processing mode: bounded streaming "
+                f"({_humanize_bytes(chunk_samples * channels * 8)} chunks, "
+                f"{overlap_samples / sample_rate:.2f}s overlap)"
+            )
+            self.log(
+                "  Decoder: isolated "
+                "libsndfile "
+                f"{self._decode_metadata.get('libsndfile_version', 'unknown')}"
+            )
+            self._decode_metadata["processing_strategy"] = (
+                "bounded-overlap-memmap"
+            )
+            self._decode_metadata["processing_chunk_samples"] = chunk_samples
+            self._decode_metadata["processing_overlap_samples"] = (
+                overlap_samples
+            )
+            self._trace["streaming"] = {
+                "enabled": True,
+                "threshold_bytes": self._streaming_threshold_bytes,
+                "chunk_samples": chunk_samples,
+                "overlap_samples": overlap_samples,
+                "temporary_disk_required_bytes": disk_required,
+            }
+
+            pass_names = self._stream_pass_names(mono)
+            if not pass_names:
+                return stream_finish(
+                    RenderState.FAILED,
+                    RenderErrorCode.NO_PASSES_ENABLED,
+                    "no passes enabled",
+                )
+            current = original
+            transform_names = [
+                name
+                for name in pass_names
+                if name not in {
+                    "Metadata Strip",
+                    "Narrowband Candidate Scan",
+                }
+            ]
+            transform_index = 0
+            for index, name in enumerate(pass_names):
+                if self._is_cancelled():
+                    return stream_finish(
+                        RenderState.CANCELLED,
+                        RenderErrorCode.CANCELLED,
+                        "streaming render cancelled",
+                    )
+                self.log(f"  Pass {index + 1}/{len(pass_names)}: {name}...")
+                if name == "Metadata Strip":
+                    continue
+                if name == "Narrowband Candidate Scan":
+                    self._spectral_candidates = self._stream_scan_candidates(
+                        current,
+                        sample_rate,
+                        chunk_samples,
+                    )
+                    if self._spectral_candidates:
+                        self.log(
+                            "    Candidate bands: "
+                            + self._format_spectral_candidates(
+                                self._spectral_candidates
+                            )
+                        )
+                    else:
+                        self.log("    Candidate bands: none")
+                    continue
+                target_path = decoded_path.parent / (
+                    f"pass-{transform_index % 2}.npy"
+                )
+                weights_path = decoded_path.parent / "weights.npy"
+                transformed = self._stream_transform_pass(
+                    current,
+                    target_path,
+                    weights_path,
+                    name,
+                    sample_rate,
+                    mono,
+                    chunk_samples,
+                    overlap_samples,
+                    transform_index,
+                    max(1, len(transform_names)),
+                )
+                track(transformed)
+                if current is not original:
+                    close_map(current)
+                current = transformed
+                transform_index += 1
+
+            strength = self._stream_signal_change(
+                original,
+                current,
+                chunk_samples,
+            )
+            self.progress(90)
+            metric_label = (
+                f"{SIGNAL_CHANGE_METRIC['adapter']} "
+                f"v{SIGNAL_CHANGE_METRIC['version']}"
+            )
+            self.log(f"Signal change [{metric_label}]: {strength:.0f}%")
+            self.log(f"  Scope: {EVIDENCE_NOTICE}")
+            evidence_frames = min(
+                frames,
+                int(sample_rate * 30.0),
+                chunk_samples,
+            )
+            original_evidence = np.asarray(original[:evidence_frames])
+            if original_evidence.ndim == 2:
+                original_evidence = original_evidence[:, 0]
+            processed_evidence = np.asarray(current[:evidence_frames])
+            if processed_evidence.ndim == 2:
+                processed_evidence = processed_evidence[:, 0]
+            processed_evidence = np.clip(processed_evidence, -1.0, 1.0)
+            verifier_result = ConstellationVerifier(self).score(
+                original_evidence,
+                processed_evidence,
+                sample_rate,
+            )
+            self._verifier_results = [verifier_result.to_dict()]
+            self.log(format_verifier_result(verifier_result))
+
+            self.log(f"Saving {Path(output_path).name}...")
+            self.progress(92)
+            tmp_output = None
+            try:
+                if _format_requires_ffmpeg(output_format):
+                    if not _check_ffmpeg():
+                        return stream_finish(
+                            RenderState.FAILED,
+                            RenderErrorCode.ENCODER_UNAVAILABLE,
+                            f"{output_format.upper()} export requires ffmpeg in PATH",
+                        )
+                    if not _ffmpeg_encoder_available(output_format):
+                        return stream_finish(
+                            RenderState.FAILED,
+                            RenderErrorCode.ENCODER_UNAVAILABLE,
+                            f"ffmpeg lacks encoder for {output_format.upper()} export",
+                        )
+                tmp_output = _make_atomic_output_temp(output_path)
+                self._write_streamed_audio(
+                    current,
+                    sample_rate,
+                    tmp_output,
+                    output_format,
+                    mono,
+                    chunk_samples,
+                    decoded_path.parent,
+                )
+                if self.params.get("strip_metadata", True):
+                    self._strip_metadata(tmp_output)
+                pre_binding_validation = _validate_render_output(
+                    input_path=input_path,
+                    encoded_path=tmp_output,
+                    output_path=output_path,
+                    fmt=output_format,
+                    expected_sample_rate=sample_rate,
+                    expected_channels=channels,
+                    expected_frames=frames,
+                )
+                sidecar_core = self._build_sidecar_core(
+                    input_path,
+                    output_path,
+                    sample_rate,
+                    pass_names,
+                    strength,
+                    pre_binding_validation.input_sha256,
+                    output_format,
+                )
+                sidecar_payload_sha256 = _canonical_payload_sha256(
+                    _sidecar_binding_payload(sidecar_core)
+                )
+                _write_audio_sidecar_binding(
+                    tmp_output,
+                    sidecar_payload_sha256,
+                )
+                _fsync_file(tmp_output)
+                self.progress(96)
+                validation = _validate_render_output(
+                    input_path=input_path,
+                    encoded_path=tmp_output,
+                    output_path=output_path,
+                    fmt=output_format,
+                    expected_sample_rate=sample_rate,
+                    expected_channels=channels,
+                    expected_frames=frames,
+                )
+                if self._is_cancelled():
+                    return stream_finish(
+                        RenderState.CANCELLED,
+                        RenderErrorCode.CANCELLED,
+                        "cancelled before validated output promotion",
+                    )
+                _promote_file_no_replace(tmp_output, output_path)
+                tmp_output = None
+            except DecodeCancelled:
+                return stream_finish(
+                    RenderState.CANCELLED,
+                    RenderErrorCode.CANCELLED,
+                    "streaming render cancelled",
+                )
+            except OutputValidationError as exc:
+                return stream_finish(
+                    RenderState.FAILED,
+                    exc.code,
+                    str(exc),
+                )
+            except Exception as exc:
+                self.log(traceback.format_exc().rstrip())
+                return stream_finish(
+                    RenderState.FAILED,
+                    RenderErrorCode.OUTPUT_WRITE_FAILED,
+                    str(exc),
+                )
+            finally:
+                _remove_file_silent(tmp_output)
+
+            self.progress(99)
+            sidecar_evidence = self._write_sidecar(
+                output_path,
+                validation,
+                sidecar_core,
+                sidecar_payload_sha256,
+            )
+            if not sidecar_evidence:
+                return stream_finish(
+                    RenderState.PARTIAL,
+                    RenderErrorCode.SIDECAR_WRITE_FAILED,
+                    "validated audio was promoted, but its sidecar could not be written",
+                    validation,
+                )
+            self.progress(100)
+            return stream_finish(
+                RenderState.SUCCEEDED,
+                validation=validation,
+                sidecar_path=sidecar_evidence["path"],
+                sidecar_sha256=sidecar_evidence["sha256"],
+            )
+        except DecodeCancelled:
+            return stream_finish(
+                RenderState.CANCELLED,
+                RenderErrorCode.CANCELLED,
+                "streaming render cancelled",
+            )
+        except Exception as exc:
+            self.log(f"  Streaming error: {exc}")
+            self.log(traceback.format_exc().rstrip())
+            return stream_finish(
+                RenderState.FAILED,
+                RenderErrorCode.PASS_FAILED,
+                str(exc),
+            )
+
     def _replay_report(self, fmt):
         nondeterministic_dependencies = []
         compute_evidence = self._compute_backend.evidence
@@ -2515,6 +3243,7 @@ class AudioProcessor:
             "source_provenance": self._source_provenance_report(),
             "rng": self._trace.get("rng", {}),
             "passes": self._trace.get("passes", {}),
+            "streaming": self._trace.get("streaming", {"enabled": False}),
             "replay": self._replay_report(fmt),
         }
 

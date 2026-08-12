@@ -15,6 +15,9 @@
 - **Optional CUDA FFT backend.** Source runs can dispatch every STFT/ISTFT-heavy pass to a lazily loaded PyTorch CUDA runtime through `--compute` or `SUNOJUMP_COMPUTE_BACKEND`, with strict and fallback modes.
 - **GPU correctness and artifact gates.** CUDA selection must pass an on-device SciPy parity vector before rendering; fixed-seed CPU/Torch contract tests cover the full FFT-heavy pass chain, while frozen builds exclude Torch and enforce a 250 MiB executable ceiling.
 - **Compute provenance.** Replay sidecar schema v3 records backend/library/device/CUDA evidence and marks accelerated renders dependency-sensitive across GPU environments.
+- **Bounded long-file rendering.** Full renders now decode into caller-owned NPY memory maps and automatically switch large payloads to disk-backed, overlap-blended chunks across the complete pass pipeline instead of retaining the whole source and every pass in RAM.
+- **Streaming evidence and safety.** Replay sidecar schema v4 records decode/processing strategies, chunk geometry, and per-chunk pass traces; temporary disk capacity, cancellation, atomic output promotion, and fail-closed cleanup are enforced throughout the streaming path.
+- **Streaming regression coverage.** Added caller-owned chunked-decode, bounded multi-chunk stereo, mono metadata-only, configuration, provenance, and pass-failure cleanup tests (251 total tests).
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

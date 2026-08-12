@@ -121,7 +121,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Identity-safe batch queue** — drag/drop multiple files, reorder them, and process them sequentially; stable job IDs prevent late worker results from attaching to replacement rows
 - **Resumable batch manifests** — every batch atomically persists inputs, seeds, configuration, attempts, terminal states, and artifact hashes; interrupted and failed-only work can be resumed without replacing existing files
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
-- **Guarded in-memory processing** — input size/decode limits are enforced; the Humanization pass processes long audio in chunks
+- **Bounded long-file processing** — isolated decoding writes fixed-size blocks to a disk-backed memory map; payloads above 256 MiB run every enabled transform in overlap-blended chunks with a bounded working set and atomic cleanup
 - **Open Output** — one-click to output folder in your file manager
 - **Versioned signal-change metric** — inspect a sample-domain difference value with explicit scope
 

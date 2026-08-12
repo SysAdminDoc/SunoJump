@@ -16,6 +16,7 @@ from typing import BinaryIO
 
 HEADER_INSPECTION_BYTES = 1024 * 1024
 NPY_OVERHEAD_BYTES = 64 * 1024
+DECODE_CHUNK_FRAMES = 65536
 WAVE_FORMAT_IMA_ADPCM = 0x0011
 WAVE_FORMAT_EXTENSIBLE = 0xFFFE
 MIN_LIBSNDFILE_VERSION = (1, 2, 2)
@@ -411,28 +412,51 @@ def _decode_worker(
             info = sf.info(source)
             metadata = _validate_audio_info(info, preview_seconds, limits)
             source.seek(0)
-            read_kwargs: dict[str, object] = {"dtype": "float64"}
-            if preview_seconds is not None and preview_seconds > 0:
-                read_kwargs["frames"] = metadata["read_frames"]
-            audio, samplerate = sf.read(source, **read_kwargs)
+            read_frames = int(metadata["read_frames"])
+            channels = int(metadata["channels"])
+            shape = (read_frames,) if channels == 1 else (read_frames, channels)
+            if read_frames == 0:
+                np.save(audio_path, np.empty(shape, dtype=np.float64))
+                audio = None
+            else:
+                audio = np.lib.format.open_memmap(
+                    audio_path,
+                    mode="w+",
+                    dtype=np.float64,
+                    shape=shape,
+                )
+            offset = 0
+            with sf.SoundFile(source, mode="r") as decoder:
+                if int(decoder.samplerate) != metadata["samplerate"]:
+                    raise ValueError(
+                        "decoder sample rate changed between inspection and read"
+                    )
+                while offset < read_frames:
+                    block = decoder.read(
+                        frames=min(DECODE_CHUNK_FRAMES, read_frames - offset),
+                        dtype="float64",
+                        always_2d=channels > 1,
+                    )
+                    if block.size == 0:
+                        break
+                    if not np.all(np.isfinite(block)):
+                        raise ValueError(
+                            "decoded audio contains non-finite samples"
+                        )
+                    count = int(block.shape[0])
+                    audio[offset:offset + count] = block
+                    offset += count
+            if offset != read_frames:
+                raise ValueError(
+                    f"decoder returned {offset} frames; expected {read_frames}"
+                )
+            if audio is not None:
+                audio.flush()
+                del audio
 
-        if int(samplerate) != metadata["samplerate"]:
-            raise ValueError("decoder sample rate changed between inspection and read")
-        if audio.size <= 0:
-            raise ValueError("empty audio file")
-        if audio.nbytes > limits.max_decoded_bytes:
-            raise ValueError(
-                f"decoded audio exceeded memory guardrail "
-                f"({audio.nbytes} bytes > {limits.max_decoded_bytes} bytes)"
-            )
-        if not np.all(np.isfinite(audio)):
-            raise ValueError("decoded audio contains non-finite samples")
-        expected_channels = 1 if audio.ndim == 1 else int(audio.shape[1])
-        if expected_channels != metadata["channels"]:
-            raise ValueError("decoder channel count changed between inspection and read")
-
-        np.save(audio_path, audio, allow_pickle=False)
-        metadata["decoded_bytes"] = int(audio.nbytes)
+        metadata["decoded_bytes"] = int(metadata["decoded_bytes"])
+        metadata["decode_strategy"] = "chunked-npy-memmap"
+        metadata["decode_chunk_frames"] = DECODE_CHUNK_FRAMES
         metadata["header"] = header
         metadata["soundfile_version"] = str(getattr(sf, "__version__", "unknown"))
         metadata["libsndfile_version"] = str(
@@ -498,18 +522,47 @@ def decode_audio_isolated(
     _worker_command: list[str] | None = None,
 ) -> tuple[object, int, dict[str, object]]:
     """Decode in a capped child process and validate its bounded output."""
+    with tempfile.TemporaryDirectory(prefix="sunojump-decode-") as temp_dir:
+        audio_path = Path(temp_dir) / "audio.npy"
+        samplerate, metadata = decode_audio_isolated_to_path(
+            input_path,
+            preview_seconds,
+            limits,
+            audio_path,
+            cancel_event=cancel_event,
+            _worker_command=_worker_command,
+        )
+        import numpy as np
+
+        audio = np.load(audio_path, allow_pickle=False)
+        return audio, samplerate, metadata
+
+
+def decode_audio_isolated_to_path(
+    input_path: str | os.PathLike[str],
+    preview_seconds: float | None,
+    limits: DecodeLimits,
+    audio_path: str | os.PathLike[str],
+    *,
+    cancel_event: object | None = None,
+    _worker_command: list[str] | None = None,
+) -> tuple[int, dict[str, object]]:
+    """Chunk-decode into a caller-owned NPY path without loading it in RAM."""
     if cancel_event is not None and bool(cancel_event.is_set()):
         raise DecodeCancelled("audio decode cancelled")
 
-    with tempfile.TemporaryDirectory(prefix="sunojump-decode-") as temp_dir:
-        audio_path = str(Path(temp_dir) / "audio.npy")
+    target = Path(audio_path)
+    if target.exists():
+        raise ValueError("isolated audio decode target already exists")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sunojump-decode-status-") as temp_dir:
         result_path = str(Path(temp_dir) / "result.json")
         request_path = str(Path(temp_dir) / "request.json")
         Path(request_path).write_text(
             json.dumps(
                 {
                     "input_path": str(input_path),
-                    "audio_path": audio_path,
+                    "audio_path": str(target),
                     "result_path": result_path,
                     "preview_seconds": preview_seconds,
                     "limits": asdict(limits),
@@ -557,7 +610,7 @@ def decode_audio_isolated(
         if not result.get("ok"):
             raise ValueError(str(result.get("error") or "isolated audio decode failed"))
 
-        output = Path(audio_path)
+        output = target
         if not output.is_file():
             raise ValueError("isolated audio decoder returned no sample payload")
         if output.stat().st_size > limits.max_decoded_bytes + NPY_OVERHEAD_BYTES:
@@ -565,10 +618,11 @@ def decode_audio_isolated(
 
         import numpy as np
 
-        audio = np.load(output, allow_pickle=False)
+        audio = np.load(output, allow_pickle=False, mmap_mode="r")
         if audio.nbytes > limits.max_decoded_bytes:
             raise ValueError("isolated audio decoder exceeded its decoded-memory cap")
         metadata = result.get("metadata")
         if not isinstance(metadata, dict):
             raise ValueError("isolated audio decoder returned no metadata")
-        return audio, int(metadata["samplerate"]), metadata
+        del audio
+        return int(metadata["samplerate"]), metadata

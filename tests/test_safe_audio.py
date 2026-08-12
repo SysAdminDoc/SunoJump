@@ -111,6 +111,38 @@ class IsolatedDecodeTests(unittest.TestCase):
         self.assertLessEqual(decoded.nbytes, sunojump.MAX_DECODED_AUDIO_BYTES)
         self.assertEqual(metadata["libsndfile_version"], sf.__libsndfile_version__)
         self.assertEqual(metadata["header"]["container"], "wav")
+        self.assertEqual(metadata["decode_strategy"], "chunked-npy-memmap")
+        self.assertEqual(
+            metadata["decode_chunk_frames"],
+            safe_audio.DECODE_CHUNK_FRAMES,
+        )
+
+    def test_decode_to_caller_owned_path_is_memory_mappable(self):
+        samplerate = 8000
+        t = np.arange(samplerate * 2, dtype=np.float64) / samplerate
+        audio = np.column_stack([
+            0.2 * np.sin(2.0 * np.pi * 220.0 * t),
+            0.2 * np.sin(2.0 * np.pi * 330.0 * t),
+        ])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "input.wav"
+            decoded_path = Path(temp_dir) / "decoded.npy"
+            sf.write(input_path, audio, samplerate)
+
+            decoded_rate, metadata = safe_audio.decode_audio_isolated_to_path(
+                input_path,
+                None,
+                sunojump._decode_limits(),
+                decoded_path,
+            )
+            decoded = np.load(decoded_path, allow_pickle=False, mmap_mode="r")
+
+            self.assertEqual(decoded_rate, samplerate)
+            self.assertEqual(decoded.shape, audio.shape)
+            self.assertIsInstance(decoded, np.memmap)
+            self.assertEqual(metadata["decoded_bytes"], decoded.nbytes)
+            self.assertEqual(metadata["decode_strategy"], "chunked-npy-memmap")
+            decoded._mmap.close()
 
     def test_decode_honors_cancellation_before_spawn(self):
         cancel = threading.Event()

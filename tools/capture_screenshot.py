@@ -32,6 +32,7 @@ def capture(
     pseudo: bool = False,
     keyboard_focus: bool = False,
 ) -> int:
+    from localization import configure_locale
     from sunojump import VERSION, APP_NAME
 
     try:
@@ -42,6 +43,7 @@ def capture(
         return 2
 
     app = QApplication(sys.argv[:1])
+    configure_locale("qps-ploc" if pseudo else "en", app)
     if font_scale != 1.0:
         font = app.font()
         if font.pointSizeF() > 0:
@@ -63,22 +65,8 @@ def capture(
     win = MainWindow(settings=settings)
     if width is not None or height is not None:
         win.resize(width or win.width(), height or win.height())
-    if rtl:
+    if rtl or pseudo:
         win.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-    if pseudo:
-        expansions = {
-            win.btn_browse: "[!! Browse for audio files !!]",
-            win.btn_remove: "[!! Remove selected audio files !!]",
-            win.btn_resume_batch: "[!! Resume interrupted batch !!]",
-            win.btn_retry_failed: "[!! Retry failed batch jobs !!]",
-            win.btn_process: "[!! Process every queued file !!]",
-        }
-        for widget, text in expansions.items():
-            widget.setText(text)
-        win.scope_label.setText(
-            "[!! Rights-owned audio material only !!]\n"
-            "[!! Local metrics never predict external platform outcomes !!]"
-        )
     win._update_responsive_layout(win.width() - 20)
     win.show()
     if keyboard_focus:

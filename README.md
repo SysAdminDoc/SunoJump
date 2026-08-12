@@ -160,6 +160,9 @@ python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json --re
 
 # Explicitly allow a transformed output that omits source Content Credentials
 python sunojump.py -i signed.wav --c2pa-policy allow-removal
+
+# Select a locale for GUI or CLI text (qps-ploc is the RTL test locale)
+python sunojump.py --locale en
 ```
 
 #### CLI Options
@@ -170,6 +173,7 @@ python sunojump.py -i signed.wav --c2pa-policy allow-removal
 | `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
 | `-f, --format` | wav, flac, ogg, mp3, m4a (mp3/m4a require ffmpeg) | wav |
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
+| `--locale` | Locale catalog for GUI labels and CLI help; falls back from region to language to English | system locale |
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
@@ -197,6 +201,8 @@ python sunojump.py -i signed.wav --c2pa-policy allow-removal
 | `--native-runtime` | Print machine-readable decoder version and containment policy, then exit | n/a |
 
 Every numeric override enables its corresponding pass. To disable one, use `--disable-pass` with a name shown by `--help`; combining a pass's numeric value with its disable flag is rejected. Values and preset files are validated strictly—unknown keys, wrong types, non-finite numbers, future schemas, and out-of-range values exit before an output directory or file is created.
+
+GUI labels, tooltips, status/error text, accessibility descriptions, and CLI help share the JSON catalogs in `locales/`. Locale selection follows Qt-style fallback (`language-region` → `language` → English), and plural forms plus right-to-left layout direction are catalog controlled. `--locale` overrides the system locale for one run; `SUNOJUMP_LOCALE` provides the same override for launches that cannot pass arguments.
 
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs. Legacy partial presets are migrated and completed from the documented Moderate defaults; saved Custom sessions persist the full validated configuration rather than only the word `Custom`.
 

@@ -8,6 +8,8 @@
 - **Dependency/native compatibility lane.** Expanded the dependency audit into a machine-readable direct/transitive/build/native drift, DSP-golden, security, and rollback report; added Python 3.11/3.12 source CI plus an exact-lock CPython 3.12 release contract.
 - **Lock-coupled upgrade baseline.** Added a schema-versioned record binding both lock hashes to tested native versions, deterministic generated-audio output, supported lanes, and an explicit rollback commit; stale baselines now block release builds.
 - **Runtime-native evidence.** Qt reporting now distinguishes the loaded runtime version from the compile target, and release artifacts include the compatibility baseline and provenance evidence.
+- **Localized GUI and CLI text.** Added Qt-compatible JSON catalogs with region/language/English fallback, plural forms, runtime `--locale`/`SUNOJUMP_LOCALE` selection, and catalog-controlled right-to-left layout.
+- **Pseudo-localization coverage.** The bundled `qps-ploc` catalog now drives offscreen GUI, status, error, CLI-help, responsive-layout, screenshot, and frozen-package tests instead of hand-edited sample labels.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

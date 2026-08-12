@@ -59,6 +59,14 @@ class ReleaseBuildTests(unittest.TestCase):
             self.mod.REQUIRED_SOURCE_FILES,
         )
 
+    def test_release_source_includes_localization_runtime_and_catalogs(self):
+        for path in (
+            pathlib.Path("localization.py"),
+            pathlib.Path("locales/en.json"),
+            pathlib.Path("locales/qps-ploc.json"),
+        ):
+            self.assertIn(path, self.mod.REQUIRED_SOURCE_FILES)
+
     def test_release_source_and_gate_include_compatibility_evidence(self):
         self.assertIn(
             pathlib.Path("tools/compatibility_baseline.json"),

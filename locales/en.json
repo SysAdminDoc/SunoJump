@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "locale": "en",
+  "direction": "ltr",
+  "translations": {
+    "Queue": "Queue",
+    "Browse": "Browse",
+    "Remove": "Remove",
+    "Clear": "Clear",
+    "Resume Batch": "Resume Batch",
+    "Retry Failed": "Retry Failed",
+    "Process All": "Process All",
+    "Cancel": "Cancel",
+    "Cancel Scan": "Cancel Scan",
+    "Monitor": "Monitor",
+    "Preview": "Preview",
+    "Compare": "Compare",
+    "Original": "Original",
+    "Processed": "Processed",
+    "Select a file": "Select a file",
+    "Processing Pipeline": "Processing Pipeline",
+    "Destination": "Destination",
+    "Session Log": "Session Log",
+    "Ready": "Ready",
+    "Scanning": "Scanning",
+    "Processing": "Processing",
+    "Failed": "Failed",
+    "Complete": "Complete",
+    "{n} file": {
+      "one": "{n} file",
+      "other": "{n} files"
+    },
+    "{n} supported audio file found": {
+      "one": "{n} supported audio file found",
+      "other": "{n} supported audio files found"
+    },
+    "Input audio file or directory": "Input audio file or directory",
+    "Output directory": "Output directory",
+    "Validated JSON preset; replaces -p/--preset": "Validated JSON preset; replaces -p/--preset",
+    "Random seed for reproducible output (same seed = same bytes)": "Random seed for reproducible output (same seed = same bytes)",
+    "Print the application version and exit": "Print the application version and exit",
+    "Print machine-readable native dependency versions and exit": "Print machine-readable native dependency versions and exit",
+    "Locale name for translated GUI/CLI strings (for example en or qps-ploc)": "Locale name for translated GUI/CLI strings (for example en or qps-ploc)",
+    "No supported audio files found.": "No supported audio files found.",
+    "Queue is empty. Browse for audio or drop files/folders here.": "Queue is empty. Browse for audio or drop files/folders here."
+  }
+}

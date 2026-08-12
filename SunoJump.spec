@@ -5,7 +5,7 @@ a = Analysis(
     ['sunojump.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('locales', 'locales')],
     hiddenimports=['PyQt6.QtMultimedia'],
     hookspath=[],
     hooksconfig={},

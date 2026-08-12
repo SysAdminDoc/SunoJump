@@ -138,6 +138,14 @@ except ImportError as e:
     print("Install dependencies with:  python -m pip install -r requirements.txt", file=sys.stderr)
     sys.exit(1)
 
+from localization import (
+    active_layout_direction,
+    configure_locale,
+    requested_locale_from_argv,
+    tr as _tr,
+    without_locale_args,
+)
+
 # Optional multimedia: only used for preview playback. Some Linux
 # distros ship PyQt6 without the Multimedia module (separate package).
 try:
@@ -826,6 +834,8 @@ def _open_file(path):
 
 
 def _set_accessibility(widget, name, description):
+    name = _tr(name)
+    description = _tr(description)
     widget.setAccessibleName(name)
     widget.setAccessibleDescription(description)
     if hasattr(widget, 'setToolTip') and not widget.toolTip():
@@ -4358,6 +4368,7 @@ class ParamRow(QWidget):
     def __init__(self, key, label, min_val, max_val, default, suffix='',
                  decimals=2, enabled_key='', display_factor=1.0):
         super().__init__()
+        label = _tr(label)
         self.setObjectName("paramRow")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumHeight(38)
@@ -4647,8 +4658,11 @@ class FileDiscoveryWorker(QThread):
 #  Main Window
 # ============================================================
 class MainWindow(QMainWindow):
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, locale_name=None):
+        if locale_name is not None:
+            configure_locale(locale_name, QApplication.instance())
         super().__init__()
+        self.setLayoutDirection(active_layout_direction())
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
         self.setMinimumSize(560, 360)
         self.resize(1180, 880)
@@ -5469,14 +5483,14 @@ class MainWindow(QMainWindow):
         title = QLabel(APP_NAME)
         title.setObjectName("appTitle")
         _set_relative_font(title, 9.0, bold=True)
-        self.scope_label = QLabel(
+        self.scope_label = QLabel(_tr(
             "Rights-owned audio only\n"
             "Local metrics do not predict platform outcomes"
-        )
+        ))
         self.scope_label.setObjectName("appSubtitle")
         self.scope_label.setWordWrap(True)
         _set_relative_font(self.scope_label, -1.0)
-        self.scope_label.setToolTip(EVIDENCE_NOTICE)
+        self.scope_label.setToolTip(_tr(EVIDENCE_NOTICE))
         brand_col.addWidget(title)
         brand_col.addWidget(self.scope_label)
         self._header_layout.addWidget(brand_widget, 1)
@@ -5487,7 +5501,7 @@ class MainWindow(QMainWindow):
         self.preset_status_label.setObjectName("accentPill")
         self.format_status_label = QLabel("WAV")
         self.format_status_label.setObjectName("statusPill")
-        self.render_status_label = QLabel("Ready")
+        self.render_status_label = QLabel(_tr("Ready"))
         self.render_status_label.setObjectName("statusPill")
 
         self._version_label = QLabel(f"v{VERSION}")
@@ -5554,13 +5568,13 @@ class MainWindow(QMainWindow):
 
         head = QVBoxLayout()
         head.setSpacing(2)
-        title_label = QLabel(title)
+        title_label = QLabel(_tr(title))
         title_label.setObjectName("sectionTitle")
         title_label.setWordWrap(True)
         _set_relative_font(title_label, 2.0, bold=True)
         head.addWidget(title_label)
         if subtitle:
-            subtitle_label = QLabel(subtitle)
+            subtitle_label = QLabel(_tr(subtitle))
             subtitle_label.setObjectName("sectionSubtitle")
             subtitle_label.setWordWrap(True)
             _set_relative_font(subtitle_label, -1.0)
@@ -5572,7 +5586,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'queue_status_label'):
             return
         count = self.file_list.count() if hasattr(self, 'file_list') else 0
-        count_text = f"{count} file{'s' if count != 1 else ''}"
+        count_text = _tr("{n} file", n=count)
         self.queue_status_label.setText(count_text)
         self.queue_status_label.setAccessibleName(
             f"Queue status: {count_text}"
@@ -5592,9 +5606,10 @@ class MainWindow(QMainWindow):
 
     def _set_render_state(self, text):
         if hasattr(self, 'render_status_label'):
-            self.render_status_label.setText(text)
+            translated = _tr(text)
+            self.render_status_label.setText(translated)
             self.render_status_label.setAccessibleName(
-                f"Render status: {text}"
+                _tr("Render status: {state}", state=translated)
             )
 
     # --- File section ---
@@ -5607,19 +5622,19 @@ class MainWindow(QMainWindow):
         self._queue_primary_grid = QGridLayout()
         self._queue_primary_grid.setSpacing(8)
         self.btn_browse = self._decorate_button(
-            ResponsiveButton("Browse"),
+            ResponsiveButton(_tr("Browse")),
             QStyle.StandardPixmap.SP_DialogOpenButton,
         )
         self.btn_browse.clicked.connect(self._on_browse)
         self.btn_remove = self._decorate_button(
-            ResponsiveButton("Remove"),
+            ResponsiveButton(_tr("Remove")),
             QStyle.StandardPixmap.SP_DialogCancelButton,
         )
         self.btn_remove.clicked.connect(self._on_remove_selected)
-        self.btn_clear = ResponsiveButton("Clear")
+        self.btn_clear = ResponsiveButton(_tr("Clear"))
         self.btn_clear.clicked.connect(self._on_clear)
 
-        self.file_count_label = QLabel("0 files")
+        self.file_count_label = QLabel(_tr("{n} file", n=0))
         self.file_count_label.setObjectName("countLabel")
 
         self._place_grid(
@@ -5637,22 +5652,24 @@ class MainWindow(QMainWindow):
         self._queue_history_grid = QGridLayout()
         self._queue_history_grid.setSpacing(8)
         self.btn_resume_batch = self._decorate_button(
-            ResponsiveButton("Resume Batch"),
+            ResponsiveButton(_tr("Resume Batch")),
             QStyle.StandardPixmap.SP_BrowserReload,
         )
         self.btn_resume_batch.setToolTip(
-            "Load a batch manifest and continue pending/interrupted jobs"
+            _tr("Load a batch manifest and continue pending/interrupted jobs")
         )
         self.btn_resume_batch.clicked.connect(
             lambda: self._load_batch_manifest("pending")
         )
         self.btn_retry_failed = self._decorate_button(
-            ResponsiveButton("Retry Failed"),
+            ResponsiveButton(_tr("Retry Failed")),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_retry_failed.setToolTip(
-            "Retry failed/partial jobs from the latest batch, or choose a "
-            "batch manifest when no recent batch is available"
+            _tr(
+                "Retry failed/partial jobs from the latest batch, or choose a "
+                "batch manifest when no recent batch is available"
+            )
         )
         self.btn_retry_failed.clicked.connect(self._retry_failed_batch)
         self._place_grid(
@@ -5679,9 +5696,9 @@ class MainWindow(QMainWindow):
         self.file_list.itemSelectionChanged.connect(self._update_preview_ui)
         lay.addWidget(self.file_list)
 
-        self.queue_activity_label = QLabel(
+        self.queue_activity_label = QLabel(_tr(
             "Queue is empty. Browse for audio or drop files/folders here."
-        )
+        ))
         self.queue_activity_label.setObjectName("hintLabel")
         self.queue_activity_label.setWordWrap(True)
         self.queue_activity_label.setAccessibleName(
@@ -5689,7 +5706,10 @@ class MainWindow(QMainWindow):
         )
         lay.addWidget(self.queue_activity_label)
 
-        hint = QLabel("Drop files here - drag to reorder - WAV, MP3, FLAC, OGG, AIFF, Opus")
+        hint = QLabel(_tr(
+            "Drop files here - drag to reorder - WAV, MP3, FLAC, OGG, "
+            "AIFF, Opus"
+        ))
         hint.setObjectName("hintLabel")
         hint.setWordWrap(True)
         _set_relative_font(hint, -1.0)
@@ -5707,7 +5727,7 @@ class MainWindow(QMainWindow):
         # Preset row
         self._preset_controls_grid = QGridLayout()
         self._preset_controls_grid.setSpacing(8)
-        self.preset_label = QLabel("Preset:")
+        self.preset_label = QLabel(_tr("Preset:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(list(PRESETS.keys()) + ['Custom'])
         self.preset_combo.setCurrentText('Extreme')
@@ -5715,17 +5735,21 @@ class MainWindow(QMainWindow):
         self.preset_label.setBuddy(self.preset_combo)
 
         self.btn_save_preset = self._decorate_button(
-            ResponsiveButton("Save"),
+            ResponsiveButton(_tr("Save")),
             QStyle.StandardPixmap.SP_DialogSaveButton,
         )
-        self.btn_save_preset.setToolTip("Save current settings to a JSON file")
+        self.btn_save_preset.setToolTip(
+            _tr("Save current settings to a JSON file")
+        )
         self.btn_save_preset.clicked.connect(self._save_preset)
 
         self.btn_load_preset = self._decorate_button(
-            ResponsiveButton("Load"),
+            ResponsiveButton(_tr("Load")),
             QStyle.StandardPixmap.SP_DialogOpenButton,
         )
-        self.btn_load_preset.setToolTip("Load settings from a JSON file")
+        self.btn_load_preset.setToolTip(
+            _tr("Load settings from a JSON file")
+        )
         self.btn_load_preset.clicked.connect(self._load_preset)
         self._place_grid(
             self._preset_controls_grid,
@@ -5742,11 +5766,11 @@ class MainWindow(QMainWindow):
         self._toggle_controls_grid = QGridLayout()
         self._toggle_controls_grid.setHorizontalSpacing(16)
         self._toggle_controls_grid.setVerticalSpacing(8)
-        self.spectral_scan_check = QCheckBox("Narrowband Scan")
+        self.spectral_scan_check = QCheckBox(_tr("Narrowband Scan"))
         self.spectral_scan_check.setChecked(True)
         self.spectral_scan_check.stateChanged.connect(lambda _: self._on_param_changed())
 
-        self.meta_check = QCheckBox("Strip Ordinary Metadata")
+        self.meta_check = QCheckBox(_tr("Strip Ordinary Metadata"))
         self.meta_check.setChecked(True)
         self.meta_check.stateChanged.connect(lambda _: self._on_param_changed())
         self._place_grid(
@@ -5794,23 +5818,32 @@ class MainWindow(QMainWindow):
         )
         self._format_controls_grid = QGridLayout()
         self._format_controls_grid.setSpacing(8)
-        self.format_label = QLabel("Format:")
+        self.format_label = QLabel(_tr("Format:"))
         self.format_combo = QComboBox()
         self.format_combo.addItems([fmt.upper() for fmt in _available_output_formats()])
         if not _check_ffmpeg():
-            self.format_combo.setToolTip("MP3/M4A export requires ffmpeg in PATH")
+            self.format_combo.setToolTip(
+                _tr("MP3/M4A export requires ffmpeg in PATH")
+            )
         else:
             missing = [f.upper() for f in FFMPEG_FORMAT_ENCODERS if not _ffmpeg_encoder_available(f)]
             if missing:
-                self.format_combo.setToolTip(f"ffmpeg lacks encoders for: {', '.join(missing)}")
+                self.format_combo.setToolTip(
+                    _tr(
+                        "ffmpeg lacks encoders for: {encoders}",
+                        encoders=', '.join(missing),
+                    )
+                )
         self.format_combo.currentTextChanged.connect(lambda _: self._sync_header_stats())
         self.format_combo.setMinimumWidth(120)
         self.format_label.setBuddy(self.format_combo)
         self.btn_open_output = self._decorate_button(
-            ResponsiveButton("Open"),
+            ResponsiveButton(_tr("Open")),
             QStyle.StandardPixmap.SP_DirOpenIcon,
         )
-        self.btn_open_output.setToolTip("Open output directory in file manager")
+        self.btn_open_output.setToolTip(
+            _tr("Open output directory in file manager")
+        )
         self.btn_open_output.clicked.connect(self._open_output)
         self._place_grid(
             self._format_controls_grid,
@@ -5825,7 +5858,7 @@ class MainWindow(QMainWindow):
 
         self._directory_controls_grid = QGridLayout()
         self._directory_controls_grid.setSpacing(8)
-        self.directory_label = QLabel("Directory:")
+        self.directory_label = QLabel(_tr("Directory:"))
         self.output_dir = QLineEdit(DEFAULT_OUTPUT)
         self.output_dir.setMinimumWidth(160)
         self.directory_label.setBuddy(self.output_dir)
@@ -5858,7 +5891,7 @@ class MainWindow(QMainWindow):
         self._render_controls_grid.setSpacing(10)
 
         self.btn_process = self._decorate_button(
-            ResponsiveButton("Process All"),
+            ResponsiveButton(_tr("Process All")),
             QStyle.StandardPixmap.SP_MediaPlay,
             "processBtn",
         )
@@ -5866,7 +5899,7 @@ class MainWindow(QMainWindow):
         self.btn_process.clicked.connect(self._on_process)
 
         self.btn_cancel = self._decorate_button(
-            ResponsiveButton("Cancel"),
+            ResponsiveButton(_tr("Cancel")),
             QStyle.StandardPixmap.SP_MediaStop,
             "cancelBtn",
         )
@@ -5899,41 +5932,47 @@ class MainWindow(QMainWindow):
         self._preview_controls_grid = QGridLayout()
         self._preview_controls_grid.setSpacing(8)
         self.btn_render_preview = self._decorate_button(
-            ResponsiveButton("Preview"),
+            ResponsiveButton(_tr("Preview")),
             QStyle.StandardPixmap.SP_BrowserReload,
         )
         self.btn_render_preview.setToolTip(
-            f"Process the first {int(PREVIEW_DURATION_SEC)} seconds of the selected file "
-            "with current settings so you can hear the result before committing."
+            _tr(
+                "Process the first {seconds} seconds of the selected file "
+                "with current settings so you can hear the result before committing.",
+                seconds=int(PREVIEW_DURATION_SEC),
+            )
         )
         self.btn_render_preview.clicked.connect(self._on_render_preview)
         self.btn_render_preview.setEnabled(False)
 
         self.btn_compare = self._decorate_button(
-            ResponsiveButton("Compare"),
+            ResponsiveButton(_tr("Compare")),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_compare.setToolTip(
-            f"Render a {int(COMPARE_DURATION_SEC)}s sample with each built-in preset "
-            "so you can A/B/C/D audition them, then apply your favorite."
+            _tr(
+                "Render a {seconds}s sample with each built-in preset so you "
+                "can A/B/C/D audition them, then apply your favorite.",
+                seconds=int(COMPARE_DURATION_SEC),
+            )
         )
         self.btn_compare.clicked.connect(self._on_compare_presets)
         self.btn_compare.setEnabled(False)
 
         self.btn_play_orig = self._decorate_button(
-            ResponsiveButton("Original"),
+            ResponsiveButton(_tr("Original")),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_play_orig.clicked.connect(lambda: self._toggle_play('original'))
         self.btn_play_orig.setEnabled(False)
 
         self.btn_play_proc = self._decorate_button(
-            ResponsiveButton("Processed"),
+            ResponsiveButton(_tr("Processed")),
             QStyle.StandardPixmap.SP_MediaPlay,
         )
         self.btn_play_proc.clicked.connect(lambda: self._toggle_play('processed'))
         self.btn_play_proc.setEnabled(False)
-        self.preview_label = QLabel("Select a file")
+        self.preview_label = QLabel(_tr("Select a file"))
         self.preview_label.setObjectName("nowPlaying")
         self.preview_label.setWordWrap(True)
         self._place_grid(
@@ -5955,20 +5994,23 @@ class MainWindow(QMainWindow):
         self._compare_controls_grid = QGridLayout(self.compare_panel)
         self._compare_controls_grid.setContentsMargins(0, 2, 0, 0)
         self._compare_controls_grid.setSpacing(8)
-        self.compare_label = QLabel("A/B:")
+        self.compare_label = QLabel(_tr("A/B:"))
         self.compare_buttons = {}
         for name in PRESETS.keys():
             btn = ResponsiveButton(name)
             btn.setObjectName("compareButton")
-            btn.setToolTip(f"Play the {name} sample")
+            btn.setToolTip(_tr("Play the {name} sample", name=name))
             btn.setEnabled(False)
             btn.clicked.connect(lambda _checked=False, n=name: self._play_compare(n))
             self.compare_buttons[name] = btn
         self.btn_apply_compare = ResponsiveButton(
-            "Apply Currently Playing"
+            _tr("Apply Currently Playing")
         )
         self.btn_apply_compare.setToolTip(
-            "Set the currently playing preset as the active preset for Process All"
+            _tr(
+                "Set the currently playing preset as the active preset for "
+                "Process All"
+            )
         )
         self.btn_apply_compare.setEnabled(False)
         self.btn_apply_compare.clicked.connect(self._apply_playing_compare_preset)
@@ -5992,9 +6034,12 @@ class MainWindow(QMainWindow):
             for b in (self.btn_play_orig, self.btn_play_proc,
                       self.btn_render_preview, self.btn_compare):
                 b.setEnabled(False)
-            self.btn_render_preview.setToolTip("Requires PyQt6 QtMultimedia module")
-            self.btn_compare.setToolTip("Requires PyQt6 QtMultimedia module")
-            self.preview_label.setText("(PyQt6 Multimedia not available)")
+            unavailable = _tr("Requires PyQt6 QtMultimedia module")
+            self.btn_render_preview.setToolTip(unavailable)
+            self.btn_compare.setToolTip(unavailable)
+            self.preview_label.setText(
+                _tr("(PyQt6 Multimedia not available)")
+            )
 
         return panel
 
@@ -6016,30 +6061,34 @@ class MainWindow(QMainWindow):
         self._log_controls_grid = QGridLayout()
         self._log_controls_grid.setSpacing(8)
         self.btn_open_log = self._decorate_button(
-            ResponsiveButton("Open Log"),
+            ResponsiveButton(_tr("Open Log")),
             QStyle.StandardPixmap.SP_FileIcon,
         )
-        self.btn_open_log.setToolTip("Open the latest persistent run log")
+        self.btn_open_log.setToolTip(
+            _tr("Open the latest persistent run log")
+        )
         self.btn_open_log.setEnabled(False)
         self.btn_open_log.clicked.connect(self._open_run_log)
 
         self.btn_clear_logs = self._decorate_button(
-            ResponsiveButton("Clear Logs"),
+            ResponsiveButton(_tr("Clear Logs")),
             QStyle.StandardPixmap.SP_TrashIcon,
         )
-        self.btn_clear_logs.setToolTip("Delete all persistent run logs")
+        self.btn_clear_logs.setToolTip(
+            _tr("Delete all persistent run logs")
+        )
         self.btn_clear_logs.clicked.connect(self._clear_all_logs)
 
         self.btn_export_support = self._decorate_button(
-            ResponsiveButton("Export Support"),
+            ResponsiveButton(_tr("Export Support")),
             QStyle.StandardPixmap.SP_DialogSaveButton,
         )
         self.btn_export_support.setToolTip(
-            "Export bounded diagnostics as an atomic ZIP support bundle"
+            _tr("Export bounded diagnostics as an atomic ZIP support bundle")
         )
         self.btn_export_support.clicked.connect(self._export_support_bundle)
 
-        self.retention_label = QLabel("Retain:")
+        self.retention_label = QLabel(_tr("Retain:"))
         self.retention_spin = QSpinBox()
         self.retention_spin.setRange(
             MIN_RETAINED_LOGS,
@@ -6060,7 +6109,7 @@ class MainWindow(QMainWindow):
             self._save_diagnostic_preferences
         )
 
-        self.redact_logs_check = QCheckBox("Redact paths")
+        self.redact_logs_check = QCheckBox(_tr("Redact paths"))
         redact_value = self._settings.value(
             "diagnostics/redact_paths",
             True,
@@ -6078,11 +6127,13 @@ class MainWindow(QMainWindow):
         )
 
         self.btn_diagnostic_privacy = self._decorate_button(
-            ResponsiveButton("Privacy & Locations"),
+            ResponsiveButton(_tr("Privacy & Locations")),
             QStyle.StandardPixmap.SP_MessageBoxInformation,
         )
         self.btn_diagnostic_privacy.setToolTip(
-            "Preview path redaction and show every local diagnostics location"
+            _tr(
+                "Preview path redaction and show every local diagnostics location"
+            )
         )
         self.btn_diagnostic_privacy.clicked.connect(
             self._show_diagnostic_privacy
@@ -6187,9 +6238,10 @@ class MainWindow(QMainWindow):
         self.discovery_worker.start()
 
     def _set_queue_notice(self, text):
-        self.queue_activity_label.setText(str(text))
+        translated = _tr(str(text))
+        self.queue_activity_label.setText(translated)
         self.queue_activity_label.setAccessibleName(
-            f"Queue status: {text}"
+            _tr("Queue status: {state}", state=translated)
         )
 
     def _on_discovery_progress(self, scanned, matched, current_path):
@@ -6268,7 +6320,7 @@ class MainWindow(QMainWindow):
 
     def _update_file_count(self):
         n = self.file_list.count()
-        count_text = f"{n} file{'s' if n != 1 else ''}"
+        count_text = _tr("{n} file", n=n)
         self.file_count_label.setText(count_text)
         self.file_count_label.setAccessibleName(
             f"Queue count: {count_text}"
@@ -6391,17 +6443,17 @@ class MainWindow(QMainWindow):
     def _confirm_c2pa_output_without_credentials(self, inspections):
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Icon.Warning)
-        dialog.setWindowTitle("Content Credentials detected")
-        dialog.setText(
+        dialog.setWindowTitle(_tr("Content Credentials detected"))
+        dialog.setText(_tr(
             "One or more source files contain C2PA Content Credentials."
-        )
-        dialog.setInformativeText(
+        ))
+        dialog.setInformativeText(_tr(
             "SunoJump will transform and re-encode the audio. Original files "
             "remain unchanged, but outputs will not carry or re-sign the "
             "source manifests, and their hard bindings would not apply to "
             "the transformed audio. This is not evidence of an acoustic "
             "detector change."
-        )
+        ))
         details = []
         for path, inspection in inspections:
             stores = ", ".join(
@@ -6413,7 +6465,7 @@ class MainWindow(QMainWindow):
             )
         dialog.setDetailedText("\n".join(details))
         continue_button = dialog.addButton(
-            "Continue without source credentials",
+            _tr("Continue without source credentials"),
             QMessageBox.ButtonRole.AcceptRole,
         )
         cancel_button = dialog.addButton(
@@ -6446,11 +6498,12 @@ class MainWindow(QMainWindow):
             )
             QMessageBox.critical(
                 self,
-                "Provenance inspection failed",
-                (
+                _tr("Provenance inspection failed"),
+                _tr(
                     "SunoJump could not safely inspect source provenance. "
                     "No output was created.\n\n"
-                    f"{details}"
+                    "{details}",
+                    details=details,
                 ),
             )
             return None
@@ -6487,7 +6540,7 @@ class MainWindow(QMainWindow):
             (not processing) and self.file_list.count() > 0
         )
         self.btn_cancel.setEnabled(processing)
-        self.btn_cancel.setText("Cancel")
+        self.btn_cancel.setText(_tr("Cancel"))
         self._set_general_controls(not processing)
         self._set_render_state(
             state or ("Processing" if processing else "Ready")
@@ -6505,10 +6558,12 @@ class MainWindow(QMainWindow):
     def _set_preview_running_ui(self, running, state=None):
         if _MULTIMEDIA_OK:
             self.btn_render_preview.setEnabled(not running)
-            self.btn_render_preview.setText("Rendering..." if running else "Preview")
+            self.btn_render_preview.setText(
+                _tr("Rendering...") if running else _tr("Preview")
+            )
             self.btn_compare.setEnabled(not running)
         self.btn_cancel.setEnabled(running)
-        self.btn_cancel.setText("Cancel")
+        self.btn_cancel.setText(_tr("Cancel"))
         self._set_render_state(
             state or ("Previewing" if running else "Ready")
         )
@@ -6521,7 +6576,9 @@ class MainWindow(QMainWindow):
     def _set_compare_running_ui(self, running, state=None):
         if _MULTIMEDIA_OK:
             self.btn_compare.setEnabled(not running)
-            self.btn_compare.setText("Comparing..." if running else "Compare")
+            self.btn_compare.setText(
+                _tr("Comparing...") if running else _tr("Compare")
+            )
             self.btn_render_preview.setEnabled(not running)
             # Individual compare buttons disabled during re-render
             if running:
@@ -6529,7 +6586,7 @@ class MainWindow(QMainWindow):
                     b.setEnabled(False)
                 self.btn_apply_compare.setEnabled(False)
         self.btn_cancel.setEnabled(running)
-        self.btn_cancel.setText("Cancel")
+        self.btn_cancel.setText(_tr("Cancel"))
         self._set_render_state(
             state or ("Comparing" if running else "Ready")
         )
@@ -6544,7 +6601,9 @@ class MainWindow(QMainWindow):
             (not scanning) and self.file_list.count() > 0
         )
         self.btn_cancel.setEnabled(scanning)
-        self.btn_cancel.setText("Cancel Scan" if scanning else "Cancel")
+        self.btn_cancel.setText(
+            _tr("Cancel Scan") if scanning else _tr("Cancel")
+        )
         self._set_general_controls(not scanning)
         self.file_list.setDragEnabled(not scanning)
         self._set_render_state(
@@ -7359,9 +7418,9 @@ class MainWindow(QMainWindow):
         self.compare_panel.setVisible(True)
         for name, btn in self.compare_buttons.items():
             btn.setEnabled(False)
-            btn.setText(f"{name} ...")
+            btn.setText(_tr("{name} ...", name=name))
         self.btn_apply_compare.setEnabled(False)
-        self.btn_apply_compare.setText("Apply Currently Playing")
+        self.btn_apply_compare.setText(_tr("Apply Currently Playing"))
 
         self._set_compare_running_ui(True)
         self._start_run_log(
@@ -7415,13 +7474,13 @@ class MainWindow(QMainWindow):
             return
         if result.usable_output:
             self._compare_results[name] = result.output_path
-            btn.setText(f"Play {name}")
+            btn.setText(_tr("Play {name}", name=name))
             btn.setEnabled(True)
         elif result.state is RenderState.CANCELLED:
-            btn.setText(f"{name} (cancelled)")
+            btn.setText(_tr("{name} (cancelled)", name=name))
             btn.setEnabled(False)
         else:
-            btn.setText(f"{name} (failed)")
+            btn.setText(_tr("{name} (failed)", name=name))
             btn.setEnabled(False)
 
     def _on_compare_all_done(self, job_id, run_id, result):
@@ -7489,16 +7548,18 @@ class MainWindow(QMainWindow):
             self._media_transitioning = False
         self._update_compare_buttons()
         self.btn_apply_compare.setEnabled(True)
-        self.btn_apply_compare.setText(f"Apply {preset_name}")
+        self.btn_apply_compare.setText(
+            _tr("Apply {preset}", preset=preset_name)
+        )
 
     def _update_compare_buttons(self):
         for name, btn in self.compare_buttons.items():
             if name not in self._compare_results:
                 continue
             if self._playing_compare_preset == name:
-                btn.setText(f"Stop {name}")
+                btn.setText(_tr("Stop {name}", name=name))
             else:
-                btn.setText(f"Play {name}")
+                btn.setText(_tr("Play {name}", name=name))
 
     def _apply_playing_compare_preset(self):
         if not self._playing_compare_preset:
@@ -7557,7 +7618,9 @@ class MainWindow(QMainWindow):
             self._update_preview_ui()
             self._update_compare_buttons()
             if self._compare_results:
-                self.btn_apply_compare.setText("Apply Currently Playing")
+                self.btn_apply_compare.setText(
+                    _tr("Apply Currently Playing")
+                )
                 self.btn_apply_compare.setEnabled(False)
 
     def _on_player_error(self, error, error_str=""):
@@ -7605,15 +7668,15 @@ class MainWindow(QMainWindow):
         self.btn_compare.setEnabled(can_run)
 
         if item is None:
-            self.btn_play_orig.setText("Original")
-            self.btn_play_proc.setText("Processed")
+            self.btn_play_orig.setText(_tr("Original"))
+            self.btn_play_proc.setText(_tr("Processed"))
             self.btn_play_orig.setEnabled(False)
             self.btn_play_proc.setEnabled(False)
-            self.preview_label.setText("Select a file")
+            self.preview_label.setText(_tr("Select a file"))
             self.preview_label.setAccessibleName(
-                "Preview target: Select a file"
+                _tr("Preview target: Select a file")
             )
-            self.compare_label.setText("A/B: select a file")
+            self.compare_label.setText(_tr("A/B: select a file"))
             return
 
         orig_path = item.data(ROLE_INPUT)
@@ -7627,28 +7690,30 @@ class MainWindow(QMainWindow):
             display_name = f"{display_name}  (preview: {int(PREVIEW_DURATION_SEC)}s)"
         self.preview_label.setText(display_name)
         self.preview_label.setAccessibleName(
-            f"Preview target: {display_name}"
+            _tr("Preview target: {name}", name=display_name)
         )
         compare_target = Path(orig_path).name if orig_path else "unknown file"
-        self.compare_label.setText(f"A/B for {compare_target}:")
+        self.compare_label.setText(
+            _tr("A/B for {name}:", name=compare_target)
+        )
         self.compare_label.setAccessibleName(
-            f"Preset comparison target: {compare_target}"
+            _tr("Preset comparison target: {name}", name=compare_target)
         )
 
-        processed_label = "Preview" if is_preview else "Processed"
+        processed_label = _tr("Preview") if is_preview else _tr("Processed")
 
         if self._playing_source == 'original':
-            self.btn_play_orig.setText("Stop")
+            self.btn_play_orig.setText(_tr("Stop"))
             self.btn_play_orig.setEnabled(True)
             self.btn_play_proc.setText(processed_label)
             self.btn_play_proc.setEnabled(False)
         elif self._playing_source == 'processed':
-            self.btn_play_orig.setText("Original")
+            self.btn_play_orig.setText(_tr("Original"))
             self.btn_play_orig.setEnabled(False)
-            self.btn_play_proc.setText("Stop")
+            self.btn_play_proc.setText(_tr("Stop"))
             self.btn_play_proc.setEnabled(True)
         else:
-            self.btn_play_orig.setText("Original")
+            self.btn_play_orig.setText(_tr("Original"))
             self.btn_play_proc.setText(processed_label)
             self.btn_play_orig.setEnabled(orig_ok)
             self.btn_play_proc.setEnabled(proc_ok)
@@ -7803,7 +7868,7 @@ def _parse_cli_log_retention(value):
         parsed = int(value)
     except (TypeError, ValueError) as exc:
         raise argparse.ArgumentTypeError(
-            "diagnostic retention must be an integer"
+            _tr("diagnostic retention must be an integer")
         ) from exc
     try:
         return _validated_log_retention(parsed)
@@ -7813,38 +7878,49 @@ def _parse_cli_log_retention(value):
 
 def _build_cli_parser():
     parser = argparse.ArgumentParser(
-        description=(
+        description=_tr(
             f'{APP_NAME} v{VERSION} -- rights-owned audio variation '
             'and local evidence'
         ),
-        epilog=EVIDENCE_NOTICE,
+        epilog=_tr(EVIDENCE_NOTICE),
     )
     parser.add_argument('-i', '--input', required=False,
-                        help='Input audio file or directory')
-    parser.add_argument('-o', '--output', default=None, help='Output directory')
+                        help=_tr('Input audio file or directory'))
+    parser.add_argument('-o', '--output', default=None,
+                        help=_tr('Output directory'))
     parser.add_argument('-p', '--preset', default='moderate',
-                        choices=['gentle', 'moderate', 'aggressive', 'extreme'])
+                        choices=['gentle', 'moderate', 'aggressive', 'extreme'],
+                        help=_tr('Processing preset'))
     parser.add_argument('-f', '--format', default='wav',
                         choices=list(OUTPUT_EXTENSIONS.keys()),
-                        dest='out_format')
+                        dest='out_format', help=_tr('Output audio format'))
     parser.add_argument('--preset-file', default=None,
-                        help='Validated JSON preset; replaces -p/--preset')
+                        help=_tr('Validated JSON preset; replaces -p/--preset'))
+    parser.add_argument(
+        '--locale',
+        default=None,
+        metavar='LOCALE',
+        help=_tr(
+            'Locale name for translated GUI/CLI strings '
+            '(for example en or qps-ploc)'
+        ),
+    )
     parser.add_argument(
         '--manifest',
         default=None,
-        help='Path for the new atomic batch manifest',
+        help=_tr('Path for the new atomic batch manifest'),
     )
     parser.add_argument(
         '--resume',
         default=None,
         metavar='MANIFEST',
-        help='Resume jobs from an existing SunoJump batch manifest',
+        help=_tr('Resume jobs from an existing SunoJump batch manifest'),
     )
     parser.add_argument(
         '--retry',
         choices=sorted(RETRY_POLICIES),
         default=None,
-        help=(
+        help=_tr(
             'With --resume, select pending (default), unfinished, failed, '
             'or cancelled jobs only'
         ),
@@ -7853,7 +7929,7 @@ def _build_cli_parser():
         '--c2pa-policy',
         choices=sorted(C2PA_POLICIES),
         default=C2PA_POLICY_BLOCK,
-        help=(
+        help=_tr(
             "C2PA source policy: block (default) refuses transformed "
             "outputs; allow-removal explicitly acknowledges that originals "
             "stay unchanged while outputs omit and do not re-sign source "
@@ -7865,7 +7941,7 @@ def _build_cli_parser():
         type=_parse_cli_log_retention,
         default=MAX_RETAINED_LOGS,
         metavar='COUNT',
-        help=(
+        help=_tr(
             "retain 1-365 persistent run logs "
             f"(default: {MAX_RETAINED_LOGS})"
         ),
@@ -7873,7 +7949,7 @@ def _build_cli_parser():
     parser.add_argument(
         '--no-redact-diagnostics',
         action='store_true',
-        help=(
+        help=_tr(
             "explicitly keep absolute paths in new run logs; path redaction "
             "is enabled by default"
         ),
@@ -7883,7 +7959,7 @@ def _build_cli_parser():
         '--no-watermark-scan',
         action='store_true',
         dest='no_spectral_scan',
-        help=(
+        help=_tr(
             'Disable the local narrowband candidate scan pre-pass; '
             '--no-watermark-scan is a compatibility alias'
         ),
@@ -7894,7 +7970,9 @@ def _build_cli_parser():
         default=[],
         choices=sorted(_CLI_PASS_KEYS),
         metavar='PASS',
-        help='Enable a named pass using its preset/current amount; repeatable',
+        help=_tr(
+            'Enable a named pass using its preset/current amount; repeatable'
+        ),
     )
     parser.add_argument(
         '--disable-pass',
@@ -7902,90 +7980,103 @@ def _build_cli_parser():
         default=[],
         choices=sorted(_CLI_PASS_KEYS),
         metavar='PASS',
-        help='Disable a named pass; repeatable and conflicts with its value flag',
+        help=_tr(
+            'Disable a named pass; repeatable and conflicts with its value flag'
+        ),
     )
     parser.add_argument(
         '--spectral',
         type=float,
-        help='Set spectral perturbation (0.0-1.0) and enable its pass',
+        help=_tr('Set spectral perturbation (0.0-1.0) and enable its pass'),
     )
     parser.add_argument(
         '--spectral-sub-bass',
         type=float,
-        help='Set sub-bass spectral amount (0.0-1.0) and enable its pass',
+        help=_tr(
+            'Set sub-bass spectral amount (0.0-1.0) and enable its pass'
+        ),
     )
     parser.add_argument(
         '--spectral-low-mids',
         type=float,
-        help='Set low-mids spectral amount (0.0-1.0) and enable its pass',
+        help=_tr(
+            'Set low-mids spectral amount (0.0-1.0) and enable its pass'
+        ),
     )
     parser.add_argument(
         '--spectral-presence',
         type=float,
-        help='Set presence spectral amount (0.0-1.0) and enable its pass',
+        help=_tr(
+            'Set presence spectral amount (0.0-1.0) and enable its pass'
+        ),
     )
     parser.add_argument(
         '--spectral-air',
         type=float,
-        help='Set air spectral amount (0.0-1.0) and enable its pass',
+        help=_tr('Set air spectral amount (0.0-1.0) and enable its pass'),
     )
     parser.add_argument(
         '--dynamic-eq',
         type=float,
-        help='Set Dynamic EQ amount (0.0-1.0) and enable its pass',
+        help=_tr('Set Dynamic EQ amount (0.0-1.0) and enable its pass'),
     )
     parser.add_argument(
         '--pitch',
         type=float,
-        help='Set pitch range (0.0-5.0 semitones) and enable its pass',
+        help=_tr('Set pitch range (0.0-5.0 semitones) and enable its pass'),
     )
     parser.add_argument(
         '--tempo',
         type=float,
-        help='Set tempo variation (0.0-0.15) and enable its pass',
+        help=_tr('Set tempo variation (0.0-0.15) and enable its pass'),
     )
     parser.add_argument(
         '--phase',
         type=float,
-        help='Set phase scrambling (0.0-1.0) and enable its pass',
+        help=_tr('Set phase scrambling (0.0-1.0) and enable its pass'),
     )
     parser.add_argument(
         '--stereo',
         type=float,
-        help='Set stereo manipulation (0.0-0.5) and enable its pass',
+        help=_tr('Set stereo manipulation (0.0-0.5) and enable its pass'),
     )
     parser.add_argument(
         '--noise',
         type=float,
-        help='Set noise level (-70 to -30 dB) and enable its pass',
+        help=_tr('Set noise level (-70 to -30 dB) and enable its pass'),
     )
     parser.add_argument(
         '--dynamics',
         type=float,
-        help='Set dynamics amount (0.0-1.0) and enable its pass',
+        help=_tr('Set dynamics amount (0.0-1.0) and enable its pass'),
     )
     parser.add_argument(
         '--humanize',
         type=float,
-        help='Set humanization amount (0.0-1.0) and enable its pass',
+        help=_tr('Set humanization amount (0.0-1.0) and enable its pass'),
     )
     parser.add_argument(
         '--reencode',
         type=int,
-        help='Set lossy re-encode bitrate (96-320) and enable its pass',
+        help=_tr('Set lossy re-encode bitrate (96-320) and enable its pass'),
     )
     parser.add_argument('--seed', type=int, default=None,
-                        help='Random seed for reproducible output (same seed = same bytes)')
+                        help=_tr(
+                            'Random seed for reproducible output '
+                            '(same seed = same bytes)'
+                        ))
     parser.add_argument(
         '--version',
         action='version',
         version=f'{APP_NAME} v{VERSION}',
-        help='Print the application version and exit',
+        help=_tr('Print the application version and exit'),
     )
     parser.add_argument(
         '--native-runtime',
         action='store_true',
-        help='Print machine-readable native dependency versions and exit',
+        help=_tr(
+            'Print machine-readable native dependency versions and exit'
+        ),
     )
     return parser
 
@@ -8041,6 +8132,7 @@ def _argv_uses_any_option(tokens, options):
 
 
 def cli_main():
+    configure_locale(requested_locale_from_argv(sys.argv[1:]))
     parser = _build_cli_parser()
     args = parser.parse_args()
     if args.seed is not None and args.seed < 0:
@@ -8147,7 +8239,7 @@ def cli_main():
             print(f"Error: {args.input} not found")
             sys.exit(1)
         if not files:
-            print("No supported audio files found.")
+            print(_tr("No supported audio files found."))
             sys.exit(1)
         inspections = [
             (filepath, inspect_c2pa(filepath))
@@ -8366,6 +8458,8 @@ def cli_main():
 #  Entry Point
 # ============================================================
 if __name__ == '__main__':
+    _requested_locale = requested_locale_from_argv(sys.argv[1:])
+    configure_locale(_requested_locale)
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
         '--manifest', '--resume', '--retry',
@@ -8382,9 +8476,10 @@ if __name__ == '__main__':
             sys.exit(0)
         cli_main()
     else:
-        app = QApplication(sys.argv)
+        app = QApplication(without_locale_args(sys.argv))
+        configure_locale(_requested_locale, app)
         app.setStyle('Fusion')
         app.setStyleSheet(STYLE)
-        win = MainWindow()
+        win = MainWindow(locale_name=_requested_locale)
         win.show()
         sys.exit(app.exec())

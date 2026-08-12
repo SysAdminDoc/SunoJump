@@ -38,6 +38,11 @@ class FrozenBuildGuardTests(unittest.TestCase):
         self.assertIn("runtime_hooks=['runtime_hooks/freeze_support.py']", spec)
         self.assertIn('multiprocessing.freeze_support()', hook)
 
+    def test_pyinstaller_spec_bundles_localization_catalogs(self):
+        spec = (ROOT / 'SunoJump.spec').read_text(encoding='utf-8')
+
+        self.assertIn("datas=[('locales', 'locales')]", spec)
+
 
 class ScreenshotVersionTests(unittest.TestCase):
     def test_screenshot_capture_tool_exists(self):
@@ -48,6 +53,14 @@ class ScreenshotVersionTests(unittest.TestCase):
         self.assertIn('VERSION', source)
         self.assertIn('windowTitle', source)
         self.assertIn('Version mismatch', source)
+
+    def test_pseudo_screenshot_uses_the_runtime_catalog(self):
+        source = (ROOT / 'tools' / 'capture_screenshot.py').read_text(
+            encoding='utf-8',
+        )
+
+        self.assertIn('configure_locale("qps-ploc" if pseudo else "en", app)', source)
+        self.assertNotIn('expansions = {', source)
 
 
 class AccessibilitySmokeTests(unittest.TestCase):

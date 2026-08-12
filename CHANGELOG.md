@@ -21,6 +21,8 @@
 - **Parallel file rendering.** GUI and CLI batches now use an operator-bounded 1–8 thread pool (default 2), retain deterministic result ordering, prefix interleaved logs by queue job, and reserve collision-free outputs safely across concurrent renders.
 - **Per-file progress.** Queue rows display progress for their stable job IDs while the batch bar aggregates all active and completed files; CLI batches emit independently labeled progress checkpoints.
 - **Concurrent batch durability.** Batch-manifest attempts and terminal evidence are serialized through a re-entrant lock, preserving every distinct job update under parallel completion and cancellation.
+- **Per-file A/B winners.** Saving the currently playing comparison preset now records a bounded per-file winner, restores it when that source is re-added, annotates the queue row, and applies the winner to Process All.
+- **Private comparison history.** The 200-entry settings history keys files by a normalized-path SHA-256 and stores only preset/timestamp metadata, never the source path itself; malformed or future history schemas fail empty.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

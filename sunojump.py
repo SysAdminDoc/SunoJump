@@ -205,12 +205,16 @@ STREAMING_CHUNK_SECONDS = 20.0
 STREAMING_OVERLAP_SECONDS = 1.0
 DEFAULT_PARALLEL_FILE_WORKERS = 2
 MAX_PARALLEL_FILE_WORKERS = 8
+COMPARE_HISTORY_SCHEMA_VERSION = 1
+MAX_COMPARE_HISTORY_ENTRIES = 200
+COMPARE_HISTORY_SETTINGS_KEY = "compare/history_json"
 
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
 ROLE_OUTPUT = Qt.ItemDataRole.UserRole + 1
 ROLE_JOB_ID = Qt.ItemDataRole.UserRole + 2
 ROLE_RESULT = Qt.ItemDataRole.UserRole + 3
+ROLE_COMPARE_WINNER = Qt.ItemDataRole.UserRole + 4
 
 PRESETS = {
     'Gentle': {
@@ -5661,6 +5665,7 @@ class MainWindow(QMainWindow):
             if settings is not None
             else QSettings(APP_NAME, APP_NAME)
         )
+        self._compare_history = self._load_compare_history()
 
         # Media player for preview (optional)
         self.player = None
@@ -5742,6 +5747,127 @@ class MainWindow(QMainWindow):
                 x = (geo.width() - self.width()) // 2 + geo.x()
                 y = (geo.height() - self.height()) // 2 + geo.y()
                 self.move(x, y)
+
+    @staticmethod
+    def _compare_history_key(input_path):
+        normalized = os.path.normcase(os.path.abspath(str(input_path)))
+        return hashlib.sha256(
+            normalized.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+
+    def _load_compare_history(self):
+        raw = self._settings.value(COMPARE_HISTORY_SETTINGS_KEY, "")
+        if not isinstance(raw, str) or not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != COMPARE_HISTORY_SCHEMA_VERSION
+            or not isinstance(payload.get("entries"), dict)
+        ):
+            return {}
+        history = {}
+        for key, entry in payload["entries"].items():
+            if (
+                isinstance(key, str)
+                and len(key) == 64
+                and all(ch in "0123456789abcdef" for ch in key)
+                and isinstance(entry, dict)
+                and entry.get("preset") in PRESETS
+                and isinstance(entry.get("selected_at"), str)
+            ):
+                history[key] = {
+                    "preset": entry["preset"],
+                    "selected_at": entry["selected_at"],
+                }
+        return dict(sorted(
+            history.items(),
+            key=lambda pair: pair[1]["selected_at"],
+            reverse=True,
+        )[:MAX_COMPARE_HISTORY_ENTRIES])
+
+    def _compare_winner_for_path(self, input_path):
+        if not input_path:
+            return None
+        return self._compare_history.get(
+            self._compare_history_key(input_path)
+        )
+
+    def _save_compare_winner(self, item, preset_name):
+        if item is None or preset_name not in PRESETS:
+            return False
+        input_path = item.data(ROLE_INPUT)
+        if not input_path:
+            return False
+        entry = {
+            "preset": preset_name,
+            "selected_at": datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            ).replace("+00:00", "Z"),
+        }
+        key = self._compare_history_key(input_path)
+        self._compare_history[key] = entry
+        retained = sorted(
+            self._compare_history.items(),
+            key=lambda pair: pair[1]["selected_at"],
+            reverse=True,
+        )[:MAX_COMPARE_HISTORY_ENTRIES]
+        self._compare_history = dict(retained)
+        payload = {
+            "schema_version": COMPARE_HISTORY_SCHEMA_VERSION,
+            "entries": self._compare_history,
+        }
+        self._settings.setValue(
+            COMPARE_HISTORY_SETTINGS_KEY,
+            json.dumps(payload, separators=(",", ":"), sort_keys=True),
+        )
+        self._settings.sync()
+        item.setData(ROLE_COMPARE_WINNER, entry)
+        self._decorate_compare_winner_item(item)
+        self._update_compare_history_label(item)
+        return True
+
+    def _decorate_compare_winner_item(self, item):
+        entry = item.data(ROLE_COMPARE_WINNER)
+        if not isinstance(entry, dict) or entry.get("preset") not in PRESETS:
+            return
+        input_path = item.data(ROLE_INPUT)
+        text = item.text()
+        if text.startswith("READY"):
+            item.setText(
+                f"READY    {Path(input_path).name}  "
+                f"[A/B winner: {entry['preset']}]"
+            )
+        item.setToolTip(
+            f"{input_path}\nLast A/B winner: {entry['preset']} "
+            f"({entry['selected_at']})"
+        )
+
+    def _update_compare_history_label(self, item=None):
+        if not hasattr(self, "compare_history_label"):
+            return
+        if item is None:
+            item = self._current_selected_item()
+        entry = (
+            item.data(ROLE_COMPARE_WINNER)
+            if item is not None
+            else None
+        )
+        if isinstance(entry, dict) and entry.get("preset") in PRESETS:
+            self.compare_history_label.setText(
+                _tr(
+                    "Saved winner: {preset} ({when})",
+                    preset=entry["preset"],
+                    when=entry.get("selected_at", "unknown time"),
+                )
+            )
+        else:
+            self.compare_history_label.setText(
+                _tr("No saved winner for this file")
+            )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -6068,6 +6194,9 @@ class MainWindow(QMainWindow):
                 placements.append(
                     (self.btn_apply_compare, 3, 0, 1, 2)
                 )
+                placements.append(
+                    (self.compare_history_label, 4, 0, 1, 2)
+                )
                 stretches = ((0, 1), (1, 1))
             else:
                 placements = [(self.compare_label, 0, 0, 1, 1)]
@@ -6079,6 +6208,9 @@ class MainWindow(QMainWindow):
                 )
                 placements.append(
                     (self.btn_apply_compare, 0, 5, 1, 1)
+                )
+                placements.append(
+                    (self.compare_history_label, 1, 0, 1, 6)
                 )
                 stretches = ((6, 1),)
             self._place_grid(
@@ -6294,8 +6426,16 @@ class MainWindow(QMainWindow):
             )
         _set_accessibility(
             self.btn_apply_compare,
-            "Apply currently playing preset",
-            "Apply the currently playing comparison preset to the main preset selector.",
+            "Save currently playing winner",
+            (
+                "Save the currently playing comparison preset as this "
+                "file's winner and apply it to the main preset selector."
+            ),
+        )
+        _set_accessibility(
+            self.compare_history_label,
+            "Saved comparison winner",
+            "Shows the last comparison preset saved for the selected file.",
         )
 
     def _configure_shortcuts(self):
@@ -7007,16 +7147,20 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _checked=False, n=name: self._play_compare(n))
             self.compare_buttons[name] = btn
         self.btn_apply_compare = ResponsiveButton(
-            _tr("Apply Currently Playing")
+            _tr("Save Playing Winner")
         )
         self.btn_apply_compare.setToolTip(
             _tr(
-                "Set the currently playing preset as the active preset for "
-                "Process All"
+                "Save the currently playing preset as this file's winner "
+                "and make it active for Process All"
             )
         )
         self.btn_apply_compare.setEnabled(False)
         self.btn_apply_compare.clicked.connect(self._apply_playing_compare_preset)
+        self.compare_history_label = QLabel(
+            _tr("No saved winner for this file")
+        )
+        self.compare_history_label.setWordWrap(True)
         compare_placements = [(self.compare_label, 0, 0, 1, 1)]
         compare_placements.extend(
             (button, 0, index + 1, 1, 1)
@@ -7024,6 +7168,9 @@ class MainWindow(QMainWindow):
         )
         compare_placements.append(
             (self.btn_apply_compare, 0, 5, 1, 1)
+        )
+        compare_placements.append(
+            (self.compare_history_label, 1, 0, 1, 6)
         )
         self._place_grid(
             self._compare_controls_grid,
@@ -7319,6 +7466,8 @@ class MainWindow(QMainWindow):
         item.setData(ROLE_OUTPUT, None)
         item.setData(ROLE_JOB_ID, job_id or uuid.uuid4().hex)
         item.setData(ROLE_RESULT, None)
+        item.setData(ROLE_COMPARE_WINNER, self._compare_winner_for_path(path))
+        self._decorate_compare_winner_item(item)
         self.file_list.addItem(item)
 
     def _update_file_count(self):
@@ -8428,11 +8577,12 @@ class MainWindow(QMainWindow):
         self._compare_run_id = uuid.uuid4().hex
         self._compare_terminal_state = "Failed"
         self.compare_panel.setVisible(True)
+        self._update_compare_history_label(item)
         for name, btn in self.compare_buttons.items():
             btn.setEnabled(False)
             btn.setText(_tr("{name} ...", name=name))
         self.btn_apply_compare.setEnabled(False)
-        self.btn_apply_compare.setText(_tr("Apply Currently Playing"))
+        self.btn_apply_compare.setText(_tr("Save Playing Winner"))
 
         self._set_compare_running_ui(True)
         self._start_run_log(
@@ -8561,7 +8711,7 @@ class MainWindow(QMainWindow):
         self._update_compare_buttons()
         self.btn_apply_compare.setEnabled(True)
         self.btn_apply_compare.setText(
-            _tr("Apply {preset}", preset=preset_name)
+            _tr("Save {preset} Winner", preset=preset_name)
         )
 
     def _update_compare_buttons(self):
@@ -8577,9 +8727,21 @@ class MainWindow(QMainWindow):
         if not self._playing_compare_preset:
             return
         name = self._playing_compare_preset
-        self.player.stop()
+        item = self._find_item_by_job_id(self._compare_job_id)
+        if item is None:
+            self._log("Comparison winner was not saved: queue item is gone.")
+            return
+        if self.player is not None:
+            self.player.stop()
         self.preset_combo.setCurrentText(name)  # triggers _on_preset -> _apply_preset
-        self._log(f"Applied preset: {name}")
+        if self._save_compare_winner(item, name):
+            self.btn_apply_compare.setText(
+                _tr("Saved {preset} Winner", preset=name)
+            )
+            self._log(
+                f"Saved A/B winner for {Path(item.data(ROLE_INPUT)).name}: "
+                f"{name}; applied it to Process All."
+            )
 
     def _toggle_play(self, source):
         if not _MULTIMEDIA_OK or self.player is None:
@@ -8631,7 +8793,7 @@ class MainWindow(QMainWindow):
             self._update_compare_buttons()
             if self._compare_results:
                 self.btn_apply_compare.setText(
-                    _tr("Apply Currently Playing")
+                    _tr("Save Playing Winner")
                 )
                 self.btn_apply_compare.setEnabled(False)
 
@@ -8689,6 +8851,7 @@ class MainWindow(QMainWindow):
                 _tr("Preview target: Select a file")
             )
             self.compare_label.setText(_tr("A/B: select a file"))
+            self._update_compare_history_label(None)
             return
 
         orig_path = item.data(ROLE_INPUT)
@@ -8711,6 +8874,7 @@ class MainWindow(QMainWindow):
         self.compare_label.setAccessibleName(
             _tr("Preset comparison target: {name}", name=compare_target)
         )
+        self._update_compare_history_label(item)
 
         processed_label = _tr("Preview") if is_preview else _tr("Processed")
 

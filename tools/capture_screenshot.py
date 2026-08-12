@@ -8,11 +8,17 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+if sys.platform.startswith("win") and "QT_QPA_FONTDIR" not in os.environ:
+    windows_fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    if windows_fonts.is_dir():
+        os.environ["QT_QPA_FONTDIR"] = str(windows_fonts)
 
 try:
     ctypes.windll.user32.SetProcessDPIAware()

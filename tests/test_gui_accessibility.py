@@ -27,6 +27,7 @@ from sunojump import (
     ROLE_INPUT,
     ROLE_JOB_ID,
     ROLE_OUTPUT,
+    ROLE_COMPARE_WINNER,
 )
 import verifiers
 
@@ -75,6 +76,7 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.btn_browse_output,
             self.window.btn_process,
             self.window.btn_cancel,
+            self.window.compare_history_label,
         ]
 
         for widget in controls:
@@ -491,6 +493,46 @@ class GuiAccessibilityTests(unittest.TestCase):
 
         self.assertIn("RUNNING  42%", self.window.file_list.item(0).text())
         self.assertIn("parallel.wav", self.window.file_list.item(0).text())
+
+    def test_compare_winner_is_saved_per_file_without_storing_its_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = str(Path(temp_dir) / "compare-history.ini")
+            input_path = str(Path(temp_dir) / "private-song.wav")
+            settings = QSettings(settings_path, QSettings.Format.IniFormat)
+            first = MainWindow(settings=settings)
+            try:
+                first._append_item(input_path, job_id="compare-job")
+                item = first.file_list.item(0)
+                first.file_list.setCurrentItem(item)
+                first._compare_job_id = "compare-job"
+                first._playing_compare_preset = "Gentle"
+
+                first._apply_playing_compare_preset()
+
+                winner = item.data(ROLE_COMPARE_WINNER)
+                self.assertEqual(winner["preset"], "Gentle")
+                self.assertIn("A/B winner: Gentle", item.text())
+                raw = settings.value(sunojump.COMPARE_HISTORY_SETTINGS_KEY)
+                self.assertNotIn(input_path, raw)
+                self.assertIn("Gentle", first.compare_history_label.text())
+            finally:
+                first.close()
+
+            restored_settings = QSettings(
+                settings_path,
+                QSettings.Format.IniFormat,
+            )
+            restored = MainWindow(settings=restored_settings)
+            try:
+                restored._append_item(input_path)
+                restored_item = restored.file_list.item(0)
+                self.assertEqual(
+                    restored_item.data(ROLE_COMPARE_WINNER)["preset"],
+                    "Gentle",
+                )
+                self.assertIn("A/B winner: Gentle", restored_item.text())
+            finally:
+                restored.close()
 
     def test_stale_job_result_cannot_attach_to_replacement_row(self):
         original = QListWidgetItem("song.wav")

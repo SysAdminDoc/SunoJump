@@ -46,6 +46,11 @@
     "Parallel files:": "Parallel files:",
     " workers": " workers",
     "Render this many queued files concurrently; higher values use more CPU, memory, and disk": "Render this many queued files concurrently; higher values use more CPU, memory, and disk",
+    "Save Playing Winner": "Save Playing Winner",
+    "No saved winner for this file": "No saved winner for this file",
+    "Save {preset} Winner": "Save {preset} Winner",
+    "Saved {preset} Winner": "Saved {preset} Winner",
+    "Saved winner: {preset} ({when})": "Saved winner: {preset} ({when})",
     "No supported audio files found.": "No supported audio files found.",
     "Queue is empty. Browse for audio or drop files/folders here.": "Queue is empty. Browse for audio or drop files/folders here."
   }

@@ -104,7 +104,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
 - **Per-pass toggles and strength sliders** — fine-grained control
 - **Render Preview** — hear a 30-second sample with your current settings before committing to full-file processing
-- **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, then apply your favorite
+- **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, save a per-file winner, and restore that choice when the source is re-added
 - **In-app A/B playback** — play original and processed side-by-side without leaving the app
 - **Responsive, keyboard-complete GUI** — panels reflow down to 560×360, long labels wrap at enlarged font sizes and in RTL layouts, focus is visible, queue actions have keyboard equivalents, and sliders expose displayed units to screen readers
 - **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available

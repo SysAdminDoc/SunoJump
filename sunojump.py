@@ -21,6 +21,8 @@ import re, zipfile
 import secrets, uuid
 import platform, traceback
 import subprocess
+import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timezone
@@ -201,6 +203,8 @@ STREAMING_THRESHOLD_BYTES = 256 * 1024 ** 2
 STREAMING_WORKING_SET_BYTES = 64 * 1024 ** 2
 STREAMING_CHUNK_SECONDS = 20.0
 STREAMING_OVERLAP_SECONDS = 1.0
+DEFAULT_PARALLEL_FILE_WORKERS = 2
+MAX_PARALLEL_FILE_WORKERS = 8
 
 # UserRole keys on QListWidgetItem
 ROLE_INPUT = Qt.ItemDataRole.UserRole
@@ -4558,16 +4562,124 @@ def _manifest_failure_result(result, exc):
     )
 
 
+def _validated_parallel_workers(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("parallel worker count must be an integer")
+    if not 1 <= value <= MAX_PARALLEL_FILE_WORKERS:
+        raise ValueError(
+            "parallel worker count must be between 1 and "
+            f"{MAX_PARALLEL_FILE_WORKERS}"
+        )
+    return value
+
+
+def _run_batch_render_job(
+    *,
+    job_id,
+    filepath,
+    effective_seed,
+    params,
+    output_dir,
+    used_outputs,
+    output_lock,
+    manifest_store,
+    cancel_event,
+    log_fn,
+    progress_fn,
+    started_fn,
+    compute_backend=None,
+):
+    if cancel_event.is_set():
+        result = RenderResult(
+            state=RenderState.CANCELLED,
+            input_path=str(filepath),
+            error_code=RenderErrorCode.CANCELLED,
+            message="batch cancelled before this job started",
+            effective_seed=effective_seed,
+        )
+    else:
+        started_fn()
+        reservation = None
+        try:
+            fmt = params.get("output_format", "wav").lower()
+            ext = _output_extension(fmt)
+            with output_lock:
+                reservation = _reserve_output_path(
+                    filepath,
+                    output_dir,
+                    ext,
+                    used_outputs,
+                )
+            out_path = reservation.output_path
+            if reservation.renamed:
+                log_fn(
+                    "Output name collision avoided: "
+                    f"{Path(out_path).name}"
+                )
+            log_fn(f"Output path: {out_path}")
+            if manifest_store is not None:
+                manifest_store.begin_attempt(job_id, out_path)
+            processor = AudioProcessor(
+                params,
+                log_fn=log_fn,
+                progress_fn=progress_fn,
+                cancel_event=cancel_event,
+                seed=effective_seed,
+                compute_backend=compute_backend,
+            )
+            result = processor.process(filepath, out_path)
+            if not isinstance(result, RenderResult):
+                raise TypeError("processor returned an untyped result")
+        except BatchManifestError as exc:
+            log_fn(f"Batch manifest update failed: {exc}")
+            result = RenderResult(
+                state=RenderState.FAILED,
+                input_path=str(filepath),
+                error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
+                message=str(exc),
+                effective_seed=effective_seed,
+            )
+        except Exception as exc:
+            log_fn(f"Unexpected render failure: {exc}")
+            log_fn(traceback.format_exc().rstrip())
+            result = RenderResult(
+                state=RenderState.FAILED,
+                input_path=str(filepath),
+                error_code=RenderErrorCode.UNEXPECTED,
+                message=str(exc),
+                effective_seed=effective_seed,
+            )
+        finally:
+            if reservation is not None:
+                reservation.release()
+
+    if manifest_store is not None:
+        try:
+            _finish_manifest_job(manifest_store, job_id, result)
+        except BatchManifestError as exc:
+            log_fn(f"Batch manifest update failed: {exc}")
+            result = _manifest_failure_result(result, exc)
+    return result
+
+
 class ProcessWorker(QThread):
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)
+    file_progress = pyqtSignal(str, int)
     # Stable queue job IDs prevent stale results from attaching by row index.
     file_started = pyqtSignal(str)
     file_done = pyqtSignal(str, object)
     # all_done(BatchResult)
     all_done = pyqtSignal(object)
 
-    def __init__(self, jobs, params, output_dir, manifest_store=None):
+    def __init__(
+        self,
+        jobs,
+        params,
+        output_dir,
+        manifest_store=None,
+        max_workers=DEFAULT_PARALLEL_FILE_WORKERS,
+    ):
         super().__init__()
         self.jobs = []
         seeds = []
@@ -4591,6 +4703,7 @@ class ProcessWorker(QThread):
         self.params = params
         self.output_dir = output_dir
         self.manifest_store = manifest_store
+        self.max_workers = _validated_parallel_workers(max_workers)
         self._cancel_event = threading.Event()
         self.seeds = seeds
 
@@ -4632,88 +4745,112 @@ class ProcessWorker(QThread):
             )
             return
         n_files = len(self.files)
+        if n_files == 0:
+            self.all_done.emit(BatchResult.from_results([], 0.0))
+            return
         used_outputs = set()
+        output_lock = threading.Lock()
+        events = queue.Queue()
+        progress_by_index = [0] * n_files
+        last_overall = -1
 
-        for idx, (job_id, filepath) in enumerate(self.jobs):
-            if self._cancel_event.is_set():
-                for cancelled_idx in range(idx, n_files):
-                    cancelled_job_id, cancelled_path = self.jobs[cancelled_idx]
-                    result = RenderResult(
-                        state=RenderState.CANCELLED,
-                        input_path=cancelled_path,
-                        error_code=RenderErrorCode.CANCELLED,
-                        message="batch cancelled before this job started",
-                        effective_seed=self.seeds[cancelled_idx],
-                    )
-                    result = self._record_manifest_result(
-                        cancelled_job_id,
-                        result,
-                    )
-                    results.append(result)
-                    self.file_done.emit(cancelled_job_id, result)
+        def queue_event(kind, *payload):
+            events.put((kind, payload))
+
+        def dispatch_event(event):
+            nonlocal last_overall
+            kind, payload = event
+            if kind == "log":
+                self.log_signal.emit(payload[0])
+            elif kind == "started":
+                self.file_started.emit(payload[0])
+            elif kind == "progress":
+                idx, job_id, value = payload
+                value = max(0, min(99, int(value)))
+                progress_by_index[idx] = max(progress_by_index[idx], value)
+                self.file_progress.emit(job_id, value)
+                overall = min(99, sum(progress_by_index) // n_files)
+                if overall != last_overall:
+                    last_overall = overall
+                    self.progress_signal.emit(overall)
+
+        def drain_events():
+            while True:
+                try:
+                    dispatch_event(events.get_nowait())
+                except queue.Empty:
+                    return
+
+        worker_count = min(self.max_workers, n_files)
+        self.log_signal.emit(
+            f"Parallel file workers: {worker_count}"
+        )
+        results_by_index = [None] * n_files
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="sunojump-file",
+        ) as executor:
+            pending = {}
+            for idx, (job_id, filepath) in enumerate(self.jobs):
+                label = f"[{idx + 1}/{n_files} {Path(filepath).name}]"
+                future = executor.submit(
+                    _run_batch_render_job,
+                    job_id=job_id,
+                    filepath=filepath,
+                    effective_seed=self.seeds[idx],
+                    params=self.params,
+                    output_dir=self.output_dir,
+                    used_outputs=used_outputs,
+                    output_lock=output_lock,
+                    manifest_store=self.manifest_store,
+                    cancel_event=self._cancel_event,
+                    log_fn=lambda message, prefix=label: queue_event(
+                        "log", f"{prefix} {message}"
+                    ),
+                    progress_fn=lambda value, index=idx, jid=job_id: queue_event(
+                        "progress", index, jid, value
+                    ),
+                    started_fn=lambda jid=job_id: queue_event(
+                        "started", jid
+                    ),
+                )
+                pending[future] = (idx, job_id, filepath)
+
+            while pending:
+                try:
+                    dispatch_event(events.get(timeout=0.02))
+                except queue.Empty:
+                    pass
+                drain_events()
+                for future in list(pending):
+                    if not future.done():
+                        continue
+                    # A completed task has already queued all of its progress;
+                    # deliver it before the terminal row update.
+                    drain_events()
+                    idx, job_id, filepath = pending.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = RenderResult(
+                            state=RenderState.FAILED,
+                            input_path=str(filepath),
+                            error_code=RenderErrorCode.UNEXPECTED,
+                            message=str(exc),
+                            effective_seed=self.seeds[idx],
+                        )
+                        self.log_signal.emit(traceback.format_exc().rstrip())
+                    results_by_index[idx] = result
+                    progress_by_index[idx] = 100
+                    overall = min(99, sum(progress_by_index) // n_files)
+                    if overall != last_overall:
+                        last_overall = overall
+                        self.progress_signal.emit(overall)
                     self.log_signal.emit(format_render_result(result))
-                break
+                    self.file_done.emit(job_id, result)
 
-            self.file_started.emit(job_id)
-
-            # Map per-file progress (0-100) to batch progress
-            def batch_progress(v, _idx=idx, _n=n_files):
-                mapped = (_idx * 100 + int(v)) // max(1, _n)
-                self.progress_signal.emit(min(99, mapped))
-
-            processor = AudioProcessor(
-                self.params,
-                log_fn=lambda msg: self.log_signal.emit(msg),
-                progress_fn=batch_progress,
-                cancel_event=self._cancel_event,
-                seed=self.seeds[idx],
-            )
-
-            self.log_signal.emit(f"\n[{idx+1}/{n_files}] {Path(filepath).name}")
-            reservation = None
-            try:
-                fmt = self.params.get('output_format', 'wav').lower()
-                ext = _output_extension(fmt)
-                reservation = _reserve_output_path(
-                    filepath, self.output_dir, ext, used_outputs,
-                )
-                out_path = reservation.output_path
-                if reservation.renamed:
-                    self.log_signal.emit(
-                        f"Output name collision avoided: {Path(out_path).name}",
-                    )
-                self.log_signal.emit(f"Output path: {out_path}")
-                if self.manifest_store is not None:
-                    self.manifest_store.begin_attempt(job_id, out_path)
-                result = processor.process(filepath, out_path)
-                if not isinstance(result, RenderResult):
-                    raise TypeError("processor returned an untyped result")
-            except BatchManifestError as exc:
-                self.log_signal.emit(f"Batch manifest update failed: {exc}")
-                result = RenderResult(
-                    state=RenderState.FAILED,
-                    input_path=str(filepath),
-                    error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
-                    message=str(exc),
-                    effective_seed=self.seeds[idx],
-                )
-            except Exception as e:
-                self.log_signal.emit(f"Unexpected render failure: {e}")
-                self.log_signal.emit(traceback.format_exc().rstrip())
-                result = RenderResult(
-                    state=RenderState.FAILED,
-                    input_path=str(filepath),
-                    error_code=RenderErrorCode.UNEXPECTED,
-                    message=str(e),
-                    effective_seed=self.seeds[idx],
-                )
-            finally:
-                if reservation is not None:
-                    reservation.release()
-            result = self._record_manifest_result(job_id, result)
-            results.append(result)
-            self.log_signal.emit(format_render_result(result))
-            self.file_done.emit(job_id, result)
+        drain_events()
+        results = list(results_by_index)
 
         self.all_done.emit(
             BatchResult.from_results(results, time.monotonic() - t_start)
@@ -5828,13 +5965,17 @@ class MainWindow(QMainWindow):
                 placements = (
                     (self.format_label, 0, 0, 1, 1),
                     (self.format_combo, 0, 1, 1, 1),
-                    (self.btn_open_output, 1, 0, 1, 2),
+                    (self.worker_count_label, 1, 0, 1, 1),
+                    (self.worker_count_spin, 1, 1, 1, 1),
+                    (self.btn_open_output, 2, 0, 1, 2),
                 )
             else:
                 placements = (
                     (self.format_label, 0, 0, 1, 1),
                     (self.format_combo, 0, 1, 1, 1),
-                    (self.btn_open_output, 0, 3, 1, 1),
+                    (self.worker_count_label, 0, 2, 1, 1),
+                    (self.worker_count_spin, 0, 3, 1, 1),
+                    (self.btn_open_output, 0, 5, 1, 1),
                 )
             self._place_grid(
                 self._format_controls_grid,
@@ -6105,6 +6246,14 @@ class MainWindow(QMainWindow):
             "Output format",
             "Choose WAV, FLAC, OGG, or ffmpeg-backed MP3/M4A output.",
         )
+        _set_accessibility(
+            self.worker_count_spin,
+            "Parallel file workers",
+            (
+                "Choose how many queued files render at the same time, "
+                "from 1 to 8. Higher values use more CPU, memory, and disk."
+            ),
+        )
         _set_accessibility(self.btn_open_output, "Open output folder", "Open the current output directory in the file manager.")
         _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
         _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
@@ -6203,6 +6352,7 @@ class MainWindow(QMainWindow):
             order.extend([row.check, row.slider])
         order.extend([
             self.format_combo,
+            self.worker_count_spin,
             self.btn_open_output,
             self.output_dir,
             self.btn_browse_output,
@@ -6228,6 +6378,16 @@ class MainWindow(QMainWindow):
             idx = self.format_combo.findText(fmt)
             if idx >= 0:
                 self.format_combo.setCurrentIndex(idx)
+        try:
+            workers = int(settings.value(
+                "session/parallel_file_workers",
+                DEFAULT_PARALLEL_FILE_WORKERS,
+            ))
+            self.worker_count_spin.setValue(
+                _validated_parallel_workers(workers)
+            )
+        except (TypeError, ValueError):
+            self.worker_count_spin.setValue(DEFAULT_PARALLEL_FILE_WORKERS)
         preset = settings.value("session/preset")
         if preset and isinstance(preset, str):
             if preset in PRESETS:
@@ -6278,6 +6438,10 @@ class MainWindow(QMainWindow):
         settings.setValue("window/geometry", self.saveGeometry())
         settings.setValue("session/output_dir", self.output_dir.text())
         settings.setValue("session/output_format", self.format_combo.currentText())
+        settings.setValue(
+            "session/parallel_file_workers",
+            self.worker_count_spin.value(),
+        )
         settings.setValue("session/preset", self.preset_combo.currentText())
         settings.setValue(
             "session/config_json",
@@ -6662,6 +6826,18 @@ class MainWindow(QMainWindow):
         self.format_combo.currentTextChanged.connect(lambda _: self._sync_header_stats())
         self.format_combo.setMinimumWidth(120)
         self.format_label.setBuddy(self.format_combo)
+        self.worker_count_label = QLabel(_tr("Parallel files:"))
+        self.worker_count_spin = QSpinBox()
+        self.worker_count_spin.setRange(1, MAX_PARALLEL_FILE_WORKERS)
+        self.worker_count_spin.setValue(DEFAULT_PARALLEL_FILE_WORKERS)
+        self.worker_count_spin.setSuffix(_tr(" workers"))
+        self.worker_count_label.setBuddy(self.worker_count_spin)
+        self.worker_count_spin.setToolTip(
+            _tr(
+                "Render this many queued files concurrently; higher values "
+                "use more CPU, memory, and disk"
+            )
+        )
         self.btn_open_output = self._decorate_button(
             ResponsiveButton(_tr("Open")),
             QStyle.StandardPixmap.SP_DirOpenIcon,
@@ -6675,7 +6851,9 @@ class MainWindow(QMainWindow):
             (
                 (self.format_label, 0, 0, 1, 1),
                 (self.format_combo, 0, 1, 1, 1),
-                (self.btn_open_output, 0, 3, 1, 1),
+                (self.worker_count_label, 0, 2, 1, 1),
+                (self.worker_count_spin, 0, 3, 1, 1),
+                (self.btn_open_output, 0, 5, 1, 1),
             ),
             ((2, 1),),
         )
@@ -7453,6 +7631,7 @@ class MainWindow(QMainWindow):
         self.btn_export_support.setEnabled(enabled)
         self.btn_clear_logs.setEnabled(enabled)
         self.retention_spin.setEnabled(enabled)
+        self.worker_count_spin.setEnabled(enabled)
         self.redact_logs_check.setEnabled(enabled)
 
     def _on_process(self):
@@ -7539,10 +7718,12 @@ class MainWindow(QMainWindow):
             params,
             out_dir,
             manifest_store=manifest_store,
+            max_workers=self.worker_count_spin.value(),
         )
         active_worker = self.worker
         self.worker.log_signal.connect(self._log)
         self.worker.progress_signal.connect(self.progress.setValue)
+        self.worker.file_progress.connect(self._on_file_progress)
         self.worker.file_started.connect(self._on_file_started)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.all_done.connect(self._on_all_done)
@@ -7660,6 +7841,12 @@ class MainWindow(QMainWindow):
         if item is not None:
             name = Path(item.data(ROLE_INPUT)).name
             item.setText(f"RUNNING  {name}")
+
+    def _on_file_progress(self, job_id, value):
+        item = self._find_item_by_job_id(job_id)
+        if item is not None:
+            name = Path(item.data(ROLE_INPUT)).name
+            item.setText(f"RUNNING {int(value):3d}%  {name}")
 
     def _on_file_done(self, job_id, result):
         if not isinstance(result, RenderResult):
@@ -8740,6 +8927,15 @@ def _build_cli_parser():
         ),
     )
     parser.add_argument(
+        '--workers',
+        type=lambda value: _validated_parallel_workers(int(value)),
+        default=DEFAULT_PARALLEL_FILE_WORKERS,
+        metavar='COUNT',
+        help=_tr(
+            'parallel file workers, from 1 to 8 (default: 2)'
+        ),
+    )
+    parser.add_argument(
         '--manifest',
         default=None,
         help=_tr('Path for the new atomic batch manifest'),
@@ -9184,7 +9380,6 @@ def cli_main():
         sys.exit(2)
 
     files = [job["input_path"] for job in jobs]
-    ext = _output_extension(out_format)
     run_log = RunDiagnostics(
         'cli',
         redact=not args.no_redact_diagnostics,
@@ -9216,67 +9411,77 @@ def cli_main():
         cli_log(f"Recovery: {note}")
 
     started_at = time.monotonic()
-    results = []
+    results = [None] * len(jobs)
     used_outputs = set()
-    for job in jobs:
-        job_id = job["id"]
-        filepath = job["input_path"]
-        effective_seed = job["effective_seed"]
-        reservation = None
-        try:
-            reservation = _reserve_output_path(
-                filepath,
-                out_dir,
-                ext,
-                used_outputs,
-            )
-            out_path = reservation.output_path
-            if reservation.renamed:
-                cli_log(
-                    f"Output name collision avoided: {Path(out_path).name}"
-                )
-            cli_log(f"Output path: {out_path}")
-            manifest_store.begin_attempt(job_id, out_path)
-            proc = AudioProcessor(
-                params,
-                log_fn=cli_log,
-                progress_fn=lambda value: None,
-                seed=effective_seed,
+    output_lock = threading.Lock()
+    console_lock = threading.Lock()
+    cancel_event = threading.Event()
+    progress_state = {}
+
+    def synchronized_cli_log(message):
+        with console_lock:
+            cli_log(message)
+
+    worker_count = min(args.workers, len(jobs))
+    synchronized_cli_log(f"Parallel file workers: {worker_count}")
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="sunojump-cli-file",
+    ) as executor:
+        future_jobs = {}
+        for index, job in enumerate(jobs):
+            job_id = job["id"]
+            filepath = job["input_path"]
+            label = f"[{index + 1}/{len(jobs)} {Path(filepath).name}]"
+
+            def job_log(message, prefix=label):
+                synchronized_cli_log(f"{prefix} {message}")
+
+            def job_progress(value, jid=job_id, prefix=label):
+                bucket = min(99, max(0, int(value))) // 10 * 10
+                with console_lock:
+                    previous = progress_state.get(jid, -10)
+                    if bucket <= previous:
+                        return
+                    progress_state[jid] = bucket
+                    cli_log(f"{prefix} Progress: {bucket}%")
+
+            future = executor.submit(
+                _run_batch_render_job,
+                job_id=job_id,
+                filepath=filepath,
+                effective_seed=job["effective_seed"],
+                params=params,
+                output_dir=out_dir,
+                used_outputs=used_outputs,
+                output_lock=output_lock,
+                manifest_store=manifest_store,
+                cancel_event=cancel_event,
+                log_fn=job_log,
+                progress_fn=job_progress,
+                started_fn=lambda prefix=label: synchronized_cli_log(
+                    f"{prefix} Started"
+                ),
                 compute_backend=args.compute,
             )
-            result = proc.process(filepath, out_path)
-            if not isinstance(result, RenderResult):
-                raise TypeError("processor returned an untyped result")
-        except BatchManifestError as exc:
-            cli_log(f"Batch manifest update failed: {exc}")
-            result = RenderResult(
-                state=RenderState.FAILED,
-                input_path=str(filepath),
-                error_code=RenderErrorCode.MANIFEST_WRITE_FAILED,
-                message=str(exc),
-                effective_seed=effective_seed,
-            )
-        except Exception as exc:
-            cli_log(f"Unexpected render failure: {exc}")
-            cli_log(traceback.format_exc().rstrip())
-            result = RenderResult(
-                state=RenderState.FAILED,
-                input_path=str(filepath),
-                error_code=RenderErrorCode.UNEXPECTED,
-                message=str(exc),
-                effective_seed=effective_seed,
-            )
-        finally:
-            if reservation is not None:
-                reservation.release()
-        try:
-            _finish_manifest_job(manifest_store, job_id, result)
-        except BatchManifestError as exc:
-            cli_log(f"Batch manifest update failed: {exc}")
-            result = _manifest_failure_result(result, exc)
-        results.append(result)
-        cli_log(format_render_result(result))
-        cli_log("---")
+            future_jobs[future] = (index, job_id, filepath)
+
+        for future in as_completed(future_jobs):
+            index, _job_id, filepath = future_jobs[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                synchronized_cli_log(traceback.format_exc().rstrip())
+                result = RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=str(filepath),
+                    error_code=RenderErrorCode.UNEXPECTED,
+                    message=str(exc),
+                    effective_seed=jobs[index]["effective_seed"],
+                )
+            results[index] = result
+            synchronized_cli_log(format_render_result(result))
+            synchronized_cli_log("---")
 
     batch_result = BatchResult.from_results(
         results,
@@ -9301,7 +9506,7 @@ if __name__ == '__main__':
     configure_locale(_requested_locale)
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
-        '--manifest', '--resume', '--retry', '--compute',
+        '--manifest', '--resume', '--retry', '--compute', '--workers',
     }
     if len(sys.argv) > 1 and _argv_uses_any_option(
         sys.argv[1:],

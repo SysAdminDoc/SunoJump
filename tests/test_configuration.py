@@ -163,6 +163,31 @@ class CliConfigurationTests(unittest.TestCase):
                             invalid,
                         ])
 
+    def test_cli_parallel_worker_count_is_bounded(self):
+        parser = sunojump._build_cli_parser()
+        defaults = parser.parse_args(["--input", "unused.wav"])
+        explicit = parser.parse_args([
+            "--input",
+            "unused.wav",
+            "--workers",
+            "4",
+        ])
+        self.assertEqual(
+            defaults.workers,
+            sunojump.DEFAULT_PARALLEL_FILE_WORKERS,
+        )
+        self.assertEqual(explicit.workers, 4)
+        for invalid in ("0", "9", "not-a-number"):
+            with self.subTest(invalid=invalid):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args([
+                            "--input",
+                            "unused.wav",
+                            "--workers",
+                            invalid,
+                        ])
+
     def test_cli_refuses_c2pa_source_before_creating_output(self):
         manifest = b"\x00\x00\x00\x18jumbcli-policy"
         chunk = (

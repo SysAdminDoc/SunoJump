@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
@@ -221,6 +222,36 @@ class BatchManifestStoreTests(unittest.TestCase):
                 list(temp_path.glob(".*.tmp.json")),
                 [],
             )
+
+    def test_distinct_jobs_can_update_one_manifest_concurrently(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            store = self._create(temp_path, count=4)
+
+            def update(job_index):
+                job_id = f"job-{job_index}"
+                output_path = temp_path / f"output-{job_index}.wav"
+                store.begin_attempt(job_id, output_path)
+                store.finish_job(
+                    job_id,
+                    state="failed",
+                    error_code="decode_failed",
+                    message=f"failure {job_index}",
+                )
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(update, range(4)))
+
+            persisted = BatchManifestStore.load(store.path)
+
+        self.assertEqual(
+            [job["state"] for job in persisted.jobs],
+            ["failed"] * 4,
+        )
+        self.assertEqual(
+            [job["attempts"] for job in persisted.jobs],
+            [1] * 4,
+        )
 
 
 class BatchManifestWorkerTests(unittest.TestCase):

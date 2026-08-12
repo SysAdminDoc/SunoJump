@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import uuid
 
 
@@ -109,6 +110,7 @@ class BatchManifestStore:
     def __init__(self, path: str | os.PathLike[str], payload: dict):
         self.path = Path(path).resolve()
         self.payload = payload
+        self._lock = threading.RLock()
         self._validate()
 
     @classmethod
@@ -280,9 +282,10 @@ class BatchManifestStore:
         return deepcopy(self.payload["config"])
 
     def save(self) -> None:
-        self._validate()
-        self.payload["updated_at"] = _utc_timestamp()
-        _write_json_atomic(self.path, self.payload)
+        with self._lock:
+            self._validate()
+            self.payload["updated_at"] = _utc_timestamp()
+            _write_json_atomic(self.path, self.payload)
 
     def _job(self, job_id: str) -> dict:
         for job in self.jobs:
@@ -301,45 +304,46 @@ class BatchManifestStore:
         ]
 
     def begin_attempt(self, job_id: str, planned_output_path: str) -> None:
-        job = self._job(job_id)
-        if job["state"] == "succeeded":
-            raise BatchManifestError(
-                f"successful job {job_id} cannot be retried without reconciliation"
-            )
-        if job["state"] in TERMINAL_STATES:
-            snapshot = {
-                key: deepcopy(job[key])
-                for key in (
-                    "state",
-                    "attempts",
-                    "started_at",
-                    "completed_at",
-                    "output_path",
-                    "output_sha256",
-                    "sidecar_path",
-                    "sidecar_sha256",
-                    "error_code",
-                    "message",
+        with self._lock:
+            job = self._job(job_id)
+            if job["state"] == "succeeded":
+                raise BatchManifestError(
+                    f"successful job {job_id} cannot be retried without reconciliation"
                 )
-                if key in job
-            }
-            job.setdefault("history", []).append(snapshot)
-        for key in (
-            "completed_at",
-            "output_path",
-            "output_sha256",
-            "sidecar_path",
-            "sidecar_sha256",
-            "error_code",
-            "message",
-            "recovered_at",
-        ):
-            job.pop(key, None)
-        job["state"] = "running"
-        job["attempts"] += 1
-        job["started_at"] = _utc_timestamp()
-        job["planned_output_path"] = str(Path(planned_output_path).resolve())
-        self.save()
+            if job["state"] in TERMINAL_STATES:
+                snapshot = {
+                    key: deepcopy(job[key])
+                    for key in (
+                        "state",
+                        "attempts",
+                        "started_at",
+                        "completed_at",
+                        "output_path",
+                        "output_sha256",
+                        "sidecar_path",
+                        "sidecar_sha256",
+                        "error_code",
+                        "message",
+                    )
+                    if key in job
+                }
+                job.setdefault("history", []).append(snapshot)
+            for key in (
+                "completed_at",
+                "output_path",
+                "output_sha256",
+                "sidecar_path",
+                "sidecar_sha256",
+                "error_code",
+                "message",
+                "recovered_at",
+            ):
+                job.pop(key, None)
+            job["state"] = "running"
+            job["attempts"] += 1
+            job["started_at"] = _utc_timestamp()
+            job["planned_output_path"] = str(Path(planned_output_path).resolve())
+            self.save()
 
     def finish_job(
         self,
@@ -354,29 +358,30 @@ class BatchManifestStore:
         error_code: str | None = None,
         message: str = "",
     ) -> None:
-        if state not in TERMINAL_STATES:
-            raise BatchManifestError(f"cannot finish a job as {state!r}")
-        job = self._job(job_id)
-        job["state"] = state
-        job["completed_at"] = _utc_timestamp()
-        job.pop("planned_output_path", None)
-        for key, value in (
-            ("output_path", output_path),
-            ("output_sha256", output_sha256),
-            ("sidecar_path", sidecar_path),
-            ("sidecar_sha256", sidecar_sha256),
-            ("input_sha256", input_sha256),
-            ("error_code", error_code),
-        ):
-            if value is None:
-                job.pop(key, None)
+        with self._lock:
+            if state not in TERMINAL_STATES:
+                raise BatchManifestError(f"cannot finish a job as {state!r}")
+            job = self._job(job_id)
+            job["state"] = state
+            job["completed_at"] = _utc_timestamp()
+            job.pop("planned_output_path", None)
+            for key, value in (
+                ("output_path", output_path),
+                ("output_sha256", output_sha256),
+                ("sidecar_path", sidecar_path),
+                ("sidecar_sha256", sidecar_sha256),
+                ("input_sha256", input_sha256),
+                ("error_code", error_code),
+            ):
+                if value is None:
+                    job.pop(key, None)
+                else:
+                    job[key] = value
+            if message:
+                job["message"] = message
             else:
-                job[key] = value
-        if message:
-            job["message"] = message
-        else:
-            job.pop("message", None)
-        self.save()
+                job.pop("message", None)
+            self.save()
 
     def reconcile(self) -> list[str]:
         notes = []

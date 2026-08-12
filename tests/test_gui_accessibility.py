@@ -70,6 +70,7 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.spectral_scan_check,
             self.window.meta_check,
             self.window.format_combo,
+            self.window.worker_count_spin,
             self.window.output_dir,
             self.window.btn_browse_output,
             self.window.btn_process,
@@ -481,6 +482,15 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.window._on_all_done(BatchResult.from_results([succeeded], 1.0))
         self.assertEqual(self.window.render_status_label.text(), "Complete")
         self.assertEqual(self.window.progress.value(), 100)
+
+    def test_queue_row_shows_progress_for_its_stable_job(self):
+        self.window._append_item("parallel.wav", job_id="parallel-job")
+
+        self.window._on_file_started("parallel-job")
+        self.window._on_file_progress("parallel-job", 42)
+
+        self.assertIn("RUNNING  42%", self.window.file_list.item(0).text())
+        self.assertIn("parallel.wav", self.window.file_list.item(0).text())
 
     def test_stale_job_result_cannot_attach_to_replacement_row(self):
         original = QListWidgetItem("song.wav")

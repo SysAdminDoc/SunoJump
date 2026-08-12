@@ -118,7 +118,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Responsive queue discovery** — recursive folder scans run off the UI thread with counted progress and cancellation; empty and partial states explain the next action
 - **Actionable failures** — queue rows show typed failure reasons, and Retry Failed immediately reuses the latest saved batch manifest
 - **Replayable output evidence** — every render displays its effective seed; WAV/FLAC same-environment replays are byte-tested, while sidecars name exact muxer/codec dependencies when bytes are build-sensitive
-- **Identity-safe batch queue** — drag/drop multiple files, reorder them, and process them sequentially; stable job IDs prevent late worker results from attaching to replacement rows
+- **Parallel identity-safe batch queue** — drag/drop multiple files, reorder them, and render 1–8 concurrently; stable job IDs keep independent progress and late results attached to the correct rows
 - **Resumable batch manifests** — every batch atomically persists inputs, seeds, configuration, attempts, terminal states, and artifact hashes; interrupted and failed-only work can be resumed without replacing existing files
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
 - **Bounded long-file processing** — isolated decoding writes fixed-size blocks to a disk-backed memory map; payloads above 256 MiB run every enabled transform in overlap-blended chunks with a bounded working set and atomic cleanup
@@ -135,7 +135,7 @@ python sunojump.py
 1. Drop audio files into the file list (or click Browse)
 2. Select a preset or customize individual parameters
 3. (Optional) Click **Render Preview** to process the first 30 seconds of the selected file so you can hear the result before committing; adjust settings and re-render as needed
-4. Click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
+4. Choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
 5. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
 
 Keyboard shortcuts cover the primary workflow: `Ctrl+O` browse, `Ctrl+P` preview, `Ctrl+Shift+P` compare, `Ctrl+R` resume, `Ctrl+Shift+R` retry failed, `Ctrl+S` save a preset, `Ctrl+Enter` process, and `Esc` cancel. In the queue, `Delete`/`Backspace` removes the selection and `Alt+Up`/`Alt+Down` reorders it.
@@ -175,6 +175,7 @@ python sunojump.py --locale en
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
 | `--locale` | Locale catalog for GUI labels and CLI help; falls back from region to language to English | system locale |
 | `--compute` | `cpu`, `auto` (CUDA with CPU fallback), or strict `cuda` for FFT-heavy passes | cpu |
+| `--workers` | Queued files to render concurrently, from 1 to 8 | 2 |
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |

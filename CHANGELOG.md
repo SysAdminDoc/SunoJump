@@ -18,6 +18,9 @@
 - **Bounded long-file rendering.** Full renders now decode into caller-owned NPY memory maps and automatically switch large payloads to disk-backed, overlap-blended chunks across the complete pass pipeline instead of retaining the whole source and every pass in RAM.
 - **Streaming evidence and safety.** Replay sidecar schema v4 records decode/processing strategies, chunk geometry, and per-chunk pass traces; temporary disk capacity, cancellation, atomic output promotion, and fail-closed cleanup are enforced throughout the streaming path.
 - **Streaming regression coverage.** Added caller-owned chunked-decode, bounded multi-chunk stereo, mono metadata-only, configuration, provenance, and pass-failure cleanup tests (251 total tests).
+- **Parallel file rendering.** GUI and CLI batches now use an operator-bounded 1–8 thread pool (default 2), retain deterministic result ordering, prefix interleaved logs by queue job, and reserve collision-free outputs safely across concurrent renders.
+- **Per-file progress.** Queue rows display progress for their stable job IDs while the batch bar aggregates all active and completed files; CLI batches emit independently labeled progress checkpoints.
+- **Concurrent batch durability.** Batch-manifest attempts and terminal evidence are serialized through a re-entrant lock, preserving every distinct job update under parallel completion and cancellation.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

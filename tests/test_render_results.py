@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -534,6 +536,77 @@ class ProcessWorkerOutcomeTests(unittest.TestCase):
         self.assertEqual(batches[0].state, RenderState.PARTIAL)
         self.assertEqual(batches[0].error_counts, {"decode_failed": 1})
         self.assertLess(max(progress), 100)
+
+    def test_file_workers_overlap_and_report_independent_progress(self):
+        original_processor = sunojump.AudioProcessor
+        barrier = threading.Barrier(2)
+        active = 0
+        maximum_active = 0
+        active_lock = threading.Lock()
+
+        class FakeProcessor:
+            def __init__(self, _params, progress_fn=None, **_kwargs):
+                self.progress = progress_fn
+
+            def process(self, input_path, _output_path):
+                nonlocal active, maximum_active
+                with active_lock:
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                try:
+                    self.progress(20)
+                    barrier.wait(timeout=2)
+                    self.progress(70)
+                    time.sleep(0.02)
+                    return RenderResult(
+                        state=RenderState.FAILED,
+                        input_path=str(input_path),
+                        error_code=RenderErrorCode.DECODE_FAILED,
+                    )
+                finally:
+                    with active_lock:
+                        active -= 1
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = sunojump.ProcessWorker(
+                [("job-a", "a.wav", 1), ("job-b", "b.wav", 2)],
+                {"output_format": "wav"},
+                temp_dir,
+                max_workers=2,
+            )
+            file_progress = {"job-a": [], "job-b": []}
+            event_order = {"job-a": [], "job-b": []}
+            worker.file_progress.connect(
+                lambda job_id, value: (
+                    file_progress[job_id].append(value),
+                    event_order[job_id].append("progress"),
+                )
+            )
+            worker.file_done.connect(
+                lambda job_id, _result: event_order[job_id].append("done")
+            )
+            sunojump.AudioProcessor = FakeProcessor
+            try:
+                worker.run()
+            finally:
+                sunojump.AudioProcessor = original_processor
+
+        self.assertEqual(maximum_active, 2)
+        self.assertEqual(file_progress["job-a"], [20, 70])
+        self.assertEqual(file_progress["job-b"], [20, 70])
+        self.assertEqual(event_order["job-a"][-1], "done")
+        self.assertEqual(event_order["job-b"][-1], "done")
+
+    def test_parallel_worker_count_is_bounded(self):
+        for invalid in (0, sunojump.MAX_PARALLEL_FILE_WORKERS + 1, True):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    sunojump.ProcessWorker(
+                        ["one.wav"],
+                        {"output_format": "wav"},
+                        ".",
+                        max_workers=invalid,
+                    )
 
 
 class PreviewAndCompareWorkerOutcomeTests(unittest.TestCase):

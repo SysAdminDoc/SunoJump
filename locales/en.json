@@ -42,6 +42,10 @@
     "Print machine-readable native dependency versions and exit": "Print machine-readable native dependency versions and exit",
     "Locale name for translated GUI/CLI strings (for example en or qps-ploc)": "Locale name for translated GUI/CLI strings (for example en or qps-ploc)",
     "FFT compute backend: cpu (release-safe default), auto (CUDA with CPU fallback), or cuda (fail if unavailable)": "FFT compute backend: cpu (release-safe default), auto (CUDA with CPU fallback), or cuda (fail if unavailable)",
+    "parallel file workers, from 1 to 8 (default: 2)": "parallel file workers, from 1 to 8 (default: 2)",
+    "Parallel files:": "Parallel files:",
+    " workers": " workers",
+    "Render this many queued files concurrently; higher values use more CPU, memory, and disk": "Render this many queued files concurrently; higher values use more CPU, memory, and disk",
     "No supported audio files found.": "No supported audio files found.",
     "Queue is empty. Browse for audio or drop files/folders here.": "Queue is empty. Browse for audio or drop files/folders here."
   }

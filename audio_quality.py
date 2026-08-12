@@ -12,6 +12,7 @@ ABSOLUTE_GATE_LUFS = -70.0
 RELATIVE_GATE_LU = -10.0
 BLOCK_SECONDS = 0.400
 BLOCK_STEP_SECONDS = 0.100
+MEASUREMENT_CHUNK_FRAMES = 65536
 
 
 @dataclass(frozen=True)
@@ -50,9 +51,18 @@ def _as_channels(audio) -> np.ndarray:
         values = values[:, np.newaxis]
     if values.ndim != 2:
         raise ValueError("audio must be a one- or two-dimensional array")
-    if not np.all(np.isfinite(values)):
-        raise ValueError("audio must contain only finite samples")
     return values
+
+
+def _iter_chunks(values, chunk_frames=MEASUREMENT_CHUNK_FRAMES):
+    for start in range(0, values.shape[0], chunk_frames):
+        chunk = np.asarray(
+            values[start:start + chunk_frames],
+            dtype=np.float64,
+        )
+        if not np.all(np.isfinite(chunk)):
+            raise ValueError("audio must contain only finite samples")
+        yield start, chunk
 
 
 def _k_weighting_coefficients(sample_rate: int):
@@ -97,19 +107,44 @@ def _integrated_loudness(values: np.ndarray, sample_rate: int) -> float | None:
     if values.shape[0] < block_samples or block_samples <= 0 or step_samples <= 0:
         return None
 
-    filtered = values
-    for numerator, denominator in _k_weighting_coefficients(sample_rate):
-        filtered = lfilter(numerator, denominator, filtered, axis=0)
-
-    channel_weights = np.ones(filtered.shape[1], dtype=np.float64)
-    if filtered.shape[1] >= 5:
+    filters = _k_weighting_coefficients(sample_rate)
+    states = [
+        np.zeros((max(len(numerator), len(denominator)) - 1, values.shape[1]))
+        for numerator, denominator in filters
+    ]
+    channel_weights = np.ones(values.shape[1], dtype=np.float64)
+    if values.shape[1] >= 5:
         channel_weights[3:5] = 1.41
-
     powers = []
-    for start in range(0, filtered.shape[0] - block_samples + 1, step_samples):
-        block = filtered[start:start + block_samples]
-        channel_power = np.mean(block ** 2, axis=0)
-        powers.append(float(np.sum(channel_weights * channel_power)))
+    power_buffer = np.empty(0, dtype=np.float64)
+    buffer_start = 0
+    next_block_start = 0
+    received = 0
+    for _, chunk in _iter_chunks(values):
+        filtered = chunk
+        for index, (numerator, denominator) in enumerate(filters):
+            filtered, states[index] = lfilter(
+                numerator,
+                denominator,
+                filtered,
+                axis=0,
+                zi=states[index],
+            )
+        sample_power = np.sum(
+            filtered ** 2 * channel_weights[np.newaxis, :],
+            axis=1,
+        )
+        power_buffer = np.concatenate((power_buffer, sample_power))
+        received += len(sample_power)
+        while next_block_start + block_samples <= received:
+            local_start = next_block_start - buffer_start
+            block = power_buffer[local_start:local_start + block_samples]
+            powers.append(float(np.mean(block)))
+            next_block_start += step_samples
+        discard = next_block_start - buffer_start
+        if discard > 0:
+            power_buffer = power_buffer[discard:]
+            buffer_start = next_block_start
     block_powers = np.asarray(powers, dtype=np.float64)
     valid = block_powers > 0.0
     block_loudness = np.full(block_powers.shape, -np.inf)
@@ -136,12 +171,27 @@ def _true_peak(values: np.ndarray, sample_rate: int) -> tuple[float | None, int]
         factor = 2
     else:
         factor = 1
-    oversampled = (
-        resample_poly(values, factor, 1, axis=0)
-        if factor > 1
-        else values
-    )
-    peak = float(np.max(np.abs(oversampled)))
+    peak = 0.0
+    overlap = 64 if factor > 1 else 0
+    for start, chunk in _iter_chunks(values):
+        if factor > 1:
+            source_start = max(0, start - overlap)
+            source_stop = min(
+                values.shape[0],
+                start + len(chunk) + overlap,
+            )
+            expanded = np.asarray(
+                values[source_start:source_stop],
+                dtype=np.float64,
+            )
+            oversampled = resample_poly(expanded, factor, 1, axis=0)
+            central_start = (start - source_start) * factor
+            central_stop = central_start + len(chunk) * factor
+            oversampled = oversampled[central_start:central_stop]
+        else:
+            oversampled = chunk
+        if oversampled.size:
+            peak = max(peak, float(np.max(np.abs(oversampled))))
     if peak <= 0.0:
         return None, factor
     return float(20.0 * np.log10(peak)), factor

@@ -76,6 +76,7 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.format_combo,
             self.window.worker_count_spin,
             self.window.spectrogram_check,
+            self.window.loudness_report_check,
             self.window.output_dir,
             self.window.btn_browse_output,
             self.window.btn_process,

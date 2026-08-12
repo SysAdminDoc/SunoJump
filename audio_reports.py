@@ -6,6 +6,8 @@ import zlib
 
 import numpy as np
 
+from audio_quality import BS1770_VERSION, measure_bs1770
+
 
 SPECTROGRAM_SCHEMA_ID = "com.sunojump.spectrogram-comparison"
 SPECTROGRAM_SCHEMA_VERSION = 1
@@ -13,6 +15,8 @@ SPECTROGRAM_PANEL_WIDTH = 640
 SPECTROGRAM_PANEL_HEIGHT = 400
 SPECTROGRAM_DB_FLOOR = -100.0
 SPECTROGRAM_DB_CEILING = 0.0
+LOUDNESS_REPORT_SCHEMA_ID = "com.sunojump.loudness-comparison"
+LOUDNESS_REPORT_SCHEMA_VERSION = 1
 
 _FONT = {
     " ": ("00000",) * 7,
@@ -218,3 +222,30 @@ def render_spectrogram_comparison_png(
         "shared_color_scale": True,
     }
     return _encode_png(canvas), metadata
+
+
+def measure_loudness_comparison(before, after, sample_rate):
+    """Return a schema-versioned before/after BS.1770-5 comparison."""
+    before_measurement = measure_bs1770(before, sample_rate)
+    after_measurement = measure_bs1770(after, sample_rate)
+
+    def delta(before_value, after_value):
+        if before_value is None or after_value is None:
+            return None
+        return round(after_value - before_value, 4)
+
+    return {
+        "schema_id": LOUDNESS_REPORT_SCHEMA_ID,
+        "schema_version": LOUDNESS_REPORT_SCHEMA_VERSION,
+        "standard": BS1770_VERSION,
+        "before": before_measurement.to_dict(),
+        "after": after_measurement.to_dict(),
+        "integrated_loudness_delta_lu": delta(
+            before_measurement.integrated_lufs,
+            after_measurement.integrated_lufs,
+        ),
+        "true_peak_delta_db": delta(
+            before_measurement.true_peak_dbtp,
+            after_measurement.true_peak_dbtp,
+        ),
+    }

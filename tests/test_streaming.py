@@ -39,7 +39,7 @@ class BoundedStreamingTests(unittest.TestCase):
                 },
                 log_fn=logs.append,
                 seed=123,
-                audit_options={"spectrogram": True},
+                audit_options={"spectrogram": True, "loudness": True},
                 streaming_threshold_bytes=1,
                 streaming_chunk_seconds=4.0,
             )
@@ -75,6 +75,10 @@ class BoundedStreamingTests(unittest.TestCase):
                 "spectrogram_comparison",
             )
             self.assertTrue(Path(result.artifacts[0]["path"]).is_file())
+            self.assertEqual(
+                result.artifacts[1]["kind"],
+                "loudness_comparison",
+            )
 
     def test_streaming_supports_mono_metadata_only_render(self):
         with tempfile.TemporaryDirectory() as temp_dir:

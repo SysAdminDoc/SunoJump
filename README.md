@@ -126,6 +126,7 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Open Output** — one-click to output folder in your file manager
 - **Versioned signal-change metric** — inspect a sample-domain difference value with explicit scope
 - **Before/after spectrogram export** — opt in to a bounded, full-file, side-by-side PNG with a shared dBFS color scale and hash-linked result/manifest evidence
+- **BS.1770-5 loudness audit** — opt in to a bounded before/after integrated-loudness and oversampled true-peak JSON report with explicit deltas and hash-linked evidence
 
 ## Usage
 
@@ -138,7 +139,7 @@ python sunojump.py
 2. Select a preset or customize individual parameters
 3. (Optional) Select one or more queue rows and use **Selected preset** to assign a built-in preset or a snapshot of the current controls only to those files; **Batch settings** keeps them linked to the main controls
 4. (Optional) Choose a **Start** offset and click **Render Preview** to process up to 30 seconds from that point so you can hear the result before committing; Compare uses the same offset
-5. Optionally enable **Export before/after spectrogram PNG**, choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
+5. Optionally enable the spectrogram and/or BS.1770-5 report exports, choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
 6. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
 
 Keyboard shortcuts cover the primary workflow: `Ctrl+O` browse, `Ctrl+P` preview, `Ctrl+Shift+P` compare, `Ctrl+R` resume, `Ctrl+Shift+R` retry failed, `Ctrl+S` save a preset, `Ctrl+Enter` process, and `Esc` cancel. In the queue, `Delete`/`Backspace` removes the selection and `Alt+Up`/`Alt+Down` reorders it.
@@ -162,6 +163,9 @@ python sunojump.py -i ./my_songs --result-format jsonl > results.jsonl
 
 # Export a bounded side-by-side audit image beside every usable output
 python sunojump.py -i ./my_songs --spectrogram
+
+# Export before/after integrated loudness and true-peak evidence
+python sunojump.py -i ./my_songs --loudness-report
 
 # Batch process a directory
 python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
@@ -198,6 +202,7 @@ python sunojump.py --locale en
 | `--workers` | Queued files to render concurrently, from 1 to 8 | 2 |
 | `--result-format` | `human` for stderr logs, `json` for one batch document, or `jsonl` for per-file records plus a final batch record | human |
 | `--spectrogram` | Export a before/after side-by-side PNG beside each usable output | off |
+| `--loudness-report` | Export an ITU-R BS.1770-5 before/after integrated-loudness and true-peak JSON report | off |
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
@@ -257,6 +262,8 @@ Use `Save...` in the GUI to export the current settings, then pass the resulting
 CLI exit status is `0` only when every job succeeds, `1` when a batch has at least one usable output but is partial, and `2` when no job produces a usable output. Human-readable progress, per-file summaries, and diagnostics always go to stderr, leaving stdout uncontaminated for `--result-format json` or `jsonl`. The `com.sunojump.cli-results` schema includes stable job IDs, states, error codes, effective seeds, validation evidence, artifact paths/hashes, counts, and the final batch state. Each independently versioned replay sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
 
 Spectrogram export uses uniformly distributed Hann-window snapshots across the full file, at most a 2048-point FFT per image column, a logarithmic 20 Hz–20 kHz (or Nyquist) axis, and one fixed -100–0 dBFS color scale for both panels. The PNG is atomically published as `<output-stem>.spectrogram.png`; its SHA-256 and sampling metadata appear in JSON/JSONL results and batch manifests. A missing or changed audit image invalidates a previously successful manifest during recovery. Report failure leaves validated audio and its replay sidecar usable but returns a typed partial result.
+
+The loudness report reuses the regression suite's ITU-R BS.1770-5 K-weighting, 400 ms absolute/relative gated integrated loudness, and sample-rate-aware 4×/2× true-peak oversampling. Filtering, power aggregation, and oversampling run in fixed-size blocks for long files. The atomically published `<output-stem>.loudness.json` records before/after LUFS, dBTP, oversampling factors, and after-minus-before deltas; its complete schema metadata and SHA-256 flow through the same structured results and recovery checks as spectrograms.
 
 Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
 

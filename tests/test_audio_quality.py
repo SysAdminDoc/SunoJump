@@ -2,9 +2,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
+import audio_quality
 from audio_quality import BS1770_VERSION, measure_bs1770
 from verifiers import estimate_offset_seconds
 from verifiers_visqol import Adapter as VisqolAudioVerifier
@@ -36,6 +38,45 @@ class Bs1770MeasurementTests(unittest.TestCase):
             measure_bs1770(np.array([0.0, np.nan]), 48000)
         with self.assertRaises(ValueError):
             measure_bs1770(np.zeros(10), 0)
+
+    def test_measurement_bounds_filter_and_oversample_working_chunks(self):
+        sample_rate = 8000
+        frames = audio_quality.MEASUREMENT_CHUNK_FRAMES * 2 + 1000
+        time_axis = np.arange(frames, dtype=np.float64) / sample_rate
+        audio = 0.1 * np.sin(2.0 * np.pi * 440.0 * time_axis)
+        original_lfilter = audio_quality.lfilter
+        original_resample = audio_quality.resample_poly
+        filter_sizes = []
+        resample_sizes = []
+
+        def bounded_filter(*args, **kwargs):
+            filter_sizes.append(args[2].shape[0])
+            return original_lfilter(*args, **kwargs)
+
+        def bounded_resample(values, *args, **kwargs):
+            resample_sizes.append(values.shape[0])
+            return original_resample(values, *args, **kwargs)
+
+        with (
+            mock.patch.object(audio_quality, "lfilter", bounded_filter),
+            mock.patch.object(
+                audio_quality,
+                "resample_poly",
+                bounded_resample,
+            ),
+        ):
+            result = measure_bs1770(audio, sample_rate)
+
+        self.assertIsNotNone(result.integrated_lufs)
+        self.assertIsNotNone(result.true_peak_dbtp)
+        self.assertLessEqual(
+            max(filter_sizes),
+            audio_quality.MEASUREMENT_CHUNK_FRAMES,
+        )
+        self.assertLessEqual(
+            max(resample_sizes),
+            audio_quality.MEASUREMENT_CHUNK_FRAMES + 128,
+        )
 
 
 class AlignmentOffsetTests(unittest.TestCase):

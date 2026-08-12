@@ -34,7 +34,10 @@ from config_schema import (
     default_render_config,
     validate_render_config,
 )
-from audio_reports import render_spectrogram_comparison_png
+from audio_reports import (
+    measure_loudness_comparison,
+    render_spectrogram_comparison_png,
+)
 from batch_manifest import (
     BATCH_MANIFEST_SUFFIX,
     RETRY_POLICIES,
@@ -1425,6 +1428,11 @@ def _spectrogram_path_for_output(output_path):
     return path.with_suffix(".spectrogram.png")
 
 
+def _loudness_report_path_for_output(output_path):
+    path = Path(output_path)
+    return path.with_suffix(".loudness.json")
+
+
 def _reservation_path_for_output(output_path):
     path = Path(output_path)
     return path.with_name(f".{path.name}.sunojump-reservation")
@@ -1437,6 +1445,7 @@ def _output_candidate_is_occupied(candidate, used_paths):
         or os.path.lexists(candidate)
         or os.path.lexists(_sidecar_path_for_output(candidate))
         or os.path.lexists(_spectrogram_path_for_output(candidate))
+        or os.path.lexists(_loudness_report_path_for_output(candidate))
         or os.path.lexists(_reservation_path_for_output(candidate))
     )
 
@@ -1567,6 +1576,7 @@ def _reserve_output_path(input_path, output_dir, ext, used_paths=None):
             os.path.lexists(candidate)
             or os.path.lexists(_sidecar_path_for_output(candidate))
             or os.path.lexists(_spectrogram_path_for_output(candidate))
+            or os.path.lexists(_loudness_report_path_for_output(candidate))
         ):
             reservation.release()
             continue
@@ -2148,6 +2158,35 @@ class AudioProcessor:
             "metadata": metadata,
         },)
 
+    def _write_loudness_artifact(
+        self,
+        output_path,
+        before,
+        after,
+        sample_rate,
+    ):
+        if not self._audit_options["loudness"]:
+            return ()
+        self.log("Measuring ITU-R BS.1770-5 loudness and true peak...")
+        report = measure_loudness_comparison(
+            before,
+            after,
+            sample_rate,
+        )
+        artifact_path = _loudness_report_path_for_output(output_path)
+        digest = _write_json_atomic_no_replace(artifact_path, report)
+        self.log(
+            f"Loudness report written atomically: {artifact_path.name} "
+            f"(sha256:{digest[:12]})"
+        )
+        return ({
+            "kind": "loudness_comparison",
+            "path": str(artifact_path),
+            "media_type": "application/json",
+            "sha256": digest,
+            "metadata": report,
+        },)
+
     # --- Main pipeline ---
     def process(
         self,
@@ -2639,24 +2678,32 @@ class AudioProcessor:
                 validation,
             )
 
+        artifacts = ()
         try:
-            artifacts = self._write_spectrogram_artifact(
+            artifacts += self._write_spectrogram_artifact(
+                output_path,
+                original,
+                audio,
+                sr,
+            )
+            artifacts += self._write_loudness_artifact(
                 output_path,
                 original,
                 audio,
                 sr,
             )
         except Exception as exc:
-            self.log(f"  Spectrogram export failed: {exc}")
+            self.log(f"  Audit artifact export failed: {exc}")
             self.log(traceback.format_exc().rstrip())
             return finish(
                 RenderState.PARTIAL,
                 RenderErrorCode.AUDIT_ARTIFACT_FAILED,
-                f"validated audio and sidecar exist, but spectrogram "
+                f"validated audio and sidecar exist, but audit artifact "
                 f"export failed: {exc}",
                 validation,
                 sidecar_path=sidecar_evidence["path"],
                 sidecar_sha256=sidecar_evidence["sha256"],
+                artifacts=artifacts,
             )
 
         self.progress(100)
@@ -3315,24 +3362,32 @@ class AudioProcessor:
                     "validated audio was promoted, but its sidecar could not be written",
                     validation,
                 )
+            artifacts = ()
             try:
-                artifacts = self._write_spectrogram_artifact(
+                artifacts += self._write_spectrogram_artifact(
+                    output_path,
+                    original,
+                    current,
+                    sample_rate,
+                )
+                artifacts += self._write_loudness_artifact(
                     output_path,
                     original,
                     current,
                     sample_rate,
                 )
             except Exception as exc:
-                self.log(f"  Spectrogram export failed: {exc}")
+                self.log(f"  Audit artifact export failed: {exc}")
                 self.log(traceback.format_exc().rstrip())
                 return stream_finish(
                     RenderState.PARTIAL,
                     RenderErrorCode.AUDIT_ARTIFACT_FAILED,
-                    f"validated audio and sidecar exist, but spectrogram "
+                    f"validated audio and sidecar exist, but audit artifact "
                     f"export failed: {exc}",
                     validation,
                     sidecar_path=sidecar_evidence["path"],
                     sidecar_sha256=sidecar_evidence["sha256"],
+                    artifacts=artifacts,
                 )
             self.progress(100)
             return stream_finish(
@@ -4785,15 +4840,19 @@ def _validated_parallel_workers(value):
 
 def _validated_audit_options(value=None):
     if value is None:
-        return {"spectrogram": False}
+        return {"spectrogram": False, "loudness": False}
     if not isinstance(value, dict):
         raise ConfigurationError("audit options must be an object")
-    unknown = sorted(set(value) - {"spectrogram"})
+    unknown = sorted(set(value) - {"spectrogram", "loudness"})
     if unknown:
         raise ConfigurationError(
             "unknown audit option(s): " + ", ".join(unknown)
         )
-    normalized = {"spectrogram": False, **value}
+    normalized = {
+        "spectrogram": False,
+        "loudness": False,
+        **value,
+    }
     for key, enabled in normalized.items():
         if not isinstance(enabled, bool):
             raise ConfigurationError(f"audit option {key} must be a boolean")
@@ -6695,6 +6754,14 @@ class MainWindow(QMainWindow):
                 "usable full render."
             ),
         )
+        _set_accessibility(
+            self.loudness_report_check,
+            "Export loudness and true-peak report",
+            (
+                "Write an ITU-R BS.1770-5 before and after integrated "
+                "loudness and true-peak JSON report for each usable render."
+            ),
+        )
         _set_accessibility(self.btn_open_output, "Open output folder", "Open the current output directory in the file manager.")
         _set_accessibility(self.output_dir, "Output directory", "Edit the output directory for processed files.")
         _set_accessibility(self.btn_browse_output, "Browse output directory", "Choose the output directory for processed files.")
@@ -6805,6 +6872,7 @@ class MainWindow(QMainWindow):
             self.format_combo,
             self.worker_count_spin,
             self.spectrogram_check,
+            self.loudness_report_check,
             self.btn_open_output,
             self.output_dir,
             self.btn_browse_output,
@@ -6846,6 +6914,15 @@ class MainWindow(QMainWindow):
                 "1", "true", "yes", "on",
             }
         self.spectrogram_check.setChecked(bool(spectrogram))
+        loudness_report = settings.value(
+            "session/export_loudness_report",
+            False,
+        )
+        if isinstance(loudness_report, str):
+            loudness_report = loudness_report.strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        self.loudness_report_check.setChecked(bool(loudness_report))
         try:
             preview_offset = float(settings.value(
                 "session/preview_offset_seconds",
@@ -6913,6 +6990,10 @@ class MainWindow(QMainWindow):
         settings.setValue(
             "session/export_spectrogram",
             self.spectrogram_check.isChecked(),
+        )
+        settings.setValue(
+            "session/export_loudness_report",
+            self.loudness_report_check.isChecked(),
         )
         settings.setValue(
             "session/preview_offset_seconds",
@@ -7379,6 +7460,17 @@ class MainWindow(QMainWindow):
             )
         )
         lay.addWidget(self.spectrogram_check)
+        self.loudness_report_check = QCheckBox(
+            _tr("Export loudness + true-peak JSON")
+        )
+        self.loudness_report_check.setChecked(False)
+        self.loudness_report_check.setToolTip(
+            _tr(
+                "Write a before/after integrated loudness and true-peak "
+                "JSON report beside each usable output"
+            )
+        )
+        lay.addWidget(self.loudness_report_check)
 
         self._directory_controls_grid = QGridLayout()
         self._directory_controls_grid.setSpacing(8)
@@ -8312,6 +8404,7 @@ class MainWindow(QMainWindow):
         self.retention_spin.setEnabled(enabled)
         self.worker_count_spin.setEnabled(enabled)
         self.spectrogram_check.setEnabled(enabled)
+        self.loudness_report_check.setEnabled(enabled)
         self.preview_offset_spin.setEnabled(enabled)
         if enabled:
             self._sync_queue_preset_control()
@@ -8370,6 +8463,7 @@ class MainWindow(QMainWindow):
                 jobs=manifest_jobs,
                 audit_options={
                     "spectrogram": self.spectrogram_check.isChecked(),
+                    "loudness": self.loudness_report_check.isChecked(),
                 },
             )
         except (OSError, BatchManifestError) as exc:
@@ -8506,6 +8600,7 @@ class MainWindow(QMainWindow):
         self._apply_config(config_without_format)
         self.format_combo.setCurrentText(output_format)
         self.spectrogram_check.setChecked(audit_options["spectrogram"])
+        self.loudness_report_check.setChecked(audit_options["loudness"])
         self.output_dir.setText(store.output_dir)
         self.preset_combo.blockSignals(True)
         self.preset_combo.setCurrentText("Custom")
@@ -9729,6 +9824,14 @@ def _build_cli_parser():
         ),
     )
     parser.add_argument(
+        '--loudness-report',
+        action='store_true',
+        help=_tr(
+            'Export an ITU-R BS.1770-5 before/after integrated loudness '
+            'and true-peak JSON report for each usable render'
+        ),
+    )
+    parser.add_argument(
         '--manifest',
         default=None,
         help=_tr('Path for the new atomic batch manifest'),
@@ -10335,6 +10438,7 @@ def cli_main():
     manifest_store = None
     audit_options = _validated_audit_options({
         "spectrogram": bool(args.spectrogram),
+        "loudness": bool(args.loudness_report),
     })
     if args.resume:
         forbidden = {
@@ -10347,6 +10451,7 @@ def cli_main():
             "--spectral-presence", "--spectral-air", "--dynamic-eq",
             "--pitch", "--tempo", "--phase", "--stereo", "--noise",
             "--dynamics", "--humanize", "--reencode", "--spectrogram",
+            "--loudness-report",
         }
         if _argv_uses_any_option(sys.argv[1:], forbidden):
             parser.error(
@@ -10759,7 +10864,7 @@ if __name__ == '__main__':
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
         '--manifest', '--resume', '--retry', '--compute', '--workers',
-        '--watch', '--result-format', '--spectrogram',
+        '--watch', '--result-format', '--spectrogram', '--loudness-report',
     }
     if len(sys.argv) > 1 and _argv_uses_any_option(
         sys.argv[1:],

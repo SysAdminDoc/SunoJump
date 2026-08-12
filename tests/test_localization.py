@@ -59,6 +59,7 @@ class LocalizationTests(unittest.TestCase):
         self.assertIn("--locale LOCALE", help_text)
         self.assertIn("⟦!!", help_text)
         self.assertIn("--preset-file", help_text)
+        self.assertIn("--profile", help_text)
 
     def test_pseudo_rtl_compact_gui_has_no_horizontal_clipping(self):
         configure_locale("qps-ploc", self.app)

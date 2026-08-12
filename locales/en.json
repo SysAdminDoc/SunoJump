@@ -42,6 +42,7 @@
     "Input audio file or directory": "Input audio file or directory",
     "Output directory": "Output directory",
     "Validated JSON preset; replaces -p/--preset": "Validated JSON preset; replaces -p/--preset",
+    "Versioned JSON profile composing a built-in preset with sparse overrides": "Versioned JSON profile composing a built-in preset with sparse overrides",
     "Random seed for reproducible output (same seed = same bytes)": "Random seed for reproducible output (same seed = same bytes)",
     "Print the application version and exit": "Print the application version and exit",
     "Print machine-readable native dependency versions and exit": "Print machine-readable native dependency versions and exit",

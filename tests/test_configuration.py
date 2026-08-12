@@ -90,6 +90,47 @@ class ConfigurationSchemaTests(unittest.TestCase):
                 with self.assertRaises(ConfigurationError):
                     sunojump._validate_preset_document(document)
 
+    def test_profile_composes_builtin_preset_with_sparse_overrides(self):
+        document = sunojump._validate_profile_document({
+            "name": "Gentle vocal edit",
+            "schema_version": sunojump.PROFILE_SCHEMA_VERSION,
+            "preset": "gentle",
+            "overrides": {
+                "pitch_range": 1.25,
+                "stereo_enabled": True,
+            },
+        })
+
+        self.assertEqual(document["name"], "Gentle vocal edit")
+        self.assertEqual(document["preset"], "Gentle")
+        self.assertEqual(document["params"]["pitch_range"], 1.25)
+        self.assertTrue(document["params"]["stereo_enabled"])
+        self.assertEqual(
+            document["params"]["noise_level"],
+            sunojump.PRESETS["Gentle"]["noise_level"],
+        )
+
+    def test_profile_rejects_ambiguous_or_unsafe_documents(self):
+        valid = {
+            "schema_version": sunojump.PROFILE_SCHEMA_VERSION,
+            "preset": "moderate",
+            "overrides": {},
+        }
+        invalid_documents = (
+            [],
+            {**valid, "schema_version": sunojump.PROFILE_SCHEMA_VERSION + 1},
+            {**valid, "preset": "unknown"},
+            {**valid, "overrides": []},
+            {**valid, "unexpected": True},
+            {**valid, "overrides": {"output_format": "flac"}},
+            {**valid, "overrides": {"c2pa_policy": "allow-removal"}},
+            {**valid, "overrides": {"pitch_range": 9.0}},
+        )
+        for document in invalid_documents:
+            with self.subTest(document=document):
+                with self.assertRaises(ConfigurationError):
+                    sunojump._validate_profile_document(document)
+
 
 class CliConfigurationTests(unittest.TestCase):
     VALUE_CASES = (
@@ -121,6 +162,39 @@ class CliConfigurationTests(unittest.TestCase):
                     args,
                 )
                 self.assertTrue(config[enabled_key])
+
+    def test_profile_is_exclusive_and_cli_overrides_apply_last(self):
+        parser = sunojump._build_cli_parser()
+        args = parser.parse_args([
+            "--input",
+            "unused.wav",
+            "--profile",
+            "profile.json",
+            "--pitch",
+            "2.0",
+        ])
+        profile = sunojump._validate_profile_document({
+            "schema_version": sunojump.PROFILE_SCHEMA_VERSION,
+            "preset": "gentle",
+            "overrides": {"pitch_range": 1.0},
+        })
+
+        config = sunojump._apply_cli_overrides(profile["params"], args)
+
+        self.assertEqual(args.profile, "profile.json")
+        self.assertEqual(config["pitch_range"], 2.0)
+        self.assertTrue(config["pitch_enabled"])
+        for conflicting in ("--preset", "--preset-file"):
+            with self.subTest(conflicting=conflicting):
+                values = [
+                    "--input", "unused.wav",
+                    "--profile", "profile.json",
+                    conflicting,
+                    "gentle" if conflicting == "--preset" else "preset.json",
+                ]
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        parser.parse_args(values)
 
     def test_c2pa_policy_defaults_to_block_and_accepts_explicit_removal(self):
         parser = sunojump._build_cli_parser()
@@ -304,6 +378,37 @@ class CliConfigurationTests(unittest.TestCase):
                         sunojump.cli_main()
         self.assertEqual(context.exception.code, 2)
         self.assertIn("invalid configuration", stderr.getvalue())
+        self.assertFalse(output.exists())
+
+    def test_invalid_explicit_profile_exits_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            profile = temp_path / "invalid-profile.json"
+            profile.write_text(
+                json.dumps({
+                    "schema_version": sunojump.PROFILE_SCHEMA_VERSION,
+                    "preset": "gentle",
+                    "overrides": {"unknown_pass": True},
+                }),
+                encoding="utf-8",
+            )
+            output = temp_path / "must-not-exist"
+            stderr = io.StringIO()
+            argv = [
+                "sunojump.py",
+                "--input",
+                str(temp_path / "missing.wav"),
+                "--profile",
+                str(profile),
+                "--output",
+                str(output),
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                with redirect_stderr(stderr):
+                    with self.assertRaises(SystemExit) as context:
+                        sunojump.cli_main()
+        self.assertEqual(context.exception.code, 2)
+        self.assertIn("invalid configuration in profile", stderr.getvalue())
         self.assertFalse(output.exists())
 
     def test_negative_seed_exits_before_input_or_output_access(self):

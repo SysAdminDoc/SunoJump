@@ -150,6 +150,9 @@ python sunojump.py -i song.wav -p aggressive
 # Custom parameters
 python sunojump.py -i song.wav --pitch 1.5 --phase 0.5 --spectral 0.4
 
+# Compose a built-in preset with reusable sparse JSON overrides
+python sunojump.py -i song.wav --profile ./gentle-tuned.json --pitch 0.75
+
 # Batch process a directory
 python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
 
@@ -179,6 +182,7 @@ python sunojump.py --locale en
 | `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
 | `-f, --format` | wav, flac, ogg, mp3, m4a (mp3/m4a require ffmpeg) | wav |
 | `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
+| `--profile` | Versioned JSON composition of a built-in preset plus sparse overrides; conflicts with `-p` and `--preset-file` | none |
 | `--locale` | Locale catalog for GUI labels and CLI help; falls back from region to language to English | system locale |
 | `--compute` | `cpu`, `auto` (CUDA with CPU fallback), or strict `cuda` for FFT-heavy passes | cpu |
 | `--workers` | Queued files to render concurrently, from 1 to 8 | 2 |
@@ -208,7 +212,23 @@ python sunojump.py --locale en
 | `--seed` | Non-negative integer for deterministic output; the effective per-file seed is always displayed | generated per file |
 | `--native-runtime` | Print machine-readable decoder version and containment policy, then exit | n/a |
 
-Every numeric override enables its corresponding pass. To disable one, use `--disable-pass` with a name shown by `--help`; combining a pass's numeric value with its disable flag is rejected. Values and preset files are validated strictly—unknown keys, wrong types, non-finite numbers, future schemas, and out-of-range values exit before an output directory or file is created.
+Every numeric override enables its corresponding pass. To disable one, use `--disable-pass` with a name shown by `--help`; combining a pass's numeric value with its disable flag is rejected. Values, preset files, and profiles are validated strictly—unknown keys, wrong types, non-finite numbers, future schemas, and out-of-range values exit before an output directory or file is created.
+
+Profiles make sparse tuning reusable without copying a complete preset. The built-in preset is applied first, the JSON `overrides` object second, and explicit numeric or pass CLI flags last:
+
+```json
+{
+  "name": "Gentle tuned",
+  "schema_version": 1,
+  "preset": "gentle",
+  "overrides": {
+    "pitch_range": 0.5,
+    "stereo_enabled": true
+  }
+}
+```
+
+Profile documents reject unknown keys, future schemas, invalid values, and operation-level `output_format` or `c2pa_policy` settings. Choose those policies explicitly with their CLI flags.
 
 Watch mode scans only the selected directory's top level. A file must keep the same size and modification time for one second before it is accepted, which avoids reading an in-progress copy. Existing files are eligible, unchanged files run once per watch session, and a later modification is eligible again. The default output is the watched directory's `output/` child; using the watched directory itself as output is rejected to prevent generated files from feeding back into the watcher. Each accepted file gets an atomic one-job batch manifest and the normal C2PA, validation, sidecar, cancellation, and no-overwrite safeguards. Press `Ctrl+C` to stop and cancel active work safely.
 

@@ -71,6 +71,7 @@ from verifiers import ConstellationVerifier, format_verifier_result
 VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
+PROFILE_SCHEMA_VERSION = 1
 SIDECAR_SCHEMA_VERSION = 4
 SIDECAR_SCHEMA_ID = "com.sunojump.replay-evidence"
 SIDECAR_AUDIO_TAG = "SUNOJUMP_SIDECAR_PAYLOAD_SHA256"
@@ -315,6 +316,12 @@ _PRESET_DOCUMENT_KEYS = {
     "schema_version",
     "params",
 }
+_PROFILE_DOCUMENT_KEYS = {
+    "name",
+    "schema_version",
+    "preset",
+    "overrides",
+}
 
 
 def _migrate_preset(data):
@@ -416,6 +423,72 @@ def _create_preset_document(name, params):
         "version": VERSION,
         "schema_version": PRESET_SCHEMA_VERSION,
         "params": validated,
+    }
+
+
+def _validate_profile_document(data):
+    if not isinstance(data, dict):
+        raise ConfigurationError(
+            f"profile must be an object, not {type(data).__name__}"
+        )
+    unknown_keys = sorted(set(data) - _PROFILE_DOCUMENT_KEYS)
+    if unknown_keys:
+        raise ConfigurationError(
+            "unknown profile document key(s): "
+            + ", ".join(unknown_keys)
+        )
+    schema_version = data.get("schema_version")
+    if type(schema_version) is not int or schema_version < 0:
+        raise ConfigurationError(
+            "profile schema_version must be a non-negative integer"
+        )
+    if schema_version > PROFILE_SCHEMA_VERSION:
+        raise ConfigurationError(
+            f"Profile requires schema version {schema_version} but this "
+            f"SunoJump (v{VERSION}) supports up to version "
+            f"{PROFILE_SCHEMA_VERSION}. Update SunoJump to load this profile."
+        )
+    if schema_version != PROFILE_SCHEMA_VERSION:
+        raise ConfigurationError(
+            f"unsupported profile schema version {schema_version}"
+        )
+    raw_preset = data.get("preset")
+    if not isinstance(raw_preset, str) or not raw_preset.strip():
+        raise ConfigurationError(
+            "profile preset must name a built-in preset"
+        )
+    preset_name = raw_preset.strip().capitalize()
+    if preset_name not in PRESETS:
+        raise ConfigurationError(
+            "profile preset must be one of: "
+            + ", ".join(name.lower() for name in PRESETS)
+        )
+    overrides = data.get("overrides")
+    if not isinstance(overrides, dict):
+        raise ConfigurationError("profile overrides must be an object")
+    operation_keys = sorted(
+        set(overrides) & {"output_format", "c2pa_policy"}
+    )
+    if operation_keys:
+        raise ConfigurationError(
+            "profile cannot set operation-level key(s): "
+            + ", ".join(operation_keys)
+        )
+    name = data.get("name", f"{preset_name} profile")
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigurationError("profile name must be a non-empty string")
+    params = validate_render_config(
+        overrides,
+        base=PRESETS[preset_name],
+        require_complete=True,
+        allow_output_format=False,
+    )
+    return {
+        "name": name.strip(),
+        "schema_version": PROFILE_SCHEMA_VERSION,
+        "preset": preset_name,
+        "overrides": copy.deepcopy(overrides),
+        "params": params,
     }
 
 
@@ -9416,14 +9489,29 @@ def _build_cli_parser():
     )
     parser.add_argument('-o', '--output', default=None,
                         help=_tr('Output directory'))
-    parser.add_argument('-p', '--preset', default='moderate',
-                        choices=['gentle', 'moderate', 'aggressive', 'extreme'],
-                        help=_tr('Processing preset'))
+    config_source = parser.add_mutually_exclusive_group()
+    config_source.add_argument(
+        '-p', '--preset', default='moderate',
+        choices=['gentle', 'moderate', 'aggressive', 'extreme'],
+        help=_tr('Processing preset'),
+    )
     parser.add_argument('-f', '--format', default='wav',
                         choices=list(OUTPUT_EXTENSIONS.keys()),
                         dest='out_format', help=_tr('Output audio format'))
-    parser.add_argument('--preset-file', default=None,
-                        help=_tr('Validated JSON preset; replaces -p/--preset'))
+    config_source.add_argument(
+        '--preset-file',
+        default=None,
+        help=_tr('Validated JSON preset; replaces -p/--preset'),
+    )
+    config_source.add_argument(
+        '--profile',
+        default=None,
+        metavar='JSON',
+        help=_tr(
+            'Versioned JSON profile composing a built-in preset with '
+            'sparse overrides'
+        ),
+    )
     parser.add_argument(
         '--locale',
         default=None,
@@ -9938,7 +10026,7 @@ def cli_main():
     if args.resume:
         forbidden = {
             "-i", "--input", "-o", "--output", "-p", "--preset",
-            "-f", "--format", "--preset-file", "--seed",
+            "-f", "--format", "--preset-file", "--profile", "--seed",
             "--no-spectral-scan", "--no-watermark-scan",
             "--c2pa-policy",
             "--enable-pass", "--disable-pass", "--spectral",
@@ -9987,7 +10075,26 @@ def cli_main():
     else:
         preset_name = args.preset.capitalize()
         params = dict(PRESETS[preset_name])
-        if args.preset_file:
+        if args.profile:
+            try:
+                with open(args.profile, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                document = _validate_profile_document(data)
+                params = document["params"]
+                preset_name = document["name"]
+                print(f"Loaded profile from {args.profile}")
+            except (
+                ConfigurationError,
+                json.JSONDecodeError,
+                OSError,
+                TypeError,
+            ) as exc:
+                print(
+                    f"Error: invalid configuration in profile: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+        elif args.preset_file:
             try:
                 with open(args.preset_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)

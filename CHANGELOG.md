@@ -29,6 +29,7 @@
 - **Safe watch ingestion.** Size/mtime stabilization prevents partial-copy reads, unchanged files are deduplicated while modifications can be reprocessed, each accepted drop receives an atomic one-job manifest, and output cannot equal the watched directory.
 - **Per-file queue presets.** Selected GUI queue rows can use any built-in preset or an independent snapshot of the current controls while unassigned rows continue to follow the batch settings.
 - **Per-file recovery state.** Batch manifest schema v2 stores optional validated per-job configurations and display names, migrates v1 manifests in memory, and restores assignments for resumed parallel work.
+- **Composable CLI profiles.** Added `--profile <json>` for a versioned built-in-preset plus sparse-overrides document; explicit value/pass flags apply last, while ambiguous configuration sources and operation-level policy keys fail closed.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

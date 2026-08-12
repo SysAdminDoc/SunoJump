@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import subprocess
 import sys
@@ -150,6 +151,38 @@ class RenderResultContractTests(unittest.TestCase):
         self.assertEqual(payload["sidecar_path"], "output.sidecar.json")
         self.assertEqual(payload["sidecar_sha256"], "c" * 64)
         self.assertIn("sidecar:cccccccccccc", format_render_result(result))
+
+    def test_cli_exit_codes_map_success_partial_and_all_failed(self):
+        succeeded = RenderResult(
+            state=RenderState.SUCCEEDED,
+            input_path="good.wav",
+            output_path="good_sj.wav",
+            validation=_validation(),
+        )
+        failed = RenderResult(
+            state=RenderState.FAILED,
+            input_path="bad.wav",
+            error_code=RenderErrorCode.DECODE_FAILED,
+        )
+
+        self.assertEqual(
+            sunojump._cli_exit_code(
+                BatchResult.from_results([succeeded], 1.0)
+            ),
+            0,
+        )
+        self.assertEqual(
+            sunojump._cli_exit_code(
+                BatchResult.from_results([succeeded, failed], 1.0)
+            ),
+            1,
+        )
+        self.assertEqual(
+            sunojump._cli_exit_code(
+                BatchResult.from_results([failed], 1.0)
+            ),
+            2,
+        )
 
 
 class OutputValidationTests(unittest.TestCase):
@@ -785,11 +818,59 @@ class CliOutcomeIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("Result: succeeded", result.stdout)
-        self.assertIn("Result: failed [invalid_input]", result.stdout)
-        self.assertIn("Batch partial:", result.stdout)
-        self.assertIn("1 succeeded", result.stdout)
-        self.assertIn("1 failed", result.stdout)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Result: succeeded", result.stderr)
+        self.assertIn("Result: failed [invalid_input]", result.stderr)
+        self.assertIn("Batch partial:", result.stderr)
+        self.assertIn("1 succeeded", result.stderr)
+        self.assertIn("1 failed", result.stderr)
+
+    def test_json_result_format_keeps_stdout_machine_readable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_dir = temp_path / "input"
+            output_dir = temp_path / "output"
+            input_dir.mkdir()
+            sf.write(input_dir / "good.wav", self._tone(), 8000)
+            (input_dir / "bad.wav").write_bytes(b"not audio")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "sunojump.py",
+                    "-i",
+                    str(input_dir),
+                    "-o",
+                    str(output_dir),
+                    "-p",
+                    "gentle",
+                    "--seed",
+                    "3",
+                    "--result-format",
+                    "json",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(payload["schema_id"], sunojump.CLI_RESULTS_SCHEMA_ID)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["record_type"], "batch_result")
+        self.assertEqual(payload["state"], "partial")
+        self.assertEqual(len(payload["results"]), 2)
+        self.assertTrue(all(item["job_id"] for item in payload["results"]))
+        self.assertTrue(
+            all(
+                item["record_type"] == "render_result"
+                for item in payload["results"]
+            )
+        )
+        self.assertIn("Batch partial:", result.stderr)
 
     def test_all_failed_cli_batch_returns_exit_code_two(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -809,6 +890,8 @@ class CliOutcomeIntegrationTests(unittest.TestCase):
                     str(output_dir),
                     "-p",
                     "gentle",
+                    "--result-format",
+                    "jsonl",
                 ],
                 cwd=ROOT,
                 capture_output=True,
@@ -818,8 +901,16 @@ class CliOutcomeIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("Batch failed:", result.stdout)
-        self.assertIn("invalid_input=1", result.stdout)
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["record_type"], "render_result")
+        self.assertEqual(records[0]["state"], "failed")
+        self.assertEqual(records[0]["error_code"], "invalid_input")
+        self.assertEqual(records[1]["record_type"], "batch_result")
+        self.assertNotIn("results", records[1])
+        self.assertEqual(records[1]["state"], "failed")
+        self.assertIn("Batch failed:", result.stderr)
+        self.assertIn("invalid_input=1", result.stderr)
 
 
 if __name__ == "__main__":

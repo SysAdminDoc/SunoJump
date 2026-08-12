@@ -30,6 +30,8 @@
 - **Per-file queue presets.** Selected GUI queue rows can use any built-in preset or an independent snapshot of the current controls while unassigned rows continue to follow the batch settings.
 - **Per-file recovery state.** Batch manifest schema v2 stores optional validated per-job configurations and display names, migrates v1 manifests in memory, and restores assignments for resumed parallel work.
 - **Composable CLI profiles.** Added `--profile <json>` for a versioned built-in-preset plus sparse-overrides document; explicit value/pass flags apply last, while ambiguous configuration sources and operation-level policy keys fail closed.
+- **Machine-readable CLI results.** Added `--result-format json|jsonl` with schema-versioned job-linked render records and a final batch record; stdout remains pure machine data while all human progress and diagnostics use stderr.
+- **Stable CLI status contract.** Centralized exit mapping as 0 for complete success, 1 when a batch is partial but has a usable output, and 2 when every job fails or setup prevents rendering; release smoke now validates the JSON result contract.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

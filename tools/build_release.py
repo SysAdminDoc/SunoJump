@@ -490,6 +490,8 @@ def smoke_render_executable(executable: Path, version: str, root: Path) -> dict:
             "gentle",
             "--seed",
             "17",
+            "--result-format",
+            "json",
         ],
         timeout=240,
         cwd=ROOT,
@@ -522,8 +524,22 @@ def smoke_render_executable(executable: Path, version: str, root: Path) -> dict:
         raise ReleaseError("fixture sidecar has the wrong application version")
     if payload.get("output_sha256") != sha256_file(output):
         raise ReleaseError("fixture sidecar output hash does not match audio")
-    if "Result: succeeded" not in result.stdout or "Batch succeeded:" not in result.stdout:
-        raise ReleaseError("fixture CLI did not report a succeeded job and batch")
+    try:
+        result_payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(
+            f"fixture CLI result is not valid JSON: {exc}"
+        ) from exc
+    if (
+        result_payload.get("schema_id") != "com.sunojump.cli-results"
+        or result_payload.get("state") != "succeeded"
+        or len(result_payload.get("results", [])) != 1
+        or result_payload["results"][0].get("state") != "succeeded"
+    ):
+        raise ReleaseError(
+            "fixture CLI did not report a schema-versioned succeeded job "
+            "and batch"
+        )
     return {
         "exit_code": result.returncode,
         "output_sha256": sha256_file(output),

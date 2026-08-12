@@ -561,7 +561,7 @@ class BatchManifestCliIntegrationTests(unittest.TestCase):
             )
 
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
-            self.assertIn("succeeded -> failed", resumed.stdout)
+            self.assertIn("succeeded -> failed", resumed.stderr)
             self.assertEqual(
                 original_output.read_bytes(),
                 b"changed after recorded success",

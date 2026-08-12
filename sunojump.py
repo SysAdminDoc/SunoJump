@@ -58,6 +58,7 @@ from safe_audio import (
     validate_libsndfile_version,
 )
 from render_results import (
+    RESULT_SCHEMA_VERSION,
     BatchResult,
     OutputValidation,
     RenderErrorCode,
@@ -72,6 +73,7 @@ VERSION = "1.6.1"
 APP_NAME = "SunoJump"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 PROFILE_SCHEMA_VERSION = 1
+CLI_RESULTS_SCHEMA_ID = "com.sunojump.cli-results"
 SIDECAR_SCHEMA_VERSION = 4
 SIDECAR_SCHEMA_ID = "com.sunojump.replay-evidence"
 SIDECAR_AUDIO_TAG = "SUNOJUMP_SIDECAR_PAYLOAD_SHA256"
@@ -9540,6 +9542,15 @@ def _build_cli_parser():
         ),
     )
     parser.add_argument(
+        '--result-format',
+        choices=('human', 'json', 'jsonl'),
+        default='human',
+        help=_tr(
+            'result stream: human logs on stderr (default), one JSON batch '
+            'document, or per-file JSON Lines plus a batch record'
+        ),
+    )
+    parser.add_argument(
         '--manifest',
         default=None,
         help=_tr('Path for the new atomic batch manifest'),
@@ -9765,6 +9776,109 @@ def _argv_uses_any_option(tokens, options):
     )
 
 
+def _cli_result_record(job, result):
+    payload = result.to_dict()
+    payload.pop("schema_version", None)
+    return {
+        "schema_id": CLI_RESULTS_SCHEMA_ID,
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "record_type": "render_result",
+        "job_id": str(job["id"]),
+        **payload,
+    }
+
+
+def _cli_batch_record(
+    batch_result,
+    jobs,
+    *,
+    output_dir,
+    manifest_path=None,
+    include_results=True,
+):
+    if len(jobs) != len(batch_result.results):
+        raise ValueError("CLI result jobs must align with batch results")
+    payload = batch_result.to_dict()
+    payload.pop("schema_version", None)
+    payload.pop("results", None)
+    record = {
+        "schema_id": CLI_RESULTS_SCHEMA_ID,
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "record_type": "batch_result",
+        "app_version": VERSION,
+        "output_dir": str(Path(output_dir).resolve()),
+        **payload,
+    }
+    if manifest_path is not None:
+        record["manifest_path"] = str(Path(manifest_path).resolve())
+    if include_results:
+        record["results"] = [
+            _cli_result_record(job, result)
+            for job, result in zip(jobs, batch_result.results)
+        ]
+    return record
+
+
+def _emit_cli_results(
+    batch_result,
+    jobs,
+    *,
+    result_format,
+    output_dir,
+    manifest_path=None,
+    stream=None,
+):
+    if result_format == "human":
+        return
+    destination = stream or sys.stdout
+    if result_format == "json":
+        print(
+            json.dumps(
+                _cli_batch_record(
+                    batch_result,
+                    jobs,
+                    output_dir=output_dir,
+                    manifest_path=manifest_path,
+                ),
+                sort_keys=True,
+            ),
+            file=destination,
+        )
+        return
+    if result_format == "jsonl":
+        for job, result in zip(jobs, batch_result.results):
+            print(
+                json.dumps(
+                    _cli_result_record(job, result),
+                    sort_keys=True,
+                ),
+                file=destination,
+            )
+        print(
+            json.dumps(
+                _cli_batch_record(
+                    batch_result,
+                    jobs,
+                    output_dir=output_dir,
+                    manifest_path=manifest_path,
+                    include_results=False,
+                ),
+                sort_keys=True,
+            ),
+            file=destination,
+        )
+        return
+    raise ValueError(f"unsupported CLI result format: {result_format}")
+
+
+def _cli_exit_code(batch_result):
+    if batch_result.state is RenderState.SUCCEEDED:
+        return 0
+    if any(result.usable_output for result in batch_result.results):
+        return 1
+    return 2
+
+
 class WatchFolderTracker:
     """Detect supported top-level files after their size/mtime stabilizes."""
 
@@ -9829,6 +9943,7 @@ def _run_watch_folder_cli(
     stability_seconds=WATCH_STABILITY_SECONDS,
     max_cycles=None,
     diagnostic_path=None,
+    result_format="human",
 ):
     watch_root = Path(watch_dir).resolve()
     output_root = Path(output_dir).resolve()
@@ -9847,6 +9962,7 @@ def _run_watch_folder_cli(
     log_lock = threading.Lock()
     used_outputs = set()
     results = []
+    result_jobs = []
     started_at = time.monotonic()
     run_log = RunDiagnostics(
         "cli-watch",
@@ -9857,7 +9973,7 @@ def _run_watch_folder_cli(
 
     def watch_log(message):
         with log_lock:
-            print(message)
+            print(message, file=sys.stderr)
             run_log.write(message)
 
     run_log.write_header(
@@ -9891,7 +10007,8 @@ def _run_watch_folder_cli(
         for future in list(inflight):
             if not future.done():
                 continue
-            path, _signature = inflight.pop(future)
+            job, _signature = inflight.pop(future)
+            path = job["input_path"]
             try:
                 result = future.result()
             except Exception as exc:
@@ -9903,6 +10020,7 @@ def _run_watch_folder_cli(
                     message=str(exc),
                 )
             results.append(result)
+            result_jobs.append(job)
             watch_log(format_render_result(result))
 
     try:
@@ -9937,6 +10055,7 @@ def _run_watch_folder_cli(
                             effective_seed=effective_seed,
                         )
                         results.append(result)
+                        result_jobs.append(job)
                         watch_log(format_render_result(result))
                         continue
                     label = f"[watch {Path(path).name}]"
@@ -9948,7 +10067,7 @@ def _run_watch_folder_cli(
                                 return
                             progress_buckets[jid] = bucket
                             text = f"{prefix} Progress: {bucket}%"
-                            print(text)
+                            print(text, file=sys.stderr)
                             run_log.write(text)
 
                     future = executor.submit(
@@ -9971,7 +10090,7 @@ def _run_watch_folder_cli(
                         ),
                         compute_backend=compute_backend,
                     )
-                    inflight[future] = (path, signature)
+                    inflight[future] = (job, signature)
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 requested_stop.set()
@@ -9991,9 +10110,18 @@ def _run_watch_folder_cli(
             results,
             time.monotonic() - started_at,
         )
-        print(format_batch_result(batch))
+        print(format_batch_result(batch), file=sys.stderr)
+        _emit_cli_results(
+            batch,
+            result_jobs,
+            result_format=result_format,
+            output_dir=output_root,
+        )
         return batch
-    print("Watch stopped; no stable audio files were processed.")
+    print(
+        "Watch stopped; no stable audio files were processed.",
+        file=sys.stderr,
+    )
     return None
 
 
@@ -10067,7 +10195,8 @@ def cli_main():
                 if count
             )
             print(
-                f"No {policy} jobs in {manifest_store.path} ({counts})."
+                f"No {policy} jobs in {manifest_store.path} ({counts}).",
+                file=sys.stderr,
             )
             return
         out_dir = manifest_store.output_dir
@@ -10082,7 +10211,10 @@ def cli_main():
                 document = _validate_profile_document(data)
                 params = document["params"]
                 preset_name = document["name"]
-                print(f"Loaded profile from {args.profile}")
+                print(
+                    f"Loaded profile from {args.profile}",
+                    file=sys.stderr,
+                )
             except (
                 ConfigurationError,
                 json.JSONDecodeError,
@@ -10100,7 +10232,10 @@ def cli_main():
                     data = json.load(f)
                 document = _validate_preset_document(data)
                 params = document["params"]
-                print(f"Loaded preset from {args.preset_file}")
+                print(
+                    f"Loaded preset from {args.preset_file}",
+                    file=sys.stderr,
+                )
                 preset_name = document["name"]
             except (
                 ConfigurationError,
@@ -10129,8 +10264,11 @@ def cli_main():
         if args.watch:
             watch_path = Path(args.watch)
             if not watch_path.is_dir():
-                print(f"Error: watch directory not found: {args.watch}")
-                sys.exit(1)
+                print(
+                    f"Error: watch directory not found: {args.watch}",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
             watch_format = params["output_format"]
             if _format_requires_ffmpeg(watch_format):
                 if not _check_ffmpeg():
@@ -10139,7 +10277,7 @@ def cli_main():
                         "ffmpeg in PATH. Use WAV/FLAC/OGG or install ffmpeg.",
                         file=sys.stderr,
                     )
-                    sys.exit(1)
+                    sys.exit(2)
                 if not _ffmpeg_encoder_available(watch_format):
                     encoder = FFMPEG_FORMAT_ENCODERS.get(
                         watch_format,
@@ -10150,10 +10288,10 @@ def cli_main():
                         f"{watch_format.upper()} export.",
                         file=sys.stderr,
                     )
-                    sys.exit(1)
+                    sys.exit(2)
             watch_output = args.output or str(watch_path / "output")
             try:
-                return _run_watch_folder_cli(
+                watch_result = _run_watch_folder_cli(
                     watch_dir=watch_path,
                     output_dir=watch_output,
                     params=params,
@@ -10163,7 +10301,11 @@ def cli_main():
                     seed=args.seed,
                     diagnostic_retention=args.diagnostic_retention,
                     redact_diagnostics=not args.no_redact_diagnostics,
+                    result_format=args.result_format,
                 )
+                if watch_result is None:
+                    return
+                sys.exit(_cli_exit_code(watch_result))
             except (OSError, ValueError) as exc:
                 print(
                     f"Error: cannot start watch folder: {exc}",
@@ -10180,11 +10322,11 @@ def cli_main():
         elif input_path.is_file():
             files.append(str(input_path))
         else:
-            print(f"Error: {args.input} not found")
-            sys.exit(1)
+            print(f"Error: {args.input} not found", file=sys.stderr)
+            sys.exit(2)
         if not files:
-            print(_tr("No supported audio files found."))
-            sys.exit(1)
+            print(_tr("No supported audio files found."), file=sys.stderr)
+            sys.exit(2)
         inspections = [
             (filepath, inspect_c2pa(filepath))
             for filepath in files
@@ -10239,7 +10381,8 @@ def cli_main():
             print(
                 "C2PA policy acknowledged: originals remain unchanged; "
                 "transformed outputs will omit and not re-sign source "
-                "Content Credentials."
+                "Content Credentials.",
+                file=sys.stderr,
             )
         jobs = [
             {
@@ -10263,7 +10406,7 @@ def cli_main():
                 "Use WAV/FLAC/OGG or install ffmpeg.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(2)
         if not _ffmpeg_encoder_available(out_format):
             encoder = FFMPEG_FORMAT_ENCODERS.get(out_format, out_format)
             print(
@@ -10272,7 +10415,7 @@ def cli_main():
                 "support or use WAV/FLAC/OGG.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(2)
 
     try:
         os.makedirs(out_dir, exist_ok=True)
@@ -10297,18 +10440,22 @@ def cli_main():
     )
 
     def cli_log(msg):
-        print(msg)
+        print(msg, file=sys.stderr)
         run_log.write(msg)
 
-    print(f"{APP_NAME} v{VERSION}")
-    print(RIGHTS_ONLY_NOTICE)
-    print(EVIDENCE_NOTICE)
+    print(f"{APP_NAME} v{VERSION}", file=sys.stderr)
+    print(RIGHTS_ONLY_NOTICE, file=sys.stderr)
+    print(EVIDENCE_NOTICE, file=sys.stderr)
     print(
         f"Preset: {preset_name} | Format: {out_format.upper()} | "
-        f"Files: {len(files)}"
+        f"Files: {len(files)}",
+        file=sys.stderr,
     )
-    print(f"Run log: {run_log.path}")
-    print(f"Batch manifest: {manifest_store.path}\n")
+    print(f"Run log: {run_log.path}", file=sys.stderr)
+    print(
+        f"Batch manifest: {manifest_store.path}\n",
+        file=sys.stderr,
+    )
     run_log.write_header(
         'cli',
         files,
@@ -10402,11 +10549,14 @@ def cli_main():
     cli_log(f"Output directory: {out_dir}")
     cli_log(f"Batch manifest: {manifest_store.path}")
     run_log.close()
-    if batch_result.state is RenderState.SUCCEEDED:
-        return
-    if any(result.usable_output for result in batch_result.results):
-        sys.exit(1)
-    sys.exit(2)
+    _emit_cli_results(
+        batch_result,
+        jobs,
+        result_format=args.result_format,
+        output_dir=out_dir,
+        manifest_path=manifest_store.path,
+    )
+    sys.exit(_cli_exit_code(batch_result))
 
 
 # ============================================================
@@ -10418,7 +10568,7 @@ if __name__ == '__main__':
     _cli_flags = {
         '-i', '--input', '-h', '--help', '--version', '--native-runtime',
         '--manifest', '--resume', '--retry', '--compute', '--workers',
-        '--watch',
+        '--watch', '--result-format',
     }
     if len(sys.argv) > 1 and _argv_uses_any_option(
         sys.argv[1:],

@@ -153,6 +153,12 @@ python sunojump.py -i song.wav --pitch 1.5 --phase 0.5 --spectral 0.4
 # Compose a built-in preset with reusable sparse JSON overrides
 python sunojump.py -i song.wav --profile ./gentle-tuned.json --pitch 0.75
 
+# Keep diagnostics on stderr and write one machine-readable result document
+python sunojump.py -i ./my_songs --result-format json > results.json
+
+# Emit one record per file plus a final batch record
+python sunojump.py -i ./my_songs --result-format jsonl > results.jsonl
+
 # Batch process a directory
 python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
 
@@ -186,6 +192,7 @@ python sunojump.py --locale en
 | `--locale` | Locale catalog for GUI labels and CLI help; falls back from region to language to English | system locale |
 | `--compute` | `cpu`, `auto` (CUDA with CPU fallback), or strict `cuda` for FFT-heavy passes | cpu |
 | `--workers` | Queued files to render concurrently, from 1 to 8 | 2 |
+| `--result-format` | `human` for stderr logs, `json` for one batch document, or `jsonl` for per-file records plus a final batch record | human |
 | `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
 | `--resume` | Existing batch manifest to reconcile and resume | none |
 | `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
@@ -242,7 +249,7 @@ The standard frozen release remains CPU-only: Torch is deliberately excluded fro
 
 Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs. Legacy partial presets are migrated and completed from the documented Moderate defaults; saved Custom sessions persist the full validated configuration rather than only the word `Custom`.
 
-CLI exit status is `0` only when every job succeeds, `1` when a batch has a usable output but is partial, and `2` when no job produces a usable output. Human-readable per-file and batch summaries include stable error codes, the effective seed, and sidecar hash. Each independently versioned sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
+CLI exit status is `0` only when every job succeeds, `1` when a batch has at least one usable output but is partial, and `2` when no job produces a usable output. Human-readable progress, per-file summaries, and diagnostics always go to stderr, leaving stdout uncontaminated for `--result-format json` or `jsonl`. The `com.sunojump.cli-results` schema includes stable job IDs, states, error codes, effective seeds, validation evidence, artifact paths/hashes, counts, and the final batch state. Each independently versioned replay sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
 
 Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
 

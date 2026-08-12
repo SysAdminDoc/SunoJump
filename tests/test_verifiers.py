@@ -271,7 +271,7 @@ class CliVerifierIntegrationTests(unittest.TestCase):
             self.assertIn(
                 "sunojump.constellation v1]: unavailable "
                 "(input_too_short; 1.00s",
-                result.stdout,
+                result.stderr,
             )
             sidecar = json.loads(
                 (output_dir / "short_sj.sidecar.json").read_text(

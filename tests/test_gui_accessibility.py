@@ -28,6 +28,7 @@ from sunojump import (
     ROLE_JOB_ID,
     ROLE_OUTPUT,
     ROLE_COMPARE_WINNER,
+    ROLE_FILE_PRESET,
 )
 import verifiers
 
@@ -55,6 +56,7 @@ class GuiAccessibilityTests(unittest.TestCase):
             self.window.btn_clear,
             self.window.btn_resume_batch,
             self.window.btn_retry_failed,
+            self.window.queue_preset_combo,
             self.window.btn_render_preview,
             self.window.btn_compare,
             self.window.btn_play_orig,
@@ -96,6 +98,11 @@ class GuiAccessibilityTests(unittest.TestCase):
     def test_empty_queue_disables_processing_and_explains_next_action(self):
         self.assertEqual(self.window.file_list.count(), 0)
         self.assertFalse(self.window.btn_process.isEnabled())
+        self.assertFalse(self.window.queue_preset_combo.isEnabled())
+        self.assertEqual(
+            self.window.queue_preset_combo.currentText(),
+            sunojump.QUEUE_PRESET_INHERIT,
+        )
         self.assertIn("Queue is empty", self.window.queue_activity_label.text())
         self.assertIn("Browse", self.window.queue_activity_label.text())
 
@@ -446,6 +453,54 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertIn("selected.wav", self.window.preview_label.text())
         self.assertIn("selected.wav", self.window.compare_label.text())
 
+    def test_queue_preset_applies_to_all_selected_files(self):
+        self.window._append_item("first.wav")
+        self.window._append_item("second.wav")
+        for index in range(self.window.file_list.count()):
+            self.window.file_list.item(index).setSelected(True)
+
+        self.window._on_queue_preset_changed("Moderate")
+
+        for index in range(self.window.file_list.count()):
+            item = self.window.file_list.item(index)
+            assignment = item.data(ROLE_FILE_PRESET)
+            self.assertEqual(assignment["name"], "Moderate")
+            self.assertEqual(assignment["params"], sunojump.PRESETS["Moderate"])
+            self.assertIn("Preset: Moderate", item.text())
+
+    def test_queue_current_settings_are_an_independent_snapshot(self):
+        self.window._append_item("snapshot.wav")
+        item = self.window.file_list.item(0)
+        self.window.file_list.setCurrentItem(item)
+        item.setSelected(True)
+        self.window._apply_preset("Gentle")
+
+        self.window._on_queue_preset_changed(
+            sunojump.QUEUE_PRESET_CURRENT
+        )
+        snapshot = item.data(ROLE_FILE_PRESET)
+        self.window._apply_preset("Aggressive")
+        batch_params = self.window._get_params()
+        config = self.window._per_file_job_config(item, batch_params)
+
+        self.assertEqual(snapshot["name"], "Custom snapshot")
+        self.assertEqual(
+            config["pitch_range"],
+            sunojump.PRESETS["Gentle"]["pitch_range"],
+        )
+        self.assertNotEqual(
+            config["pitch_range"],
+            batch_params["pitch_range"],
+        )
+        self.assertEqual(
+            config["output_format"],
+            batch_params["output_format"],
+        )
+        self.assertEqual(
+            config["c2pa_policy"],
+            batch_params["c2pa_policy"],
+        )
+
     def test_batch_failure_and_cancellation_never_show_complete_or_100(self):
         failed = RenderResult(
             state=RenderState.FAILED,
@@ -747,7 +802,8 @@ class GuiAccessibilityTests(unittest.TestCase):
         self.assertEqual(order[2], self.window.btn_clear)
         self.assertEqual(order[3], self.window.btn_resume_batch)
         self.assertEqual(order[4], self.window.btn_retry_failed)
-        self.assertEqual(order[5], self.window.file_list)
+        self.assertEqual(order[5], self.window.queue_preset_combo)
+        self.assertEqual(order[6], self.window.file_list)
         self.assertIn(self.window.btn_process, order)
         self.assertLess(order.index(self.window.preset_combo), order.index(self.window.btn_process))
         self.assertLess(order.index(self.window.output_dir), order.index(self.window.btn_process))

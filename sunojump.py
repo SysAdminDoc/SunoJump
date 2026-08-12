@@ -218,6 +218,9 @@ ROLE_JOB_ID = Qt.ItemDataRole.UserRole + 2
 ROLE_RESULT = Qt.ItemDataRole.UserRole + 3
 ROLE_COMPARE_WINNER = Qt.ItemDataRole.UserRole + 4
 ROLE_PREVIEW_OFFSET = Qt.ItemDataRole.UserRole + 5
+ROLE_FILE_PRESET = Qt.ItemDataRole.UserRole + 6
+QUEUE_PRESET_INHERIT = "Batch settings"
+QUEUE_PRESET_CURRENT = "Current settings"
 
 PRESETS = {
     'Gentle': {
@@ -4595,6 +4598,26 @@ def _validated_parallel_workers(value):
     return value
 
 
+def _validated_manifest_jobs(jobs, batch_params):
+    validated_jobs = []
+    for job in jobs:
+        normalized = dict(job)
+        if isinstance(job.get("config"), dict):
+            config = validate_render_config(
+                job["config"],
+                require_complete=True,
+                allow_output_format=True,
+            )
+            for key in ("output_format", "c2pa_policy"):
+                if config[key] != batch_params[key]:
+                    raise ConfigurationError(
+                        f"per-file {key} must match the batch configuration"
+                    )
+            normalized["config"] = config
+        validated_jobs.append(normalized)
+    return validated_jobs
+
+
 def _run_batch_render_job(
     *,
     job_id,
@@ -4705,24 +4728,34 @@ class ProcessWorker(QThread):
         super().__init__()
         self.jobs = []
         seeds = []
+        job_params = []
         for index, job in enumerate(jobs):
             if isinstance(job, dict):
                 job_id = job["id"]
                 filepath = job["input_path"]
                 seed = job.get("effective_seed")
+                per_file_params = job.get("config")
             elif isinstance(job, (tuple, list)) and len(job) in {2, 3}:
                 job_id, filepath = job[:2]
                 seed = job[2] if len(job) == 3 else None
+                per_file_params = None
             else:
                 job_id = f"worker-{index}-{uuid.uuid4().hex}"
                 filepath = job
                 seed = None
+                per_file_params = None
             self.jobs.append((str(job_id), str(filepath)))
             seeds.append(
                 seed if seed is not None else secrets.randbits(64)
             )
+            job_params.append(
+                dict(per_file_params)
+                if isinstance(per_file_params, dict)
+                else dict(params)
+            )
         self.files = [filepath for _, filepath in self.jobs]
         self.params = params
+        self.job_params = job_params
         self.output_dir = output_dir
         self.manifest_store = manifest_store
         self.max_workers = _validated_parallel_workers(max_workers)
@@ -4820,7 +4853,7 @@ class ProcessWorker(QThread):
                     job_id=job_id,
                     filepath=filepath,
                     effective_seed=self.seeds[idx],
-                    params=self.params,
+                    params=self.job_params[idx],
                     output_dir=self.output_dir,
                     used_outputs=used_outputs,
                     output_lock=output_lock,
@@ -5685,6 +5718,7 @@ class MainWindow(QMainWindow):
         # that _toggle_play() just set).
         self._media_transitioning = False
         self._applying_preset = False
+        self._syncing_file_preset = False
         self._last_browse_dir = str(Path.home())
         self._last_preset_dir = str(Path.home())
         self._current_run_log = None
@@ -5873,6 +5907,7 @@ class MainWindow(QMainWindow):
             f"{input_path}\nLast A/B winner: {entry['preset']} "
             f"({entry['selected_at']})"
         )
+        self._decorate_file_preset_item(item)
 
     def _update_compare_history_label(self, item=None):
         if not hasattr(self, "compare_history_label"):
@@ -6047,6 +6082,17 @@ class MainWindow(QMainWindow):
                 self._queue_history_grid,
                 placements,
                 ((0 if compact else 2, 1),),
+            )
+
+        if hasattr(self, "_queue_preset_grid"):
+            placements = (
+                (self.queue_preset_label, 0, 0, 1, 1),
+                (self.queue_preset_combo, 0, 1, 1, 1),
+            )
+            self._place_grid(
+                self._queue_preset_grid,
+                placements,
+                ((1, 1),),
             )
 
         if hasattr(self, "_preview_controls_grid"):
@@ -6322,6 +6368,14 @@ class MainWindow(QMainWindow):
             ),
         )
         _set_accessibility(
+            self.queue_preset_combo,
+            "Selected queue file preset",
+            (
+                "Assign Batch settings, a built-in preset, or a snapshot of "
+                "current settings to the selected queue files."
+            ),
+        )
+        _set_accessibility(
             self.btn_render_preview,
             "Render preview",
             (
@@ -6511,6 +6565,7 @@ class MainWindow(QMainWindow):
             self.btn_clear,
             self.btn_resume_batch,
             self.btn_retry_failed,
+            self.queue_preset_combo,
             self.file_list,
             self.btn_render_preview,
             self.btn_compare,
@@ -6866,6 +6921,36 @@ class MainWindow(QMainWindow):
         )
         lay.addLayout(self._queue_history_grid)
 
+        self._queue_preset_grid = QGridLayout()
+        self._queue_preset_grid.setSpacing(8)
+        self.queue_preset_label = QLabel(_tr("Selected preset:"))
+        self.queue_preset_combo = QComboBox()
+        self.queue_preset_combo.addItems([
+            _tr(QUEUE_PRESET_INHERIT),
+            *PRESETS.keys(),
+            _tr(QUEUE_PRESET_CURRENT),
+        ])
+        self.queue_preset_combo.setEnabled(False)
+        self.queue_preset_label.setBuddy(self.queue_preset_combo)
+        self.queue_preset_combo.setToolTip(
+            _tr(
+                "Assign a preset to selected files; Batch settings follows "
+                "the main controls at render time"
+            )
+        )
+        self.queue_preset_combo.currentTextChanged.connect(
+            self._on_queue_preset_changed
+        )
+        self._place_grid(
+            self._queue_preset_grid,
+            (
+                (self.queue_preset_label, 0, 0, 1, 1),
+                (self.queue_preset_combo, 0, 1, 1, 1),
+            ),
+            ((1, 1),),
+        )
+        lay.addLayout(self._queue_preset_grid)
+
         self.file_list = DropListWidget()
         self.file_list.setMinimumHeight(140)
         self.file_list.setSizePolicy(
@@ -6878,6 +6963,9 @@ class MainWindow(QMainWindow):
             self._on_keyboard_queue_reordered
         )
         self.file_list.itemSelectionChanged.connect(self._update_preview_ui)
+        self.file_list.itemSelectionChanged.connect(
+            self._sync_queue_preset_control
+        )
         lay.addWidget(self.file_list)
 
         self.queue_activity_label = QLabel(_tr(
@@ -7409,6 +7497,7 @@ class MainWindow(QMainWindow):
         self.file_list.clear()
         self._update_file_count()
         self._update_preview_ui()
+        self._sync_queue_preset_control()
 
     def _on_remove_selected(self):
         self._stop_playback()
@@ -7416,6 +7505,7 @@ class MainWindow(QMainWindow):
             self.file_list.takeItem(self.file_list.row(item))
         self._update_file_count()
         self._update_preview_ui()
+        self._sync_queue_preset_control()
 
     def _on_keyboard_queue_reordered(self, message):
         self._update_preview_ui()
@@ -7531,7 +7621,133 @@ class MainWindow(QMainWindow):
         )
         self._on_render_thread_finished()
 
-    def _append_item(self, path, job_id=None):
+    @staticmethod
+    def _file_preset_assignment(name, params):
+        return {
+            "name": str(name),
+            "params": {
+                key: copy.deepcopy(params[key])
+                for key in _CONFIG_DEFAULTS
+                if key in params
+            },
+        }
+
+    def _assignment_from_manifest_job(self, job):
+        config = job.get("config")
+        if not isinstance(config, dict):
+            return None
+        params = {
+            key: config[key]
+            for key in _CONFIG_DEFAULTS
+            if key in config
+        }
+        for preset_name, preset_params in PRESETS.items():
+            if params == preset_params:
+                return self._file_preset_assignment(
+                    preset_name,
+                    preset_params,
+                )
+        return self._file_preset_assignment(
+            job.get("preset_name", "Custom snapshot"),
+            params,
+        )
+
+    def _decorate_file_preset_item(self, item):
+        text = re.sub(r"\s+\[Preset: [^\]]+\]$", "", item.text())
+        assignment = item.data(ROLE_FILE_PRESET)
+        if isinstance(assignment, dict) and assignment.get("name"):
+            text += f"  [Preset: {assignment['name']}]"
+        item.setText(text)
+
+    def _sync_queue_preset_control(self):
+        if not hasattr(self, "queue_preset_combo"):
+            return
+        items = self.file_list.selectedItems()
+        if not items:
+            current = self.file_list.currentItem()
+            items = [current] if current is not None else []
+        self.queue_preset_combo.setEnabled(bool(items))
+        if not items:
+            self._syncing_file_preset = True
+            try:
+                self.queue_preset_combo.setPlaceholderText("")
+                self.queue_preset_combo.setCurrentIndex(
+                    self.queue_preset_combo.findText(
+                        _tr(QUEUE_PRESET_INHERIT)
+                    )
+                )
+            finally:
+                self._syncing_file_preset = False
+            return
+        values = set()
+        for item in items:
+            assignment = item.data(ROLE_FILE_PRESET)
+            if not isinstance(assignment, dict):
+                values.add(QUEUE_PRESET_INHERIT)
+            elif assignment.get("name") in PRESETS:
+                values.add(assignment["name"])
+            else:
+                values.add(QUEUE_PRESET_CURRENT)
+        self._syncing_file_preset = True
+        try:
+            if len(values) == 1:
+                value = next(iter(values))
+                self.queue_preset_combo.setPlaceholderText("")
+                index = self.queue_preset_combo.findText(_tr(value))
+                self.queue_preset_combo.setCurrentIndex(index)
+            else:
+                self.queue_preset_combo.setCurrentIndex(-1)
+                self.queue_preset_combo.setPlaceholderText(
+                    _tr("Mixed presets")
+                )
+        finally:
+            self._syncing_file_preset = False
+
+    def _on_queue_preset_changed(self, selected_name):
+        if self._syncing_file_preset or not selected_name:
+            return
+        items = self.file_list.selectedItems()
+        if not items:
+            current = self.file_list.currentItem()
+            items = [current] if current is not None else []
+        if not items:
+            return
+        if selected_name == _tr(QUEUE_PRESET_INHERIT):
+            assignment = None
+            display_name = QUEUE_PRESET_INHERIT
+        elif selected_name == _tr(QUEUE_PRESET_CURRENT):
+            assignment = self._file_preset_assignment(
+                "Custom snapshot",
+                self._get_params(),
+            )
+            display_name = "Custom snapshot"
+        else:
+            assignment = self._file_preset_assignment(
+                selected_name,
+                PRESETS[selected_name],
+            )
+            display_name = selected_name
+        for item in items:
+            item.setData(ROLE_FILE_PRESET, copy.deepcopy(assignment))
+            self._decorate_file_preset_item(item)
+        self._log(
+            f"Assigned {display_name} to {len(items)} queue file(s)."
+        )
+
+    def _per_file_job_config(self, item, batch_params):
+        assignment = item.data(ROLE_FILE_PRESET)
+        if not isinstance(assignment, dict):
+            return None
+        config = dict(assignment["params"])
+        config["output_format"] = batch_params["output_format"]
+        config["c2pa_policy"] = batch_params["c2pa_policy"]
+        return validate_render_config(
+            config,
+            require_complete=True,
+            allow_output_format=True,
+        )
+
+    def _append_item(self, path, job_id=None, preset_assignment=None):
         item = QListWidgetItem(f"READY    {Path(path).name}")
         item.setToolTip(path)
         item.setData(ROLE_INPUT, path)
@@ -7540,7 +7756,9 @@ class MainWindow(QMainWindow):
         item.setData(ROLE_RESULT, None)
         item.setData(ROLE_COMPARE_WINNER, self._compare_winner_for_path(path))
         item.setData(ROLE_PREVIEW_OFFSET, None)
+        item.setData(ROLE_FILE_PRESET, copy.deepcopy(preset_assignment))
         self._decorate_compare_winner_item(item)
+        self._decorate_file_preset_item(item)
         self.file_list.addItem(item)
 
     def _update_file_count(self):
@@ -7563,6 +7781,7 @@ class MainWindow(QMainWindow):
             self._set_queue_notice(
                 "Queue is empty. Browse for audio or drop files/folders here."
             )
+        self._sync_queue_preset_control()
 
     # --- Preset slots ---
     def _on_preset(self, name):
@@ -7855,6 +8074,10 @@ class MainWindow(QMainWindow):
         self.retention_spin.setEnabled(enabled)
         self.worker_count_spin.setEnabled(enabled)
         self.preview_offset_spin.setEnabled(enabled)
+        if enabled:
+            self._sync_queue_preset_control()
+        else:
+            self.queue_preset_combo.setEnabled(False)
         self.redact_logs_check.setEnabled(enabled)
 
     def _on_process(self):
@@ -7882,11 +8105,17 @@ class MainWindow(QMainWindow):
         manifest_jobs = []
         for i, input_path in enumerate(input_paths):
             item = self.file_list.item(i)
-            manifest_jobs.append({
+            manifest_job = {
                 "id": self._ensure_item_job_id(item),
                 "input_path": input_path,
                 "effective_seed": secrets.randbits(64),
-            })
+            }
+            per_file_config = self._per_file_job_config(item, params)
+            assignment = item.data(ROLE_FILE_PRESET)
+            if per_file_config is not None:
+                manifest_job["config"] = per_file_config
+                manifest_job["preset_name"] = assignment["name"]
+            manifest_jobs.append(manifest_job)
             # Clear any previous processed-path marker
             item.setData(ROLE_OUTPUT, None)
             item.setData(ROLE_PREVIEW_OFFSET, None)
@@ -7987,7 +8216,10 @@ class MainWindow(QMainWindow):
                 require_complete=True,
                 allow_output_format=True,
             )
-            jobs = store.select(policy)
+            jobs = _validated_manifest_jobs(
+                store.select(policy),
+                params,
+            )
             if not jobs:
                 counts = ", ".join(
                     f"{state}={count}"
@@ -8016,7 +8248,11 @@ class MainWindow(QMainWindow):
         self._stop_playback()
         self.file_list.clear()
         for job in jobs:
-            self._append_item(job["input_path"], job_id=job["id"])
+            self._append_item(
+                job["input_path"],
+                job_id=job["id"],
+                preset_assignment=self._assignment_from_manifest_job(job),
+            )
         self._update_file_count()
         config_without_format = {
             key: value
@@ -8065,12 +8301,14 @@ class MainWindow(QMainWindow):
         if item is not None:
             name = Path(item.data(ROLE_INPUT)).name
             item.setText(f"RUNNING  {name}")
+            self._decorate_file_preset_item(item)
 
     def _on_file_progress(self, job_id, value):
         item = self._find_item_by_job_id(job_id)
         if item is not None:
             name = Path(item.data(ROLE_INPUT)).name
             item.setText(f"RUNNING {int(value):3d}%  {name}")
+            self._decorate_file_preset_item(item)
 
     def _on_file_done(self, job_id, result):
         if not isinstance(result, RenderResult):
@@ -8112,6 +8350,7 @@ class MainWindow(QMainWindow):
                 item.setData(ROLE_OUTPUT, None)
             item.setData(ROLE_RESULT, result)
             item.setData(ROLE_PREVIEW_OFFSET, None)
+            self._decorate_file_preset_item(item)
             detail = format_render_result(result)
             item.setToolTip(detail)
             item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, detail)
@@ -9722,7 +9961,10 @@ def cli_main():
                 allow_output_format=True,
             )
             policy = args.retry or "pending"
-            jobs = manifest_store.select(policy)
+            jobs = _validated_manifest_jobs(
+                manifest_store.select(policy),
+                params,
+            )
         except (
             BatchManifestError,
             ConfigurationError,
@@ -9994,6 +10236,7 @@ def cli_main():
             job_id = job["id"]
             filepath = job["input_path"]
             label = f"[{index + 1}/{len(jobs)} {Path(filepath).name}]"
+            job_params = job.get("config", params)
 
             def job_log(message, prefix=label):
                 synchronized_cli_log(f"{prefix} {message}")
@@ -10012,7 +10255,7 @@ def cli_main():
                 job_id=job_id,
                 filepath=filepath,
                 effective_seed=job["effective_seed"],
-                params=params,
+                params=job_params,
                 output_dir=out_dir,
                 used_outputs=used_outputs,
                 output_lock=output_lock,

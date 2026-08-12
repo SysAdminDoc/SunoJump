@@ -85,6 +85,74 @@ class BatchManifestStoreTests(unittest.TestCase):
             )
             self.assertEqual(list(temp_path.glob("*.tmp.json")), [])
 
+    def test_per_file_config_and_preset_name_survive_round_trip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            jobs = _jobs(temp_path)
+            jobs[0]["config"] = {
+                **_config(),
+                "pitch_range": 1.25,
+                "c2pa_policy": sunojump.C2PA_POLICY_BLOCK,
+            }
+            jobs[0]["preset_name"] = "Custom snapshot"
+
+            store = BatchManifestStore.create(
+                temp_path / "batch.sunojump-batch.json",
+                app_version=sunojump.VERSION,
+                output_dir=temp_path / "output",
+                config={
+                    **_config(),
+                    "c2pa_policy": sunojump.C2PA_POLICY_BLOCK,
+                },
+                jobs=jobs,
+            )
+            loaded = BatchManifestStore.load(store.path)
+
+            self.assertEqual(
+                loaded.jobs[0]["config"]["pitch_range"],
+                1.25,
+            )
+            self.assertEqual(
+                loaded.jobs[0]["preset_name"],
+                "Custom snapshot",
+            )
+
+    def test_schema_one_manifest_migrates_in_memory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            store = self._create(temp_path)
+            payload = json.loads(store.path.read_text(encoding="utf-8"))
+            payload["schema_version"] = 1
+            store.path.write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+
+            loaded = BatchManifestStore.load(store.path)
+
+            self.assertEqual(
+                loaded.payload["schema_version"],
+                BATCH_MANIFEST_SCHEMA_VERSION,
+            )
+            self.assertEqual(loaded.jobs[0]["id"], "job-0")
+
+    def test_invalid_per_file_config_or_preset_name_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            store = self._create(temp_path)
+            variants = []
+            invalid_config = deepcopy(store.payload)
+            invalid_config["jobs"][0]["config"] = []
+            variants.append(invalid_config)
+            invalid_name = deepcopy(store.payload)
+            invalid_name["jobs"][0]["preset_name"] = ""
+            variants.append(invalid_name)
+
+            for payload in variants:
+                with self.subTest(payload=payload):
+                    with self.assertRaises(BatchManifestError):
+                        BatchManifestStore(store.path, payload)
+
     def test_interrupted_running_job_recovers_to_pending_with_history(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -363,6 +431,52 @@ class BatchManifestWorkerTests(unittest.TestCase):
                 persisted.jobs[1]["error_code"],
                 "decode_failed",
             )
+
+    def test_worker_dispatches_each_jobs_own_config(self):
+        seen = {}
+
+        class FakeProcessor:
+            def __init__(self, params, **_kwargs):
+                self.marker = params["marker"]
+
+            def process(self, input_path, _output_path):
+                seen[Path(input_path).name] = self.marker
+                return RenderResult(
+                    state=RenderState.FAILED,
+                    input_path=str(input_path),
+                    error_code=RenderErrorCode.DECODE_FAILED,
+                )
+
+        jobs = [
+            {
+                "id": "first",
+                "input_path": "first.wav",
+                "effective_seed": 1,
+                "config": {"marker": "gentle"},
+            },
+            {
+                "id": "second",
+                "input_path": "second.wav",
+                "effective_seed": 2,
+                "config": {"marker": "aggressive"},
+            },
+        ]
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(sunojump, "AudioProcessor", FakeProcessor),
+        ):
+            worker = sunojump.ProcessWorker(
+                jobs,
+                {"marker": "batch"},
+                temp_dir,
+                max_workers=2,
+            )
+            worker.run()
+
+        self.assertEqual(
+            seen,
+            {"first.wav": "gentle", "second.wav": "aggressive"},
+        )
 
     def test_manifest_write_failure_is_a_typed_worker_failure(self):
         class FailingStore:

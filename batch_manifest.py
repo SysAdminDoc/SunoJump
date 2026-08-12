@@ -14,7 +14,7 @@ import uuid
 
 
 BATCH_MANIFEST_SCHEMA_ID = "com.sunojump.batch-manifest"
-BATCH_MANIFEST_SCHEMA_VERSION = 1
+BATCH_MANIFEST_SCHEMA_VERSION = 2
 BATCH_MANIFEST_SUFFIX = ".sunojump-batch.json"
 
 JOB_STATES = {"pending", "running", "succeeded", "partial", "failed", "cancelled"}
@@ -131,7 +131,7 @@ class BatchManifestStore:
         created_at = _utc_timestamp()
         normalized_jobs = []
         for job in jobs:
-            normalized_jobs.append({
+            normalized = {
                 "id": str(job["id"]),
                 "input_path": str(Path(job["input_path"]).resolve()),
                 "effective_seed": job["effective_seed"],
@@ -139,7 +139,12 @@ class BatchManifestStore:
                 "attempts": 0,
                 "history": [],
                 "created_at": created_at,
-            })
+            }
+            if isinstance(job.get("config"), dict):
+                normalized["config"] = deepcopy(job["config"])
+            if isinstance(job.get("preset_name"), str):
+                normalized["preset_name"] = job["preset_name"]
+            normalized_jobs.append(normalized)
         payload = {
             "schema_id": BATCH_MANIFEST_SCHEMA_ID,
             "schema_version": BATCH_MANIFEST_SCHEMA_VERSION,
@@ -169,6 +174,9 @@ class BatchManifestStore:
             ) from exc
         if not isinstance(payload, dict):
             raise BatchManifestError("batch manifest root must be an object")
+        if payload.get("schema_version") == 1:
+            payload = deepcopy(payload)
+            payload["schema_version"] = BATCH_MANIFEST_SCHEMA_VERSION
         return cls(manifest_path, payload)
 
     def _validate(self) -> None:
@@ -235,6 +243,17 @@ class BatchManifestStore:
                 or not all(isinstance(entry, dict) for entry in history)
             ):
                 raise BatchManifestError(f"job {job_id} has invalid history")
+            if "config" in job and not isinstance(job["config"], dict):
+                raise BatchManifestError(
+                    f"job {job_id} has an invalid per-file config"
+                )
+            if "preset_name" in job and (
+                not isinstance(job["preset_name"], str)
+                or not job["preset_name"]
+            ):
+                raise BatchManifestError(
+                    f"job {job_id} has an invalid preset name"
+                )
             for key in ("output_sha256", "sidecar_sha256", "input_sha256"):
                 digest = job.get(key)
                 if digest is not None and (

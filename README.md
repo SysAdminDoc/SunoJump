@@ -119,7 +119,8 @@ On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch 
 - **Actionable failures** — queue rows show typed failure reasons, and Retry Failed immediately reuses the latest saved batch manifest
 - **Replayable output evidence** — every render displays its effective seed; WAV/FLAC same-environment replays are byte-tested, while sidecars name exact muxer/codec dependencies when bytes are build-sensitive
 - **Parallel identity-safe batch queue** — drag/drop multiple files, reorder them, and render 1–8 concurrently; stable job IDs keep independent progress and late results attached to the correct rows
-- **Resumable batch manifests** — every batch atomically persists inputs, seeds, configuration, attempts, terminal states, and artifact hashes; interrupted and failed-only work can be resumed without replacing existing files
+- **Per-file queue presets** — assign any built-in preset or a snapshot of the current controls to selected files while the rest continue to follow the batch settings
+- **Resumable batch manifests** — every batch atomically persists inputs, per-file preset snapshots, seeds, attempts, terminal states, and artifact hashes; interrupted and failed-only work can be resumed without replacing existing files
 - **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
 - **Bounded long-file processing** — isolated decoding writes fixed-size blocks to a disk-backed memory map; payloads above 256 MiB run every enabled transform in overlap-blended chunks with a bounded working set and atomic cleanup
 - **Open Output** — one-click to output folder in your file manager
@@ -134,9 +135,10 @@ python sunojump.py
 
 1. Drop audio files into the file list (or click Browse)
 2. Select a preset or customize individual parameters
-3. (Optional) Choose a **Start** offset and click **Render Preview** to process up to 30 seconds from that point so you can hear the result before committing; Compare uses the same offset
-4. Choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
-5. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
+3. (Optional) Select one or more queue rows and use **Selected preset** to assign a built-in preset or a snapshot of the current controls only to those files; **Batch settings** keeps them linked to the main controls
+4. (Optional) Choose a **Start** offset and click **Render Preview** to process up to 30 seconds from that point so you can hear the result before committing; Compare uses the same offset
+5. Choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
+6. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
 
 Keyboard shortcuts cover the primary workflow: `Ctrl+O` browse, `Ctrl+P` preview, `Ctrl+Shift+P` compare, `Ctrl+R` resume, `Ctrl+Shift+R` retry failed, `Ctrl+S` save a preset, `Ctrl+Enter` process, and `Esc` cancel. In the queue, `Delete`/`Backspace` removes the selection and `Alt+Up`/`Alt+Down` reorders it.
 

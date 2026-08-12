@@ -59,6 +59,37 @@ class ReleaseBuildTests(unittest.TestCase):
             self.mod.REQUIRED_SOURCE_FILES,
         )
 
+    def test_release_source_and_gate_include_compatibility_evidence(self):
+        self.assertIn(
+            pathlib.Path("tools/compatibility_baseline.json"),
+            self.mod.REQUIRED_SOURCE_FILES,
+        )
+        self.assertIn(
+            pathlib.Path("tools/dsp_golden.py"),
+            self.mod.REQUIRED_SOURCE_FILES,
+        )
+        baseline = self.mod.load_compatibility_baseline()
+        self.assertIn("rollback", baseline)
+        self.assertIn("native_runtime", baseline)
+        self.assertIn("dsp_golden", baseline)
+
+    def test_native_runtime_must_match_compatibility_baseline(self):
+        baseline = {
+            "native_runtime": {
+                "libsndfile": "1.2.2",
+                "qt6": "6.11.1",
+            }
+        }
+        self.mod.validate_native_compatibility(
+            {"libsndfile": "1.2.2", "qt6": "6.11.1"},
+            baseline,
+        )
+        with self.assertRaises(self.mod.ReleaseError):
+            self.mod.validate_native_compatibility(
+                {"libsndfile": "1.2.2", "qt6": "6.11.0"},
+                baseline,
+            )
+
     def test_unhashed_lock_entry_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             lock = pathlib.Path(temp_dir) / "bad-lock.txt"

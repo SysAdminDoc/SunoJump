@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from PyQt6.QtCore import QT_VERSION_STR, qVersion
 
 import safe_audio
 import sunojump
@@ -151,6 +152,8 @@ class NativeRuntimeEvidenceTests(unittest.TestCase):
     def test_runtime_report_names_native_version_and_containment(self):
         report = sunojump._native_runtime_report()
         self.assertEqual(report["libsndfile"], sf.__libsndfile_version__)
+        self.assertEqual(report["qt6"], qVersion())
+        self.assertEqual(report["qt6_compile_target"], QT_VERSION_STR)
         self.assertEqual(report["runtime_gate"], "pass-with-contained-formats")
         self.assertEqual(report["decode_isolation"], "spawned-process")
         self.assertIn("WAV IMA ADPCM", report["blocked_native_formats"])

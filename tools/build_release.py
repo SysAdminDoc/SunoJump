@@ -33,6 +33,7 @@ BUILD_LOCK = ROOT / "requirements-build-lock.txt"
 SPEC_FILE = ROOT / "SunoJump.spec"
 DIST_DIR = ROOT / "dist"
 LICENSE_TOOL = ROOT / "tools" / "audit_licenses.py"
+COMPATIBILITY_BASELINE = ROOT / "tools" / "compatibility_baseline.json"
 CYCLONEDX_SCHEMA = "https://cyclonedx.org/schema/bom-1.7.schema.json"
 LOCK_PATTERN = re.compile(
     r"^(?P<name>[A-Za-z0-9_.-]+)==(?P<version>[^\s]+)"
@@ -59,6 +60,8 @@ REQUIRED_SOURCE_FILES = {
     Path("render_results.py"),
     Path("safe_audio.py"),
     Path("safe_audio_worker.py"),
+    Path("tools/compatibility_baseline.json"),
+    Path("tools/dsp_golden.py"),
     Path("tools/smoke_accessibility.ps1"),
     Path("verifiers.py"),
 }
@@ -104,6 +107,55 @@ def parse_hashed_lock(path: Path) -> list[LockEntry]:
     if len(normalized) != len(set(normalized)):
         raise ReleaseError(f"{path.name} contains duplicate packages")
     return entries
+
+
+def load_compatibility_baseline() -> dict:
+    try:
+        payload = json.loads(
+            COMPATIBILITY_BASELINE.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReleaseError(
+            f"invalid compatibility baseline: {exc}"
+        ) from exc
+    if payload.get("schema_version") != 1:
+        raise ReleaseError("unsupported compatibility baseline schema")
+    for lock in (RUNTIME_LOCK, BUILD_LOCK):
+        expected = payload.get("locks", {}).get(lock.name, {}).get("sha256")
+        actual = sha256_file(lock)
+        if expected != actual:
+            raise ReleaseError(
+                f"compatibility baseline is stale for {lock.name}; "
+                "record tested compatibility, native versions, and a "
+                "rollback point before building"
+            )
+    rollback = payload.get("rollback", {})
+    if not re.fullmatch(r"[0-9a-f]{40}", rollback.get("git_commit", "")):
+        raise ReleaseError("compatibility baseline lacks a rollback commit")
+    if not payload.get("native_runtime") or not payload.get("dsp_golden"):
+        raise ReleaseError(
+            "compatibility baseline lacks native or DSP golden evidence"
+        )
+    return payload
+
+
+def validate_native_compatibility(
+    native_runtime: dict,
+    compatibility_baseline: dict,
+) -> None:
+    expected = compatibility_baseline["native_runtime"]
+    mismatches = {
+        name: {
+            "expected": expected.get(name),
+            "actual": native_runtime.get(name),
+        }
+        for name in ("libsndfile", "qt6")
+        if expected.get(name) != native_runtime.get(name)
+    }
+    if mismatches:
+        raise ReleaseError(
+            f"native runtime differs from compatibility baseline: {mismatches}"
+        )
 
 
 def sha256_file(path: Path, *, retry_seconds: float = 30.0) -> str:
@@ -1162,6 +1214,7 @@ def main(argv: list[str] | None = None) -> int:
         version = source_version()
         runtime_lock = parse_hashed_lock(RUNTIME_LOCK)
         build_lock = parse_hashed_lock(BUILD_LOCK)
+        compatibility_baseline = load_compatibility_baseline()
         timestamp = (
             datetime.now(timezone.utc)
             .replace(microsecond=0)
@@ -1221,6 +1274,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             print("Capturing native runtime evidence...", flush=True)
             native_runtime = query_native_runtime(executable)
+            validate_native_compatibility(
+                native_runtime,
+                compatibility_baseline,
+            )
             print(
                 "Rendering a generated fixture through the executable...",
                 flush=True,
@@ -1249,6 +1306,10 @@ def main(argv: list[str] | None = None) -> int:
             shutil.copy2(executable, release_executable)
             shutil.copy2(RUNTIME_LOCK, stage / RUNTIME_LOCK.name)
             shutil.copy2(BUILD_LOCK, stage / BUILD_LOCK.name)
+            shutil.copy2(
+                COMPATIBILITY_BASELINE,
+                stage / COMPATIBILITY_BASELINE.name,
+            )
 
             source_archive_name = f"SunoJump-v{version}-source.zip"
             create_source_archive(
@@ -1333,6 +1394,16 @@ def main(argv: list[str] | None = None) -> int:
                     RUNTIME_LOCK.name: sha256_file(RUNTIME_LOCK),
                     BUILD_LOCK.name: sha256_file(BUILD_LOCK),
                 },
+                "compatibility": {
+                    "baseline_sha256": sha256_file(
+                        COMPATIBILITY_BASELINE
+                    ),
+                    "rollback": compatibility_baseline["rollback"],
+                    "native_runtime": compatibility_baseline[
+                        "native_runtime"
+                    ],
+                    "dsp_golden": compatibility_baseline["dsp_golden"],
+                },
                 "packaging": {
                     "tool": "PyInstaller",
                     "version": installed["pyinstaller"]["version"],
@@ -1381,6 +1452,7 @@ def main(argv: list[str] | None = None) -> int:
             "THIRD_PARTY_NOTICES.txt",
             "artifact-inventory.json",
             "build-provenance.json",
+            "compatibility_baseline.json",
             "license-inventory.json",
             "native-versions.json",
             "requirements-build-lock.txt",

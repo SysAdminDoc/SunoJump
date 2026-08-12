@@ -68,13 +68,17 @@ python sunojump.py
 
 Install Python dependencies before running from source; the packaged executable already includes them.
 
-### Release Dependency Audit
+### Dependency and Upgrade Compatibility
 ```bash
-# Install local audit tooling, then scan the release lock
+# Install local audit tooling, then report lock/native/DSP/security status
 python -m pip install -r requirements-dev.txt
 python tools/audit_dependencies.py
 python tools/audit_licenses.py
 ```
+
+The compatibility report separates direct, transitive, build-tool, and native-runtime drift; runs the fixed-seed generated DSP golden; audits the release lock for known vulnerabilities; and prints the recorded rollback commit. Source environments may report drift as a warning because `requirements.txt` intentionally uses ranges. Release environments use `--require-lock-match` as a hard gate.
+
+`tools/compatibility_baseline.json` binds both lock hashes to the tested Windows x64/CPython 3.12 native versions, DSP signature, supported Python 3.11/3.12 source lanes, and rollback point. Any lock update must refresh that record after the compatibility workflow passes. The workflow runs the DSP golden, offscreen GUI tests, packaging smoke tests, and full suite on both supported Python lanes; the CPython 3.12 release-contract job additionally installs both hashed locks and uploads the machine-readable compatibility report.
 
 ### Reproducing and Verifying the Windows Release
 
@@ -84,7 +88,7 @@ On Windows x64 with CPython 3.12, the release command creates a temporary virtua
 python tools/build_release.py
 ```
 
-The gate fails on a missing, stale, or wrong-version executable; undeclared bundled packages; incomplete license/source records; or failed smoke tests. It does not perform code signing. `dist/` receives the executable, `SHA256SUMS`, CycloneDX 1.7 SBOM, actual PyInstaller inventory, native-version report, license notices/source routing, build provenance, both locks, and the corresponding source archive. Use `sha256sum -c SHA256SUMS` from inside the downloaded artifact directory to verify the set.
+The gate fails on a missing, stale, or wrong-version executable; a stale compatibility baseline; native-version drift; undeclared bundled packages; incomplete license/source records; or failed smoke tests. It does not perform code signing. `dist/` receives the executable, `SHA256SUMS`, compatibility baseline, CycloneDX 1.7 SBOM, actual PyInstaller inventory, native-version report, license notices/source routing, build provenance, both locks, and the corresponding source archive. Use `sha256sum -c SHA256SUMS` from inside the downloaded artifact directory to verify the set.
 
 On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch an isolated-settings GUI and verify its UI Automation tree, keyboard focus, primary control names, and unit-bearing slider announcements—the same accessibility surface consumed by Narrator.
 

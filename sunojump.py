@@ -122,6 +122,7 @@ try:
         QThread,
         QUrl,
         Qt,
+        qVersion,
         pyqtSignal,
     )
     from PyQt6.QtGui import (
@@ -1201,7 +1202,8 @@ def _diagnostic_environment_lines():
         "IRCAM/WAV IMA ADPCM disabled",
         f"mutagen: {getattr(mutagen, 'version_string', 'unknown')}",
         f"PyQt6: {PYQT_VERSION_STR}",
-        f"Qt: {QT_VERSION_STR}",
+        f"Qt runtime: {qVersion()}",
+        f"Qt compile target: {QT_VERSION_STR}",
         f"PyQt6 Multimedia: {'available' if _MULTIMEDIA_OK else 'missing'}",
         f"ffmpeg: {'available' if _check_ffmpeg() else 'missing'}"
         + (f" (encoders: {', '.join(k for k, v in _probe_ffmpeg_encoders().items() if v) or 'none'})" if _check_ffmpeg() else ""),
@@ -1875,7 +1877,8 @@ def _native_runtime_report():
         "libsndfile": libsndfile_version,
         "mutagen": str(getattr(mutagen, "version_string", "unknown")),
         "pyqt6": str(PYQT_VERSION_STR),
-        "qt6": str(QT_VERSION_STR),
+        "qt6": str(qVersion()),
+        "qt6_compile_target": str(QT_VERSION_STR),
         "ffmpeg": _ffmpeg_version_line(),
         "minimum_libsndfile": ".".join(
             str(value) for value in MIN_LIBSNDFILE_VERSION

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-12",
+  "target": {
+    "os": "Windows",
+    "architecture": "x86_64",
+    "release_python": "3.12",
+    "source_python_lanes": [
+      "3.11",
+      "3.12"
+    ]
+  },
+  "locks": {
+    "requirements-lock.txt": {
+      "sha256": "c6cde79a552972e4134515eb6dbf4ccc5fb7245ca62beb2a5d3883f67aa7323c"
+    },
+    "requirements-build-lock.txt": {
+      "sha256": "eeca8a8d21750f4a0ff10a325e07751d0b32aeec546c1213f6e68d89b7808d09"
+    }
+  },
+  "native_runtime": {
+    "libsndfile": "1.2.2",
+    "qt6": "6.11.1",
+    "runtime_gate": "pass-with-contained-formats",
+    "blocked_native_formats": [
+      "IRCAM",
+      "WAV IMA ADPCM",
+      "WAV extensible IMA ADPCM"
+    ]
+  },
+  "dsp_golden": {
+    "schema_version": 1,
+    "seed": 20260812,
+    "sample_rate_hz": 24000,
+    "duration_seconds": 1.5,
+    "shape": [
+      36000,
+      2
+    ],
+    "quantization": 1000000,
+    "input_sha256": "7e299ff48eb132754ebb3ac363b782634e0dd0b1d6ace19715c37f21f92434f8",
+    "output_sha256": "f8fa3ea398e18f122595b7e5f1326fa07948bab671447cf3de98808d897387b4",
+    "output_peak": 0.43127716,
+    "output_rms": 0.11064813,
+    "spectral_candidate_count": 5
+  },
+  "rollback": {
+    "git_commit": "bad9b64dddc6059edef6936bfe67eb0783f020e9",
+    "version": "1.6.1",
+    "reason": "Last isolated release-toolchain commit known to match both recorded locks"
+  }
+}

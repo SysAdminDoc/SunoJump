@@ -5,6 +5,9 @@
 - **Actionable queue states.** Empty queues disable processing and explain how to begin; preview and preset comparison name their selected target; failed and partial rows expose typed reasons directly in the queue.
 - **One-click failed retry.** Retry Failed now reuses the latest batch manifest when available, while retaining manifest selection as the recovery fallback.
 - **Regression coverage.** Added offscreen GUI and worker tests for empty queues, background discovery, cancellation, target labeling, visible failure summaries, and recent-batch retry.
+- **Dependency/native compatibility lane.** Expanded the dependency audit into a machine-readable direct/transitive/build/native drift, DSP-golden, security, and rollback report; added Python 3.11/3.12 source CI plus an exact-lock CPython 3.12 release contract.
+- **Lock-coupled upgrade baseline.** Added a schema-versioned record binding both lock hashes to tested native versions, deterministic generated-audio output, supported lanes, and an explicit rollback commit; stale baselines now block release builds.
+- **Runtime-native evidence.** Qt reporting now distinguishes the loaded runtime version from the compile target, and release artifacts include the compatibility baseline and provenance evidence.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

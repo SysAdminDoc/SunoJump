@@ -67,6 +67,14 @@ class ReleaseBuildTests(unittest.TestCase):
         ):
             self.assertIn(path, self.mod.REQUIRED_SOURCE_FILES)
 
+    def test_release_source_includes_ab_regression_contract(self):
+        for path in (
+            pathlib.Path("audio_quality.py"),
+            pathlib.Path("verifiers_visqol.py"),
+            pathlib.Path("tools/run_ab_regression.py"),
+        ):
+            self.assertIn(path, self.mod.REQUIRED_SOURCE_FILES)
+
     def test_release_source_and_gate_include_compatibility_evidence(self):
         self.assertIn(
             pathlib.Path("tools/compatibility_baseline.json"),

@@ -10,6 +10,8 @@
 - **Runtime-native evidence.** Qt reporting now distinguishes the loaded runtime version from the compile target, and release artifacts include the compatibility baseline and provenance evidence.
 - **Localized GUI and CLI text.** Added Qt-compatible JSON catalogs with region/language/English fallback, plural forms, runtime `--locale`/`SUNOJUMP_LOCALE` selection, and catalog-controlled right-to-left layout.
 - **Pseudo-localization coverage.** The bundled `qps-ploc` catalog now drives offscreen GUI, status, error, CLI-help, responsive-layout, screenshot, and frozen-package tests instead of hand-edited sample labels.
+- **Evidence-first A/B regression suite.** Added deterministic CC0 44.1/48 kHz stereo music cues, fixed-seed renders, unrelated-cue negative controls, schema-versioned per-detector score/coverage/alignment evidence, and local-only pass/fail thresholds.
+- **Objective quality contract.** Added ITU-R BS.1770-5 gated loudness and oversampled true-peak measurements plus an optional hash-identified Google ViSQOL audio-mode CLI adapter that reports missing tools as unavailable.
 
 ## v1.6.1 (2026-07-01)
 - **Clear Logs tooltip fix.** Tooltip now accurately says "Delete all persistent run logs" instead of falsely claiming it keeps the last 30.

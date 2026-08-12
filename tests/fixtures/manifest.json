@@ -45,6 +45,39 @@
       "generator": "pink_noise",
       "amplitude": 0.15,
       "license": "generated"
+    },
+    {
+      "name": "music_c_major_44k_stereo_8s",
+      "description": "Deterministic stereo synth cue with harmony, bass, kick, snare, and hi-hat at 44.1 kHz",
+      "sample_rate": 44100,
+      "channels": 2,
+      "duration_sec": 8.0,
+      "generator": "music",
+      "seed": 441002026,
+      "regression_seed": 2026081201,
+      "tempo_bpm": 120.0,
+      "root_midi": 48,
+      "progression": [0, 9, 5, 7],
+      "amplitude": 0.65,
+      "license": "CC0-1.0"
+    },
+    {
+      "name": "music_d_minor_48k_stereo_8s",
+      "description": "Deterministic stereo synth cue with a distinct minor-key arrangement at 48 kHz",
+      "sample_rate": 48000,
+      "channels": 2,
+      "duration_sec": 8.0,
+      "generator": "music",
+      "seed": 480002026,
+      "regression_seed": 2026081202,
+      "tempo_bpm": 105.0,
+      "root_midi": 76,
+      "progression": [0, 2, -1, 5],
+      "chord_intervals": [0, 1, 6, 11],
+      "bass": false,
+      "drums": false,
+      "amplitude": 0.65,
+      "license": "CC0-1.0"
     }
   ],
   "user_corpus": {

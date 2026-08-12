@@ -43,6 +43,11 @@ class FrozenBuildGuardTests(unittest.TestCase):
 
         self.assertIn("datas=[('locales', 'locales')]", spec)
 
+    def test_pyinstaller_spec_includes_optional_visqol_adapter(self):
+        spec = (ROOT / 'SunoJump.spec').read_text(encoding='utf-8')
+
+        self.assertIn("'verifiers_visqol'", spec)
+
 
 class ScreenshotVersionTests(unittest.TestCase):
     def test_screenshot_capture_tool_exists(self):

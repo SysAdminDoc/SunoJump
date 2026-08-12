@@ -26,14 +26,16 @@ class VerifierResultTests(unittest.TestCase):
             value=45.0,
             unit="percent",
             coverage={"compared_samples": 1000},
+            offset_seconds=0.125,
         )
         payload = result.to_dict()
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["adapter"], "test.adapter")
         self.assertEqual(payload["adapter_version"], "2.1")
         self.assertEqual(payload["state"], "measured")
         self.assertEqual(payload["value"], 45.0)
         self.assertEqual(payload["coverage"]["compared_samples"], 1000)
+        self.assertEqual(payload["offset_seconds"], 0.125)
 
     def test_unavailable_result_has_no_numeric_value(self):
         result = verifiers.VerifierResult(
@@ -118,6 +120,7 @@ class ConstellationVerifierTests(unittest.TestCase):
             result.coverage["original_landmarks"],
             verifiers.MIN_CONSTELLATION_LANDMARKS,
         )
+        self.assertIn("offset_seconds", result.to_dict())
 
     def test_different_audio_is_measured_with_lower_overlap(self):
         original = self._complex_audio()

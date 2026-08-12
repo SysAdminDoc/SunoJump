@@ -249,7 +249,13 @@ This metric is not calibrated to any external service or recognition system. Sid
 
 ## Local Landmark Evidence
 
-`sunojump.constellation v1` compares up to 30 seconds of local landmark hashes. A measured result includes adapter/version, percentage, sample coverage, duration, and landmark counts. Silence, near-silence, clips shorter than two seconds, and inputs with too few landmarks report `unavailable` without a numeric value; adapter failures report `error`. These states appear identically in GUI/CLI logs and sidecar JSON and do not imply a platform outcome.
+`sunojump.constellation v1` compares up to 30 seconds of local landmark hashes. A measured result includes adapter/version, percentage, sample coverage, duration, alignment offset, and landmark counts. Silence, near-silence, clips shorter than two seconds, and inputs with too few landmarks report `unavailable` without a numeric value; adapter failures report `error`. These states appear identically in GUI/CLI logs and sidecar JSON and do not imply a platform outcome.
+
+## A/B Regression Evidence
+
+`python tools/run_ab_regression.py --output ab-report.json` renders two deterministic, repository-generated CC0 stereo music cues at 44.1 and 48 kHz using fixed seeds. The schema-versioned report contains per-pair and unrelated-cue negative-control detector scores, analyzed coverage, alignment offsets, and before/after ITU-R BS.1770-5 integrated loudness and true peak. Its thresholds are local quality/regression gates only and make no external-platform inference.
+
+The suite supports the Apache-2.0 [Google ViSQOL](https://github.com/google/visqol) audio-mode CLI as its full-reference perceptual metric. Point `--visqol-binary` or `VISQOL_BINARY` at a locally built executable; adding `--require-visqol` makes absence or adapter failure fail the suite. Inputs are resampled to ViSQOL's required 48 kHz and reports identify the adapter by executable hash. Without the optional binary, the result is explicitly `unavailable`, never an invented quality score.
 
 ## Supported Formats
 

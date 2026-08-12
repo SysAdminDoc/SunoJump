@@ -53,6 +53,7 @@ FORBIDDEN_BUNDLE_NAMES = {
     "yt_dlp",
 }
 REQUIRED_SOURCE_FILES = {
+    Path("audio_quality.py"),
     Path("batch_manifest.py"),
     Path("c2pa_provenance.py"),
     Path("config_schema.py"),
@@ -65,8 +66,10 @@ REQUIRED_SOURCE_FILES = {
     Path("safe_audio_worker.py"),
     Path("tools/compatibility_baseline.json"),
     Path("tools/dsp_golden.py"),
+    Path("tools/run_ab_regression.py"),
     Path("tools/smoke_accessibility.ps1"),
     Path("verifiers.py"),
+    Path("verifiers_visqol.py"),
 }
 
 

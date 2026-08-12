@@ -78,6 +78,19 @@ class FixtureManifestTests(unittest.TestCase):
                 self.assertEqual(read_sr, sr)
                 self.assertEqual(read_audio.shape[0], audio.shape[0])
 
+    def test_regression_music_corpus_is_redistributable_stereo_44k_and_48k(self):
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        music = [
+            fixture
+            for fixture in manifest["generated_fixtures"]
+            if fixture["generator"] == "music"
+        ]
+
+        self.assertEqual({fixture["sample_rate"] for fixture in music}, {44100, 48000})
+        self.assertTrue(all(fixture["channels"] == 2 for fixture in music))
+        self.assertTrue(all(fixture["license"] == "CC0-1.0" for fixture in music))
+        self.assertTrue(all(type(fixture["regression_seed"]) is int for fixture in music))
+
 
 if __name__ == "__main__":
     unittest.main()

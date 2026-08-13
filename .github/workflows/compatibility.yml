@@ -29,7 +29,7 @@ jobs:
       - name: Install source and test dependencies
         run: |
           python -m pip install --disable-pip-version-check -r requirements.txt
-          python -m pip install --disable-pip-version-check -r requirements-dev.txt pytest
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Deterministic DSP golden
         run: python -m pytest -q tests/test_dsp_golden.py
       - name: Offscreen GUI and packaging smoke
@@ -55,7 +55,7 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-lock.txt
           python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-build-lock.txt
-          python -m pip install --disable-pip-version-check -r requirements-dev.txt pytest
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Lock, native, DSP, and security report
         run: python tools/audit_dependencies.py --require-lock-match --output compatibility-report.json
       - name: Release inventory and packaging contracts

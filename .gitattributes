@@ -1,0 +1,6 @@
+# Normalize text files to LF in the index and the working tree.
+# tools/compatibility_baseline.json pins SHA-256 hashes of the lock files as
+# they exist on disk, so a CRLF checkout (Windows default core.autocrlf=true)
+# makes the release baseline read as stale and fails the dependency-audit and
+# release-build contracts.
+* text=auto eol=lf

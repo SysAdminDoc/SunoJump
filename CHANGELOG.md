@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- **Deterministic line endings.** Added `.gitattributes` normalizing text files to LF in the index and working tree, so the lock-file SHA-256 gates in `tools/compatibility_baseline.json` hold on Windows clones using the default `core.autocrlf=true`.
+- **Declared test runner.** `requirements-dev.txt` now pins `pytest`, so the suite installs from the documented dev requirements; the compatibility workflow no longer appends it as a bare install argument.
 
 ## v1.7.0 (2026-08-12)
 - **Responsive queue discovery.** Recursive folder discovery now runs in a cancellable background worker with counted progress, bounded scan-error reporting, deterministic deduplication, and retained partial results after cancellation.

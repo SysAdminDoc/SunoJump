@@ -5,7 +5,10 @@ a = Analysis(
     ['sunojump.py'],
     pathex=[],
     binaries=[],
-    datas=[('locales', 'locales')],
+    datas=[
+        ('locales', 'locales'),
+        ('assets/sunojump-mark.png', 'assets'),
+    ],
     hiddenimports=['PyQt6.QtMultimedia', 'verifiers_visqol'],
     hookspath=[],
     hooksconfig={},
@@ -52,4 +55,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['assets/sunojump.ico'],
+    version='assets/version_info.txt',
 )

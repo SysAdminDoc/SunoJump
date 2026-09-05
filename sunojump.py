@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.7.0 - local audio variation and evidence tool."""
+"""SunoJump v1.7.1 - local audio variation and evidence tool."""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -74,8 +74,12 @@ from render_results import (
 )
 from verifiers import ConstellationVerifier, format_verifier_result
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 APP_NAME = "SunoJump"
+RESOURCE_ROOT = Path(
+    getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
+)
+APP_MARK_PATH = RESOURCE_ROOT / "assets" / "sunojump-mark.png"
 PRESET_SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 PROFILE_SCHEMA_VERSION = 1
 CLI_RESULTS_SCHEMA_ID = "com.sunojump.cli-results"
@@ -148,7 +152,9 @@ try:
         QDragEnterEvent,
         QDropEvent,
         QFont,
+        QIcon,
         QKeySequence,
+        QPixmap,
     )
 except ImportError as e:
     missing = getattr(e, 'name', None) or str(e)
@@ -2430,7 +2436,7 @@ class AudioProcessor:
             )
             actual_duration = audio.shape[0] / sr
             self.log(
-                f"  Preview mode: {offset:.1f}s–"
+                f"  Preview mode: {offset:.1f}s to "
                 f"{offset + actual_duration:.1f}s "
                 f"({actual_duration:.1f}s actual)"
             )
@@ -6011,6 +6017,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setLayoutDirection(active_layout_direction())
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
+        if APP_MARK_PATH.is_file():
+            self.setWindowIcon(QIcon(str(APP_MARK_PATH)))
         self.setMinimumSize(560, 360)
         self.resize(1180, 880)
         self.worker = None
@@ -6304,10 +6312,11 @@ class MainWindow(QMainWindow):
         for panel in self._content_root.findChildren(QFrame):
             if panel.objectName() != "panel":
                 continue
-            if (
-                not compact
-                and panel is not getattr(self, "_log_panel", None)
-            ):
+            responsive_panels = {
+                getattr(self, "_queue_panel", None),
+                getattr(self, "_log_panel", None),
+            }
+            if not compact and panel not in responsive_panels:
                 panel.setMinimumHeight(0)
                 continue
             layout = panel.layout()
@@ -7102,15 +7111,34 @@ class MainWindow(QMainWindow):
         self._header_layout.setSpacing(16)
 
         brand_widget = QWidget()
-        brand_col = QVBoxLayout(brand_widget)
+        brand_row = QHBoxLayout(brand_widget)
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_row.setSpacing(12)
+
+        self.brand_mark = QLabel()
+        self.brand_mark.setObjectName("brandMark")
+        self.brand_mark.setFixedSize(54, 54)
+        self.brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if APP_MARK_PATH.is_file():
+            mark = QPixmap(str(APP_MARK_PATH))
+            self.brand_mark.setPixmap(mark.scaled(
+                52,
+                52,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+        self.brand_mark.setAccessibleName("SunoJump logo")
+
+        brand_copy = QWidget()
+        brand_col = QVBoxLayout(brand_copy)
         brand_col.setContentsMargins(0, 0, 0, 0)
         brand_col.setSpacing(1)
         title = QLabel(APP_NAME)
         title.setObjectName("appTitle")
         _set_relative_font(title, 9.0, bold=True)
         self.scope_label = QLabel(_tr(
-            "Rights-owned audio only\n"
-            "Local metrics do not predict platform outcomes"
+            "Preview, compare, and document every audio variation\n"
+            "Rights-owned audio only. Local metrics do not predict platform outcomes"
         ))
         self.scope_label.setObjectName("appSubtitle")
         self.scope_label.setWordWrap(True)
@@ -7118,6 +7146,8 @@ class MainWindow(QMainWindow):
         self.scope_label.setToolTip(_tr(EVIDENCE_NOTICE))
         brand_col.addWidget(title)
         brand_col.addWidget(self.scope_label)
+        brand_row.addWidget(self.brand_mark)
+        brand_row.addWidget(brand_copy, 1)
         self._header_layout.addWidget(brand_widget, 1)
 
         self.queue_status_label = QLabel("0 files")
@@ -7243,6 +7273,7 @@ class MainWindow(QMainWindow):
             "Queue",
             "Add audio files, reorder the batch, and track rendered outputs.",
         )
+        self._queue_panel = panel
 
         self._queue_primary_grid = QGridLayout()
         self._queue_primary_grid.setSpacing(8)
@@ -7365,7 +7396,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.queue_activity_label)
 
         hint = QLabel(_tr(
-            "Drop files here - drag to reorder - WAV, MP3, FLAC, OGG, "
+            "Drop files here. Drag to reorder. WAV, MP3, FLAC, OGG, "
             "AIFF, Opus"
         ))
         hint.setObjectName("hintLabel")
@@ -7443,14 +7474,14 @@ class MainWindow(QMainWindow):
 
         # Param rows
         self.param_rows = {}
-        param_scroller = QScrollArea()
-        param_scroller.setWidgetResizable(True)
-        param_scroller.setMinimumHeight(220)
-        param_scroller.setSizePolicy(
+        self.param_scroller = QScrollArea()
+        self.param_scroller.setWidgetResizable(True)
+        self.param_scroller.setMinimumHeight(220)
+        self.param_scroller.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Ignored,
         )
-        param_scroller.setFrameShape(QFrame.Shape.NoFrame)
+        self.param_scroller.setFrameShape(QFrame.Shape.NoFrame)
         param_container = QWidget()
         param_lay = QVBoxLayout(param_container)
         param_lay.setContentsMargins(0, 0, 0, 0)
@@ -7462,8 +7493,8 @@ class MainWindow(QMainWindow):
             self.param_rows[key] = row
             param_lay.addWidget(row)
         param_lay.addStretch()
-        param_scroller.setWidget(param_container)
-        lay.addWidget(param_scroller, 1)
+        self.param_scroller.setWidget(param_container)
+        lay.addWidget(self.param_scroller, 1)
 
         self._apply_preset('Extreme')
         return panel
@@ -8767,12 +8798,12 @@ class MainWindow(QMainWindow):
                 reason = result.message or code
                 item.setText(
                     f"PARTIAL   {name} -> {Path(result.output_path).name} "
-                    f"— {code}: {reason}"
+                    f"| {code}: {reason}"
                 )
                 item.setData(ROLE_OUTPUT, result.output_path)
             elif result.state is RenderState.CANCELLED:
                 reason = result.message or "cancelled"
-                item.setText(f"CANCELLED {name} — {reason}")
+                item.setText(f"CANCELLED {name} | {reason}")
                 item.setData(ROLE_OUTPUT, None)
             else:
                 code = (
@@ -8781,7 +8812,7 @@ class MainWindow(QMainWindow):
                     else "unknown_error"
                 )
                 reason = result.message or code
-                item.setText(f"FAILED    {name} — {code}: {reason}")
+                item.setText(f"FAILED    {name} | {code}: {reason}")
                 item.setData(ROLE_OUTPUT, None)
             item.setData(ROLE_RESULT, result)
             item.setData(ROLE_PREVIEW_OFFSET, None)
@@ -10988,6 +11019,8 @@ if __name__ == '__main__':
         configure_locale(_requested_locale, app)
         app.setStyle('Fusion')
         app.setStyleSheet(STYLE)
+        if APP_MARK_PATH.is_file():
+            app.setWindowIcon(QIcon(str(APP_MARK_PATH)))
         win = MainWindow(locale_name=_requested_locale)
         win.show()
         sys.exit(app.exec())

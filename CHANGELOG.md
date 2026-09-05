@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v1.7.1 (2026-09-05)
+- **Clearer product story.** Reframed SunoJump as a private audio variation and evidence workstation, with rights-owned use and local metric limits stated plainly.
+- **New visual identity.** Added a transparent S-wave mark, multi-size Windows icon, executable metadata, refreshed banner, and a 1280 by 640 repository card.
+- **Current product views.** Replaced the empty v1.6.0 image with populated v1.7.1 workspace, pipeline, completed-batch, and real spectrogram examples.
+- **Repeatable marketing capture.** Screenshot scenes now use isolated settings and generated local audio placeholders, so documentation images can be refreshed without exposing user files.
+- **Windows package branding.** The frozen app now carries the product icon and version properties, while the runtime window uses the same mark.
+- **Local release checks.** Removed the hosted compatibility workflow. Tests, dependency audits, artifact builds, and release publication run on the maintainer's Windows machine.
+- **Documentation overhaul.** Replaced the implementation-heavy project page with a benefit-led guide, shorter setup path, truthful evidence contract, and complete release verification notes.
+
 ## v1.7.0 (2026-08-12)
 - **Responsive queue discovery.** Recursive folder discovery now runs in a cancellable background worker with counted progress, bounded scan-error reporting, deterministic deduplication, and retained partial results after cancellation.
 - **Actionable queue states.** Empty queues disable processing and explain how to begin; preview and preset comparison name their selected target; failed and partial rows expose typed reasons directly in the queue.
@@ -20,7 +29,7 @@
 - **Bounded long-file rendering.** Full renders now decode into caller-owned NPY memory maps and automatically switch large payloads to disk-backed, overlap-blended chunks across the complete pass pipeline instead of retaining the whole source and every pass in RAM.
 - **Streaming evidence and safety.** Replay sidecar schema v4 records decode/processing strategies, chunk geometry, and per-chunk pass traces; temporary disk capacity, cancellation, atomic output promotion, and fail-closed cleanup are enforced throughout the streaming path.
 - **Streaming regression coverage.** Added caller-owned chunked-decode, bounded multi-chunk stereo, mono metadata-only, configuration, provenance, and pass-failure cleanup tests.
-- **Parallel file rendering.** GUI and CLI batches now use an operator-bounded 1–8 thread pool (default 2), retain deterministic result ordering, prefix interleaved logs by queue job, and reserve collision-free outputs safely across concurrent renders.
+- **Parallel file rendering.** GUI and CLI batches now use an operator-bounded 1-8 thread pool (default 2), retain deterministic result ordering, prefix interleaved logs by queue job, and reserve collision-free outputs safely across concurrent renders.
 - **Per-file progress.** Queue rows display progress for their stable job IDs while the batch bar aggregates all active and completed files; CLI batches emit independently labeled progress checkpoints.
 - **Concurrent batch durability.** Batch-manifest attempts and terminal evidence are serialized through a re-entrant lock, preserving every distinct job update under parallel completion and cancellation.
 - **Per-file A/B winners.** Saving the currently playing comparison preset now records a bounded per-file winner, restores it when that source is re-added, annotates the queue row, and applies the winner to Process All.
@@ -50,7 +59,7 @@
 - **Screenshot tool exit code.** `capture_screenshot.py` now exits non-zero on version mismatch and only saves the screenshot on success.
 - **Test mock safety.** Fixed ffmpeg failure test mock that created a stray `-encoders` file in the working directory.
 - **Dead code removal.** Removed unused `sha256sums_command` function and unused `json` import from release tooling.
-- **Verifier discovery robustness.** `discover_adapters` now catches all exceptions from external adapter modules, not just `ImportError`.
+- **Verifier discovery resilience.** `discover_adapters` now catches all exceptions from external adapter modules, not just `ImportError`.
 - **Deferred import promoted.** Moved `hashlib` import from method body to module level.
 - **Regression coverage.** Added tests for path redaction, log retention cap enforcement, and lossy reencode missing-encoder guard (79 total tests).
 
@@ -112,7 +121,7 @@
 - **Regression coverage.** Added a test proving an injected pass failure returns failure and leaves no output file.
 
 ## v1.5.7 (2026-06-27)
-- **Constellation self-test harness.** Processing now estimates surviving Wang/Shazam-style landmark hashes and logs before/after landmark overlap alongside the detection-signature score.
+- **Constellation self-test.** Processing now estimates surviving Wang/Shazam-style landmark hashes and logs before/after overlap as an experimental local measurement.
 - **Regression coverage.** Added tests proving identical audio retains a high constellation match while unrelated harmonic content drops sharply.
 
 ## v1.5.6 (2026-06-27)
@@ -244,7 +253,7 @@
 - WAV/FLAC/OGG output formats
 - Auto-installs dependencies on first run
 
-## Roadmap archive — 2026-08-10 — ROADMAP.md
+## Roadmap archive: 2026-08-10: ROADMAP.md
 
 <details>
 <summary>Original roadmap snapshot</summary>
@@ -252,7 +261,7 @@
 ```markdown
 # SunoJump Roadmap
 
-Roadmap for SunoJump — the 11-pass, local audio-analysis and transform pipeline. Focus: evidence-first diagnostics for rights-owned audio, preserved quality, truthful uncertainty, and recoverable desktop/CLI workflows.
+Roadmap for SunoJump: the 11-pass, local audio-analysis and transform pipeline. Focus: evidence-first diagnostics for rights-owned audio, preserved quality, truthful uncertainty, and recoverable desktop/CLI workflows.
 
 ## Planned Features
 
@@ -265,7 +274,7 @@ Roadmap for SunoJump — the 11-pass, local audio-analysis and transform pipelin
 - Parallel-per-file worker pool with per-file progress
 
 ### Presets & customization
-- Preset A/B/C/D Compare UI enhancements - save the winner per-file back into history
+- Preset A/B/C/D Compare UI enhancements: save the winner per-file back into history
 - Corpus-derived quality profiles for vocal/instrumental and dense/sparse material; do not ship genre labels until detector and perceptual results prove a meaningful difference
 - Preview at arbitrary offsets (not just first 30 seconds)
 
@@ -283,10 +292,10 @@ Roadmap for SunoJump — the 11-pass, local audio-analysis and transform pipelin
 
 ## Competitive Research
 
-- **Chromaprint 1.6.1 / pyacoustid** — add as a lightweight, test-only second fingerprint family with short-input and chunk-boundary fixtures.
-- **Olaf / Panako** — exercise detector-side pitch/time normalization through optional test adapters; do not bundle AGPL components.
-- **AudioMarkBench / RAW-Bench / OmniSealBench** — borrow declarative attacks, fixed seeds, raw JSON/CSV results, per-pass ablation, and perceptual-quality gates without importing their neural stacks.
-- **Archived direct peers** — retain their analysis-only and backup patterns, but never treat changed hashes or “patterns suppressed” as detector evidence.
+- **Chromaprint 1.6.1 / pyacoustid**: add as a lightweight, test-only second fingerprint family with short-input and chunk-boundary fixtures.
+- **Olaf / Panako**: exercise detector-side pitch/time normalization through optional test adapters; do not bundle AGPL components.
+- **AudioMarkBench / RAW-Bench / OmniSealBench**: borrow declarative attacks, fixed seeds, raw JSON/CSV results, per-pass ablation, and perceptual-quality gates without importing their neural stacks.
+- **Archived direct peers**: retain their analysis-only and backup patterns, but never treat changed hashes or “patterns suppressed” as detector evidence.
 
 ## Nice-to-Haves
 
@@ -300,21 +309,21 @@ Roadmap for SunoJump — the 11-pass, local audio-analysis and transform pipelin
 
 ### P2
 
-- [ ] P2 — Make diagnostics deletion, redaction, and retention trustworthy
+- [ ] P2: Make diagnostics deletion, redaction, and retention trustworthy
   Why: Clear Logs is unconfirmed, ignores deletion failures, can delete the active log and immediately recreate it, and diagnostics retain absolute paths indefinitely.
   Evidence: `sunojump.py` `RunDiagnostics`, `_clear_all_logs`, `_start_run_log`; privacy expectations from ShazamKit/offline recognition products.
   Touches: diagnostics lifecycle, clear/export dialog, retention settings, redaction preview, GUI/CLI tests.
   Acceptance: active handles close before confirmed deletion; failures and remaining files are reported; users can set retention, preview redaction, export a support bundle, and identify every local log/history/sidecar location.
   Complexity: M
 
-- [ ] P2 — Move discovery off the UI thread and make empty/error states actionable
+- [ ] P2: Move discovery off the UI thread and make empty/error states actionable
   Why: recursive directory scans block the GUI, Process All is available with an empty queue, and render errors exist mainly in the session log.
   Evidence: `sunojump.py` folder discovery, `_current_selected_item`, processing controls, error logging; Qt worker patterns.
   Touches: cancellable scan worker, queue empty/loading/error UI, explicit preview target, failed-item summary/retry action, GUI tests.
   Acceptance: large recursive scans show determinate or counted progress and can cancel; empty queues disable processing and explain the next action; preview/compare identify the selected file; render failures show per-file reason and retry without requiring log inspection.
   Complexity: M
 
-- [ ] P2 — Add a dependency and native-library upgrade compatibility lane
+- [ ] P2: Add a dependency and native-library upgrade compatibility lane
   Why: NumPy/SciPy/PyInstaller drift, SciPy's Python-floor/FFT changes, and hidden native wheel contents make ad hoc upgrades unsafe.
   Evidence: `requirements-lock.txt`; NumPy 2.2.6 and SciPy 1.18.0 release notes; PyInstaller 6.21 documentation; SoundFile/native CVEs.
   Touches: dependency-report tool, Python 3.11/3.12 test matrix, DSP golden fixtures, release inventory, upgrade documentation.
@@ -323,7 +332,7 @@ Roadmap for SunoJump — the 11-pass, local audio-analysis and transform pipelin
 
 ### P3
 
-- [ ] P3 — Route UI and CLI strings through a localization catalog
+- [ ] P3: Route UI and CLI strings through a localization catalog
   Why: GUI labels, tooltips, status text, and CLI help are still hardcoded, blocking future localization and consistent microcopy cleanup.
   Evidence: `sunojump.py` UI builders and CLI parser; Qt `QTranslator`/`QLocale`; 2026-07-29 source scan found no live localization catalog.
   Touches: `sunojump.py` UI builders, CLI parser setup, tests for representative strings.

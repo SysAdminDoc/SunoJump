@@ -1,350 +1,224 @@
-<img width="1536" height="448" alt="banner" src="banner.png" />
+![SunoJump banner](banner.png)
 
-<br>
-
-![Version](https://img.shields.io/badge/version-1.7.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+[![Version](https://img.shields.io/badge/version-1.7.1-7c3aed)](https://github.com/SysAdminDoc/SunoJump/releases/latest)
+[![License](https://img.shields.io/badge/source-MIT-22c55e)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-38bdf8)
+![Local first](https://img.shields.io/badge/audio-stays%20local-f5ad42)
 
 # SunoJump
 
-Local-first audio variation and evidence tool for material you own or are authorized to modify. SunoJump applies a seedable transform pipeline, supports preview and comparison, and records local signal-change evidence so you can audit each render.
+SunoJump is a private audio variation workstation for before-and-after listening and repeatable batch processing. Every result can keep its seed, hashes, sidecar, and selected analysis reports. Try a short sample first. Compare presets by ear. Commit to a full render only when it sounds right.
 
-<img width="1844" height="1375" alt="SunoJump main window" src="screenshot.png" />
+[Download the Windows app](https://github.com/SysAdminDoc/SunoJump/releases/latest) · [Run from source](#run-from-source) · [See the CLI](#command-line-workflows)
 
+![SunoJump workspace with three audio files ready for preview and processing](docs/screenshots/workspace.png)
 
-## How It Works
+## Why use it
 
-SunoJump applies an 11-pass processing pipeline with **non-uniform segment-based transforms**. Each segment can receive different processing parameters, producing controlled spectral, temporal, phase, stereo, noise, dynamics, and codec variation.
+| When you need to... | SunoJump gives you... |
+|---|---|
+| Hear a change before processing a full track | Preview from any start time, then listen to the source and result inside the app |
+| Choose settings by ear | One-click A/B listening across the built-in presets, with a saved winner for each file |
+| Process a folder without losing your place | Parallel jobs, per-file presets, atomic output names, retry, and resumable manifests |
+| Explain exactly what happened | Effective seeds, sidecars, file hashes, logs, and machine-readable JSON results |
+| Inspect measurable differences | A matched-scale spectrogram plus optional loudness and signal-statistics reports |
+| Keep masters private | Local processing with no account, telemetry service, upload step, or remote API |
 
-### Use and Evidence Contract
+SunoJump is built for careful experimentation. It never treats a changed waveform or local landmark score as proof of what another service will do.
+
+## See the whole workflow
+
+### Tune the full processing chain
+
+The control surface keeps every enabled pass visible. Start with Gentle or Moderate, then adjust only what the track needs.
+
+![SunoJump processing pipeline showing the lower transform controls](docs/screenshots/pipeline.png)
+
+### Finish with evidence you can keep
+
+Each successful output can include a replay sidecar and selected report files. Batch state is written as work progresses, so interrupted or failed jobs can be reconciled without replacing good output.
+
+![SunoJump completed batch with report exports and a verified session log](docs/screenshots/evidence.png)
+
+### Inspect before and after on one scale
+
+This example came from the repository's deterministic CC0 synth fixture, processed by SunoJump v1.7.1 with the Moderate preset and seed `20260905`. Both panels use the same dBFS scale.
+
+![Before and after spectrogram produced by SunoJump](docs/screenshots/spectrogram-report.png)
+
+## The working loop
+
+1. Add a track or folder. SunoJump validates the container before handing audio to the isolated decoder.
+2. Pick a preset, adjust individual passes, or assign settings per file.
+3. Render a short preview or compare all built-in presets from the same start time.
+4. Process the queue. Outputs are reserved and published atomically without replacing an existing file.
+5. Keep the sidecar, manifest, and any report artifacts with the audio when you need a repeatable record.
+
+The pipeline can apply up to eleven stages: ordinary metadata handling, narrowband candidate scanning, spectral variation, dynamic EQ, coupled pitch and tempo changes, phase changes, stereo adjustment, shaped noise, dynamics, humanization, and an optional codec round trip.
+
+## Responsible use and evidence limits
 
 - Use SunoJump only with audio you own or are authorized to modify.
-- Built-in metrics are experimental, local, adapter/version-scoped measurements of the current input and output.
+- Built-in metrics are experimental local measurements of the current input and output.
 - A signal-change or landmark-overlap value does not predict or guarantee any platform, recognition, moderation, or detector outcome.
-- SunoJump does not upload or resubmit audio, call platform APIs, or optimize against a platform response.
+- SunoJump does not upload or resubmit audio, call platform APIs, or tune itself against a platform response.
+- Source audio is never overwritten.
 
-### Processing Pipeline
+`sunojump.signal_change v1` is a normalized sample-domain difference. The optional `sunojump.constellation v1` result reports local landmark overlap as `measured`, `unavailable`, or `error`. Treat both as inspection aids, not acceptance scores.
 
-| # | Pass | What It Does |
-|---|------|-------------|
-| 1 | **Ordinary Metadata Strip** | Removes tags recognized by Mutagen after the separate C2PA provenance preflight |
-| 2 | **Spectral Perturbation** | Scans stable narrowband candidates, then perturbs frequency magnitudes with per-band controls and randomized STFT window sweeps |
-| 3 | **Dynamic EQ** | Time-varying multiband EQ with LUFS-like gain matching |
-| 4 | **Pitch Micro-Shift** | Non-uniform pitch warping across random segments |
-| 5 | **Tempo Micro-Variation** | Coupled in-segment timing drift that keeps segment boundaries beat-aligned |
-| 6 | **Phase Scrambling** | Randomizes phase relationships in STFT domain |
-| 7 | **Stereo Manipulation** | Mid-side processing to alter stereo field |
-| 8 | **Noise Injection** | Adds masking-aware shaped pink noise below local spectral thresholds |
-| 9 | **Dynamics Modification** | Per-frame random gain variation to break statistical patterns |
-| 10 | **Humanization** | Wow/flutter, dynamic breathing, micro noise floor |
-| 11 | **Lossy Re-encode** | Controlled MP3 encode/decode round trip (requires ffmpeg) |
+## Install on Windows
 
-### Key Differentiator: Non-Uniform Processing
+1. Open the [latest release](https://github.com/SysAdminDoc/SunoJump/releases/latest).
+2. Download `SunoJump.exe` and `SHA256SUMS`.
+3. Verify the executable hash against the checksum file.
+4. Run `SunoJump.exe`. No Python installation is required.
 
-Unlike a flat whole-track transform, SunoJump splits audio into variable-length segments and applies **different transform parameters to each segment**. Preview, comparison, run logs, and sidecars make those changes inspectable.
+The Windows executable is not code-signed. Windows may show a SmartScreen notice. Download it only from this repository's Releases page and verify `SHA256SUMS` before running it.
 
-## Installation
+SunoJump is portable. It stores settings and bounded diagnostic logs in the current user's application-data directory rather than installing a background service.
 
-### Windows (recommended) -- prebuilt executable
-Download `SunoJump.exe` from the [latest release](https://github.com/SysAdminDoc/SunoJump/releases/latest). No Python install required. Double-click to launch.
+## Run from source
 
-### From source (any platform)
+Python 3.11+ is required.
+
 ```bash
 git clone https://github.com/SysAdminDoc/SunoJump.git
 cd SunoJump
+python -m venv .venv
+```
 
-# Install dependencies
+Activate the environment, then install and launch:
+
+```bash
 python -m pip install -r requirements.txt
-
-# Run
 python sunojump.py
 ```
 
-### Requirements
-- Python 3.11+
-- ffmpeg (optional, for Lossy Re-encode pass)
-- PyQt6 Multimedia (optional, for in-app preview playback; usually bundled)
+Source runs support Windows, macOS, and Linux. Preview playback depends on the codecs available to Qt Multimedia on the host. MP3 and M4A export require `ffmpeg` with the matching encoder.
 
-Install Python dependencies before running from source; the packaged executable already includes them.
+## Command-line workflows
 
-### Dependency and Upgrade Compatibility
+Process one file with a repeatable seed:
+
 ```bash
-# Install local audit tooling, then report lock/native/DSP/security status
-python -m pip install -r requirements-dev.txt
-python tools/audit_dependencies.py
-python tools/audit_licenses.py
+python sunojump.py -i song.wav -o ./renders -p moderate --seed 20260905
 ```
 
-The compatibility report separates direct, transitive, build-tool, and native-runtime drift; runs the fixed-seed generated DSP golden; audits the release lock for known vulnerabilities; and prints the recorded rollback commit. Source environments may report drift as a warning because `requirements.txt` intentionally uses ranges. Release environments use `--require-lock-match` as a hard gate.
-
-`tools/compatibility_baseline.json` binds both lock hashes to the tested Windows x64/CPython 3.12 native versions, DSP signature, supported Python 3.11/3.12 source lanes, and rollback point. Any lock update must refresh that record after the compatibility workflow passes. The workflow runs the DSP golden, offscreen GUI tests, packaging smoke tests, and full suite on both supported Python lanes; the CPython 3.12 release-contract job additionally installs both hashed locks and uploads the machine-readable compatibility report.
-
-### Reproducing and Verifying the Windows Release
-
-On Windows x64 with CPython 3.12, the release command creates a temporary virtual environment, installs only the exact wheels in the two hashed locks, builds an unsigned one-file executable, and proves its CLI, fixture-render, and foreground-GUI paths:
+Process a directory and write every optional report:
 
 ```bash
-python tools/build_release.py
+python sunojump.py -i ./album -o ./renders -p gentle \
+  --spectrogram --loudness-report --signal-report
 ```
 
-The gate fails on a missing, stale, or wrong-version executable; a stale compatibility baseline; native-version drift; undeclared bundled packages; incomplete license/source records; or failed smoke tests. It does not perform code signing. `dist/` receives the executable, `SHA256SUMS`, compatibility baseline, CycloneDX 1.7 SBOM, actual PyInstaller inventory, native-version report, license notices/source routing, build provenance, both locks, and the corresponding source archive. Use `sha256sum -c SHA256SUMS` from inside the downloaded artifact directory to verify the set.
+Keep human diagnostics on stderr and write structured results to a file:
 
-On Windows, run `pwsh -NoProfile -File tools/smoke_accessibility.ps1` to launch an isolated-settings GUI and verify its UI Automation tree, keyboard focus, primary control names, and unit-bearing slider announcements—the same accessibility surface consumed by Narrator.
-
-## Features
-
-- **11-pass audio processing pipeline** — metadata strip, spectral perturbation, dynamic EQ, pitch/tempo micro-shift, phase scrambling, stereo manipulation, noise injection, dynamics, humanization, lossy re-encode
-- **LUFS-preserving Dynamic EQ** — reshapes band energy without silently changing perceived loudness
-- **Psychoacoustic noise shaping** — keeps injected pink noise lower in quiet regions and under louder spectral masks
-- **Narrowband candidate scan** — locates stable spectral candidates per file and targets them during spectral perturbation
-- **STFT window sweeps** — varies 1024/2048/4096-point windows across randomized spectral segments
-- **Per-band spectral controls** — tune sub-bass, low-mids, presence, and air perturbation independently
-- **Coupled non-uniform pitch/tempo processing** — varies pitch and timing together while keeping segment boundaries aligned
-- **4 built-in presets** — Gentle, Moderate, Aggressive, Extreme + Custom
-- **Per-pass toggles and strength sliders** — fine-grained control
-- **Render Preview** — choose any 0.1-second start offset and hear up to 30 seconds with your current settings before committing to full-file processing
-- **Compare Presets** — one click renders a 20-second sample per preset so you can A/B/C/D audition all four, save a per-file winner, and restore that choice when the source is re-added
-- **In-app A/B playback** — play original and processed side-by-side without leaving the app
-- **Responsive, keyboard-complete GUI** — panels reflow down to 560×360, long labels wrap at enlarged font sizes and in RTL layouts, focus is visible, queue actions have keyboard equivalents, and sliders expose displayed units to screen readers
-- **Explicit codec export** — WAV/FLAC/OGG export directly, with MP3/M4A export enabled when ffmpeg is available
-- **Contained input decoding** — bounded pure-Python container inspection runs before a time/memory/output-capped decoder process; mismatched containers, IRCAM, and WAV IMA ADPCM are rejected before libsndfile
-- **C2PA provenance guardrail** — locates embedded or adjacent Content Credentials before decode, blocks by default, and records manifest hashes plus the explicit output-without-source-credentials decision without claiming cryptographic validation
-- **Transactional output saves** — reserves collision-free names across processes, validates same-folder temporary renders, and atomically publishes without replacing an existing audio or sidecar destination
-- **Privacy-controlled diagnostics** — every GUI and CLI run writes a bounded local log with path redaction on by default; users control retention, preview redaction, confirm deletion, and export atomic support ZIPs
-- **Scoped local evidence** — reports `sunojump.signal_change v1` plus typed `measured`, `unavailable`, or `error` results from experimental `sunojump.constellation v1`
-- **Truthful terminal states** — jobs and batches report `succeeded`, `partial`, `failed`, or `cancelled` with stable error codes; only an all-success batch reaches 100%
-- **Lifecycle-safe cancellation** — one Cancel control covers batches, previews, and preset comparisons; closing waits for confirmed worker exit and never removes active temp storage
-- **Responsive queue discovery** — recursive folder scans run off the UI thread with counted progress and cancellation; empty and partial states explain the next action
-- **Actionable failures** — queue rows show typed failure reasons, and Retry Failed immediately reuses the latest saved batch manifest
-- **Replayable output evidence** — every render displays its effective seed; WAV/FLAC same-environment replays are byte-tested, while sidecars name exact muxer/codec dependencies when bytes are build-sensitive
-- **Parallel identity-safe batch queue** — drag/drop multiple files, reorder them, and render 1–8 concurrently; stable job IDs keep independent progress and late results attached to the correct rows
-- **Per-file queue presets** — assign any built-in preset or a snapshot of the current controls to selected files while the rest continue to follow the batch settings
-- **Resumable batch manifests** — every batch atomically persists inputs, per-file preset snapshots, seeds, attempts, terminal states, and artifact hashes; interrupted and failed-only work can be resumed without replacing existing files
-- **Custom preset save/load** — export your tuned settings to JSON, share, or reuse
-- **Bounded long-file processing** — isolated decoding writes fixed-size blocks to a disk-backed memory map; payloads above 256 MiB run every enabled transform in overlap-blended chunks with a bounded working set and atomic cleanup
-- **Open Output** — one-click to output folder in your file manager
-- **Versioned signal-change metric** — inspect a sample-domain difference value with explicit scope
-- **Before/after spectrogram export** — opt in to a bounded, full-file, side-by-side PNG with a shared dBFS color scale and hash-linked result/manifest evidence
-- **BS.1770-5 loudness audit** — opt in to a bounded before/after integrated-loudness and oversampled true-peak JSON report with explicit deltas and hash-linked evidence
-- **Crest and stereo-width audit** — opt in to bounded before/after crest factor, mid-side energy ratio, and interchannel-correlation JSON evidence with explicit deltas
-
-## Usage
-
-### GUI Mode
 ```bash
-python sunojump.py
+python sunojump.py -i ./album --result-format json > results.json
+python sunojump.py -i ./album --result-format jsonl > results.jsonl
 ```
 
-1. Drop audio files into the file list (or click Browse)
-2. Select a preset or customize individual parameters
-3. (Optional) Select one or more queue rows and use **Selected preset** to assign a built-in preset or a snapshot of the current controls only to those files; **Batch settings** keeps them linked to the main controls
-4. (Optional) Choose a **Start** offset and click **Render Preview** to process up to 30 seconds from that point so you can hear the result before committing; Compare uses the same offset
-5. Optionally enable the spectrogram and/or BS.1770-5 report exports, choose **Parallel files** (2 by default), then click **Process All** to render every file in the list to the output directory with `_sj` suffix. If a source contains C2PA Content Credentials, review the warning and explicitly choose whether to continue; cancelling preserves the source and creates no output.
-6. To recover a prior batch, click **Resume Batch** for pending/interrupted jobs or **Retry Failed** for failed/partial jobs, then select its `.sunojump-batch.json` file
+Compose a built-in preset with sparse JSON overrides:
 
-Keyboard shortcuts cover the primary workflow: `Ctrl+O` browse, `Ctrl+P` preview, `Ctrl+Shift+P` compare, `Ctrl+R` resume, `Ctrl+Shift+R` retry failed, `Ctrl+S` save a preset, `Ctrl+Enter` process, and `Esc` cancel. In the queue, `Delete`/`Backspace` removes the selection and `Alt+Up`/`Alt+Down` reorders it.
-
-### CLI Mode
 ```bash
-# Basic usage with preset
-python sunojump.py -i song.wav -p aggressive
-
-# Custom parameters
-python sunojump.py -i song.wav --pitch 1.5 --phase 0.5 --spectral 0.4
-
-# Compose a built-in preset with reusable sparse JSON overrides
 python sunojump.py -i song.wav --profile ./gentle-tuned.json --pitch 0.75
+```
 
-# Keep diagnostics on stderr and write one machine-readable result document
-python sunojump.py -i ./my_songs --result-format json > results.json
+Resume interrupted work or retry failed and partial jobs:
 
-# Emit one record per file plus a final batch record
-python sunojump.py -i ./my_songs --result-format jsonl > results.jsonl
+```bash
+python sunojump.py --resume ./renders/SunoJump_Batch_....sunojump-batch.json
+python sunojump.py --resume ./renders/SunoJump_Batch_....sunojump-batch.json --retry failed
+```
 
-# Export a bounded side-by-side audit image beside every usable output
-python sunojump.py -i ./my_songs --spectrogram
+Watch a folder for stable files:
 
-# Export before/after integrated loudness and true-peak evidence
-python sunojump.py -i ./my_songs --loudness-report
-
-# Export crest-factor and stereo-width evidence
-python sunojump.py -i ./my_songs --signal-report
-
-# Batch process a directory
-python sunojump.py -i ./my_songs/ -o ./output/ -p moderate -f flac
-
-# Watch a folder continuously; stable drops go to ./incoming/output/
+```bash
 python sunojump.py --watch ./incoming -p moderate
-
-# With lossy re-encode
-python sunojump.py -i song.wav -p aggressive --reencode 128
-
-# Resume pending/interrupted work, or retry only failed/partial jobs
-python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json
-python sunojump.py --resume ./output/SunoJump_Batch_....sunojump-batch.json --retry failed
-
-# Explicitly allow a transformed output that omits source Content Credentials
-python sunojump.py -i signed.wav --c2pa-policy allow-removal
-
-# Select a locale for GUI or CLI text (qps-ploc is the RTL test locale)
-python sunojump.py --locale en
 ```
 
-#### CLI Options
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-i, --input` | Input file or directory; required unless `--resume` or `--watch` is used | none |
-| `--watch` | Continuously process stable supported files dropped directly into a directory; conflicts with input/resume/manifest | none |
-| `-o, --output` | Output directory | `~/Desktop/SunoJump_Output` |
-| `-p, --preset` | gentle, moderate, aggressive, extreme | moderate |
-| `-f, --format` | wav, flac, ogg, mp3, m4a (mp3/m4a require ffmpeg) | wav |
-| `--preset-file` | Path to custom JSON preset (overrides `-p`) | none |
-| `--profile` | Versioned JSON composition of a built-in preset plus sparse overrides; conflicts with `-p` and `--preset-file` | none |
-| `--locale` | Locale catalog for GUI labels and CLI help; falls back from region to language to English | system locale |
-| `--compute` | `cpu`, `auto` (CUDA with CPU fallback), or strict `cuda` for FFT-heavy passes | cpu |
-| `--workers` | Queued files to render concurrently, from 1 to 8 | 2 |
-| `--result-format` | `human` for stderr logs, `json` for one batch document, or `jsonl` for per-file records plus a final batch record | human |
-| `--spectrogram` | Export a before/after side-by-side PNG beside each usable output | off |
-| `--loudness-report` | Export an ITU-R BS.1770-5 before/after integrated-loudness and true-peak JSON report | off |
-| `--signal-report` | Export before/after crest-factor, mid-side-width, and stereo-correlation JSON evidence | off |
-| `--manifest` | Destination for a new batch manifest; must not already exist | generated in output directory |
-| `--resume` | Existing batch manifest to reconcile and resume | none |
-| `--retry` | With `--resume`: pending, unfinished, failed, or cancelled jobs | pending |
-| `--c2pa-policy` | `block`, or `allow-removal` to acknowledge that transformed outputs omit and do not re-sign source Content Credentials | block |
-| `--diagnostic-retention` | Number of persistent run logs to retain, from 1 to 365 | 30 |
-| `--no-redact-diagnostics` | Explicitly retain absolute paths in new CLI run logs | redaction enabled |
-| `--no-spectral-scan`, `--no-watermark-scan` | Disable the local narrowband candidate scan (`--no-watermark-scan` is retained for compatibility) | enabled |
-| `--enable-pass PASS` | Enable a named pass at its current/preset amount; repeatable | none |
-| `--disable-pass PASS` | Disable a named pass; repeatable | none |
-| `--spectral` | Spectral perturbation (0.0-1.0) | preset |
-| `--spectral-sub-bass` | Sub-bass spectral perturbation (0.0-1.0) | preset |
-| `--spectral-low-mids` | Low-mids spectral perturbation (0.0-1.0) | preset |
-| `--spectral-presence` | Presence-band spectral perturbation (0.0-1.0) | preset |
-| `--spectral-air` | Air-band spectral perturbation (0.0-1.0) | preset |
-| `--dynamic-eq` | Dynamic EQ amount (0.0-1.0) | preset |
-| `--pitch` | Pitch micro-shift in semitones (0.0-5.0) | preset |
-| `--tempo` | Tempo variation (0.0-0.15) | preset |
-| `--phase` | Phase scrambling (0.0-1.0) | preset |
-| `--stereo` | Stereo manipulation (0.0-0.5) | preset |
-| `--noise` | Noise level in dB (-70 to -30) | preset |
-| `--dynamics` | Dynamics amount (0.0-1.0) | preset |
-| `--humanize` | Humanization amount (0.0-1.0) | preset |
-| `--reencode` | Lossy re-encode bitrate (96-320) | disabled |
-| `--seed` | Non-negative integer for deterministic output; the effective per-file seed is always displayed | generated per file |
-| `--native-runtime` | Print machine-readable decoder version and containment policy, then exit | n/a |
+Watch mode waits for an unchanged size and modification time before accepting a file. Generated output goes to `incoming/output` by default, which prevents a render from feeding back into the watch directory.
 
-Every numeric override enables its corresponding pass. To disable one, use `--disable-pass` with a name shown by `--help`; combining a pass's numeric value with its disable flag is rejected. Values, preset files, and profiles are validated strictly—unknown keys, wrong types, non-finite numbers, future schemas, and out-of-range values exit before an output directory or file is created.
+Run `python sunojump.py --help` for the complete option reference.
 
-Profiles make sparse tuning reusable without copying a complete preset. The built-in preset is applied first, the JSON `overrides` object second, and explicit numeric or pass CLI flags last:
+## Presets and controls
 
-```json
-{
-  "name": "Gentle tuned",
-  "schema_version": 1,
-  "preset": "gentle",
-  "overrides": {
-    "pitch_range": 0.5,
-    "stereo_enabled": true
-  }
-}
-```
+The built-in presets describe transform amount only. They do not claim effectiveness against an external system.
 
-Profile documents reject unknown keys, future schemas, invalid values, and operation-level `output_format` or `c2pa_policy` settings. Choose those policies explicitly with their CLI flags.
+- **Gentle** keeps changes restrained for listening-first work.
+- **Moderate** is a balanced starting point and the CLI default.
+- **Aggressive** applies stronger values across more of the pipeline.
+- **Extreme** is the highest-intensity profile. Audition it carefully.
+- **Custom** reflects your current per-pass settings.
 
-Watch mode scans only the selected directory's top level. A file must keep the same size and modification time for one second before it is accepted, which avoids reading an in-progress copy. Existing files are eligible, unchanged files run once per watch session, and a later modification is eligible again. The default output is the watched directory's `output/` child; using the watched directory itself as output is rejected to prevent generated files from feeding back into the watcher. Each accepted file gets an atomic one-job batch manifest and the normal C2PA, validation, sidecar, cancellation, and no-overwrite safeguards. Press `Ctrl+C` to stop and cancel active work safely.
+Every numeric CLI override enables its matching pass. Use `--disable-pass PASS` when a pass must stay off. Preset files and profiles reject unknown keys, invalid types, non-finite numbers, future schemas, and values outside the documented range.
 
-GUI labels, tooltips, status/error text, accessibility descriptions, and CLI help share the JSON catalogs in `locales/`. Locale selection follows Qt-style fallback (`language-region` → `language` → English), and plural forms plus right-to-left layout direction are catalog controlled. `--locale` overrides the system locale for one run; `SUNOJUMP_LOCALE` provides the same override for launches that cannot pass arguments.
+## Files created by a render
 
-### Optional CUDA Compute
+| File | Purpose |
+|---|---|
+| `track_sj.wav` | Validated audio output |
+| `track_sj.sidecar.json` | Input and output hashes, effective seed, settings, dependency evidence, and replay notes |
+| `SunoJump_Batch_....sunojump-batch.json` | Recoverable per-job state with attempts and artifact hashes |
+| `track_sj.spectrogram.png` | Optional matched-scale before-and-after spectrogram |
+| `track_sj.loudness.json` | Optional ITU-R BS.1770-5 loudness and true-peak comparison |
+| `track_sj.signal.json` | Optional crest-factor, stereo-width, and correlation comparison |
 
-Source runs can move STFT/ISTFT work in spectral scanning/perturbation, Dynamic EQ, pitch phase-vocoder, phase scrambling, masking-aware noise, and constellation evidence to a CUDA-enabled PyTorch runtime. Install the platform-specific stable build using the [official PyTorch selector](https://docs.pytorch.org/get-started/locally/), then run `python sunojump.py -i song.wav --compute cuda`. `auto` uses CUDA when the on-device SciPy parity check passes and otherwise records an explicit CPU fallback; strict `cuda` exits before creating batch state when PyTorch, CUDA, or the parity gate is unavailable.
+JSON and JSON Lines CLI output report `succeeded`, `partial`, `failed`, or `cancelled` with stable error codes. A report failure never turns a usable audio render into a false success, and an all-success batch is the only state that reaches 100 percent.
 
-The standard frozen release remains CPU-only: Torch is deliberately excluded from PyInstaller inventory, and release verification rejects executables above 250 MiB. Source GUI workers may opt in with `SUNOJUMP_COMPUTE_BACKEND=auto` or `cuda`. Sidecars record the selected library/device/runtime and treat accelerated renders as dependency-sensitive rather than promising byte identity across GPUs.
-
-Use `Save...` in the GUI to export the current settings, then pass the resulting `.json` to `--preset-file` on the CLI to reproduce the same configuration across runs. Legacy partial presets are migrated and completed from the documented Moderate defaults; saved Custom sessions persist the full validated configuration rather than only the word `Custom`.
-
-CLI exit status is `0` only when every job succeeds, `1` when a batch has at least one usable output but is partial, and `2` when no job produces a usable output. Human-readable progress, per-file summaries, and diagnostics always go to stderr, leaving stdout uncontaminated for `--result-format json` or `jsonl`. The `com.sunojump.cli-results` schema includes stable job IDs, states, error codes, effective seeds, validation evidence, artifact paths/hashes, counts, and the final batch state. Each independently versioned replay sidecar is written atomically and records validated audio shape, hashes, complete stochastic-pass trace, native/dependency versions, and replay constraints. A format-native audio tag contains the canonical sidecar-payload hash; the sidecar contains the final audio hash, providing a verifiable two-way binding.
-
-Spectrogram export uses uniformly distributed Hann-window snapshots across the full file, at most a 2048-point FFT per image column, a logarithmic 20 Hz–20 kHz (or Nyquist) axis, and one fixed -100–0 dBFS color scale for both panels. The PNG is atomically published as `<output-stem>.spectrogram.png`; its SHA-256 and sampling metadata appear in JSON/JSONL results and batch manifests. A missing or changed audit image invalidates a previously successful manifest during recovery. Report failure leaves validated audio and its replay sidecar usable but returns a typed partial result.
-
-The loudness report reuses the regression suite's ITU-R BS.1770-5 K-weighting, 400 ms absolute/relative gated integrated loudness, and sample-rate-aware 4×/2× true-peak oversampling. Filtering, power aggregation, and oversampling run in fixed-size blocks for long files. The atomically published `<output-stem>.loudness.json` records before/after LUFS, dBTP, oversampling factors, and after-minus-before deltas; its complete schema metadata and SHA-256 flow through the same structured results and recovery checks as spectrograms.
-
-The signal-statistics report defines whole-signal and per-channel crest factor as `20×log10(absolute peak/RMS)`. For stereo material it also reports `10×log10(side energy/mid energy)` with `mid=(L+R)/√2` and `side=(L−R)/√2`, plus normalized interchannel energy correlation from −1 to +1. Mono, zero-side, and zero-mid cases are explicit rather than substituted with arbitrary values. Fixed-size accumulation keeps memory bounded; `<output-stem>.signal.json` includes before/after values, after-minus-before deltas, definitions, channel coverage, and hash-linked manifest/result evidence.
-
-Every GUI and CLI batch also writes an atomic, versioned manifest. On recovery, an interrupted `running` job becomes `pending`, successful audio and sidecar hashes are revalidated, and missing or changed evidence becomes a failed job eligible for retry. Resume reuses the saved configuration and per-file seeds, rejects conflicting CLI overrides, and reserves a new collision-free output name rather than replacing any prior artifact.
-
-Before any decode or transform, SunoJump performs bounded discovery of C2PA manifest stores in supported RIFF/WAVE, ID3-based MP3/FLAC, Ogg, AIFF, and adjacent `.c2pa` locations. Discovery reports `present_unvalidated`, `absent`, or `inspection_failed`; it does not validate signatures, trust chains, assertions, or hard bindings. A detected store is blocked by default. If explicitly allowed, the original remains byte-for-byte untouched while the re-encoded output omits and does not re-sign the source credentials. The replay sidecar records the source manifest hash, discovery status, policy, and decision. This behavior follows the [C2PA 2.4 embedding specification](https://spec.c2pa.org/specifications/specifications/2.4/specs/C2PA_Specification.html) and is not evidence of any acoustic-detector change.
-
-### Diagnostics, Privacy, and Local Data
-
-The Session Log panel controls persistent diagnostics. **Redact paths** is enabled by default and masks registered input/output roots, the home and temporary directories, and other absolute paths. **Privacy & Locations** previews the current redaction and shows where every persistent category lives. **Retain** keeps 1-365 logs; cleanup failures are reported instead of ignored. **Clear Logs** requires confirmation, refuses to run during rendering, closes the active log lifecycle before deletion, and reports both failures and remaining files.
-
-**Export Support** creates a no-replace ZIP atomically. Each included log is capped at 5 MiB, and the bundle records hashes, environment details, redaction state, and read failures. Audio, batch manifests, replay sidecars, and GUI settings contents are excluded by design.
-
-- Run logs: the platform state/log directory shown by **Privacy & Locations** (`%LOCALAPPDATA%\SunoJump\logs` on Windows)
-- GUI settings: the QSettings location shown in the same dialog
-- Batch history: `*.sunojump-batch.json` in the chosen output directory
-- Replay evidence: `*.sidecar.json` beside processed audio in the chosen output directory
-- Preview audio: OS temporary storage, removed after worker exit and clean close
-- Support bundles: the user-selected `.zip` destination
-
-## Presets
-
-| Preset | Pitch | Spectral | Phase | Noise | Use Case |
-|--------|-------|----------|-------|-------|----------|
-| **Gentle** | 0.3 st | 0.10 | 0.10 | -60 dB | Lowest transform intensity |
-| **Moderate** | 0.8 st | 0.30 | 0.30 | -50 dB | Moderate transform intensity |
-| **Aggressive** | 1.5 st | 0.50 | 0.50 | -45 dB | High transform intensity |
-| **Extreme (default)** | 3.0 st | 0.70 | 0.70 | -40 dB | Highest transform intensity; audition before use |
-
-Preset names describe transform intensity, not effectiveness. Use Preview or Compare Presets and choose the lowest intensity that meets your audible and analytical goals.
-
-## Signal Change Metric
-
-After processing, SunoJump reports `sunojump.signal_change v1`, a normalized sample-domain difference derived from signal-to-difference ratio:
-
-- **0-25%** — low sample-domain change
-- **25-50%** — moderate sample-domain change
-- **50-75%** — high sample-domain change
-- **75-100%** — very high sample-domain change; audition output quality
-
-This metric is not calibrated to any external service or recognition system. Sidecars record the adapter name, version, unit, and scope.
-
-## Local Landmark Evidence
-
-`sunojump.constellation v1` compares up to 30 seconds of local landmark hashes. A measured result includes adapter/version, percentage, sample coverage, duration, alignment offset, and landmark counts. Silence, near-silence, clips shorter than two seconds, and inputs with too few landmarks report `unavailable` without a numeric value; adapter failures report `error`. These states appear identically in GUI/CLI logs and sidecar JSON and do not imply a platform outcome.
-
-## A/B Regression Evidence
-
-`python tools/run_ab_regression.py --output ab-report.json` renders two deterministic, repository-generated CC0 stereo music cues at 44.1 and 48 kHz using fixed seeds. The schema-versioned report contains per-pair and unrelated-cue negative-control detector scores, analyzed coverage, alignment offsets, and before/after ITU-R BS.1770-5 integrated loudness and true peak. Its thresholds are local quality/regression gates only and make no external-platform inference.
-
-The suite supports the Apache-2.0 [Google ViSQOL](https://github.com/google/visqol) audio-mode CLI as its full-reference perceptual metric. Point `--visqol-binary` or `VISQOL_BINARY` at a locally built executable; adding `--require-visqol` makes absence or adapter failure fail the suite. Inputs are resampled to ViSQOL's required 48 kHz and reports identify the adapter by executable hash. Without the optional binary, the result is explicitly `unavailable`, never an invented quality score.
-
-## Supported Formats
+## Audio and format support
 
 **Input:** WAV, MP3, FLAC, OGG, AIFF, Opus
 
-For native-decoder safety, IRCAM payloads and WAV IMA ADPCM (including the extensible subtype) are not accepted. The file extension must match the detected container.
+**Output:** WAV, FLAC, OGG, MP3, M4A
 
-**Output:** WAV (24-bit), FLAC, OGG Vorbis, MP3, M4A/AAC
+Before decoding, SunoJump checks the extension, container signature, duration, sample rate, channel count, file size, and estimated decoded memory. IRCAM and WAV IMA ADPCM payloads are rejected at the containment boundary. Large inputs use disk-backed maps and bounded processing chunks.
 
-## Release Licensing
+## Privacy, diagnostics, and provenance
 
-SunoJump's own source code is MIT-licensed. Runtime dependencies include copyleft-licensed packages:
+Processing stays on the machine. No account or network service is used. Diagnostic paths are redacted by default, retention is adjustable, and the support ZIP excludes audio, manifests, replay sidecars, and settings contents.
 
-| Package | License | Notes |
-|---------|---------|-------|
-| PyQt6 | GPL-3.0-only | Bundled GUI toolkit |
-| mutagen | GPL-2.0-or-later | Bundled metadata tag library |
-| PyQt6-Qt6 | LGPL-3.0-only | Bundled shared Qt runtime |
+SunoJump performs bounded discovery of C2PA Content Credentials before decode. A detected manifest is blocked by default. Continuing requires an explicit acknowledgement that the transformed output will omit and will not re-sign the source credentials. The original remains unchanged. Discovery does not validate signatures or trust chains.
 
-**Source installs:** users install dependencies themselves via `pip install -r requirements.txt`. SunoJump source is MIT.
+## Build and verify a release
 
-**Binary releases (PyInstaller):** the combined executable bundles GPL-licensed components. The binary as a whole must comply with GPL-3.0 terms. Source code is always available in this repository.
+Windows release builds use CPython 3.12 and hash-pinned wheels:
 
-Run `python tools/audit_licenses.py` to verify the reviewed runtime inventory. Release packaging also inventories the frozen executable and fails if build-only, undeclared, or unreviewed components appear.
+```bash
+python -m pip install -r requirements-dev.txt
+python tools/audit_dependencies.py
+python tools/audit_licenses.py
+python tools/generate_brand_assets.py
+python tools/build_release.py
+```
+
+`tools/build_release.py` creates a fresh temporary environment, installs only the hashed runtime and build inputs, builds without UPX, and exercises the new executable through its version, help, fixture-render, and GUI paths. The final `dist/` directory contains:
+
+- `SunoJump.exe`
+- `SHA256SUMS`
+- a CycloneDX 1.7 SBOM
+- build provenance and the actual frozen-package inventory
+- native version evidence and the compatibility baseline
+- license notices, source routing, both lock files, and the matching source archive
+
+The release build is intentionally unsigned and records that fact in its provenance. Run the complete source test suite offscreen on Windows with host fonts available:
+
+```powershell
+$env:QT_QPA_PLATFORM = 'offscreen'
+$env:QT_QPA_FONTDIR = "$env:WINDIR\Fonts"
+python -m pytest -q
+```
+
+Capture the current marketing images without touching saved app settings:
+
+```bash
+python tools/capture_screenshot.py docs/screenshots/workspace.png --width 1366 --height 900 --scene workspace
+python tools/capture_screenshot.py docs/screenshots/pipeline.png --width 1366 --height 900 --scene pipeline
+python tools/capture_screenshot.py docs/screenshots/evidence.png --width 1366 --height 900 --scene evidence
+```
 
 ## License
 
-MIT
+SunoJump source code is available under the [MIT License](LICENSE).
+
+The packaged Windows executable bundles PyQt6 under GPL-3.0 and LGPL-licensed Qt components. The release therefore includes the corresponding source route, notices, dependency inventory, SBOM, and matching application source archive. Review `THIRD_PARTY_NOTICES.txt` and `SOURCE_ROUTING.txt` beside the executable before redistributing the binary.

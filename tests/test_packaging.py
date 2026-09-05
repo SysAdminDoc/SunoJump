@@ -41,7 +41,14 @@ class FrozenBuildGuardTests(unittest.TestCase):
     def test_pyinstaller_spec_bundles_localization_catalogs(self):
         spec = (ROOT / 'SunoJump.spec').read_text(encoding='utf-8')
 
-        self.assertIn("datas=[('locales', 'locales')]", spec)
+        self.assertIn("('locales', 'locales')", spec)
+
+    def test_pyinstaller_spec_bundles_brand_and_windows_metadata(self):
+        spec = (ROOT / 'SunoJump.spec').read_text(encoding='utf-8')
+
+        self.assertIn("('assets/sunojump-mark.png', 'assets')", spec)
+        self.assertIn("icon=['assets/sunojump.ico']", spec)
+        self.assertIn("version='assets/version_info.txt'", spec)
 
     def test_pyinstaller_spec_includes_optional_visqol_adapter(self):
         spec = (ROOT / 'SunoJump.spec').read_text(encoding='utf-8')

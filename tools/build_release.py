@@ -56,6 +56,9 @@ FORBIDDEN_BUNDLE_NAMES = {
 }
 REQUIRED_SOURCE_FILES = {
     Path("audio_quality.py"),
+    Path("assets/sunojump-mark.png"),
+    Path("assets/sunojump.ico"),
+    Path("assets/version_info.txt"),
     Path("batch_manifest.py"),
     Path("c2pa_provenance.py"),
     Path("compute_backend.py"),
@@ -70,6 +73,7 @@ REQUIRED_SOURCE_FILES = {
     Path("tools/compatibility_baseline.json"),
     Path("tools/dsp_golden.py"),
     Path("tools/run_ab_regression.py"),
+    Path("tools/generate_brand_assets.py"),
     Path("tools/smoke_accessibility.ps1"),
     Path("verifiers.py"),
     Path("verifiers_visqol.py"),

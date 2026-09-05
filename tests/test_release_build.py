@@ -67,6 +67,15 @@ class ReleaseBuildTests(unittest.TestCase):
         ):
             self.assertIn(path, self.mod.REQUIRED_SOURCE_FILES)
 
+    def test_release_source_includes_brand_assets(self):
+        for path in (
+            pathlib.Path("assets/sunojump-mark.png"),
+            pathlib.Path("assets/sunojump.ico"),
+            pathlib.Path("assets/version_info.txt"),
+            pathlib.Path("tools/generate_brand_assets.py"),
+        ):
+            self.assertIn(path, self.mod.REQUIRED_SOURCE_FILES)
+
     def test_release_source_includes_ab_regression_contract(self):
         for path in (
             pathlib.Path("audio_quality.py"),

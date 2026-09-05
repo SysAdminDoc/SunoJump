@@ -265,16 +265,16 @@ def format_render_result(result: RenderResult) -> str:
     if result.error_code is not None:
         text += f" [{result.error_code.value}]"
     if result.message:
-        text += f" — {result.message}"
+        text += f" | {result.message}"
     if result.validation is not None:
-        text += f" — sha256:{result.validation.output_sha256[:12]}"
+        text += f" | sha256:{result.validation.output_sha256[:12]}"
     if result.effective_seed is not None:
-        text += f" — seed:{result.effective_seed}"
+        text += f" | seed:{result.effective_seed}"
     if result.sidecar_sha256 is not None:
-        text += f" — sidecar:{result.sidecar_sha256[:12]}"
+        text += f" | sidecar:{result.sidecar_sha256[:12]}"
     for artifact in result.artifacts:
         text += (
-            f" — {artifact['kind']}:"
+            f" | {artifact['kind']}:"
             f"{artifact['sha256'][:12]}"
         )
     return text

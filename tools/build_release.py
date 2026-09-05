@@ -566,7 +566,43 @@ def smoke_gui_executable(executable: Path, version: str) -> dict:
     process_terminate = 0x0001
     synchronize = 0x00100000
     still_active = 259
+    wait_timeout = 0x00000102
+    generic_all = 0x10000000
+    create_unicode_environment = 0x00000400
+    create_new_process_group = 0x00000200
+    startf_use_show_window = 0x00000001
+    sw_show_normal = 1
     invalid_handle = ctypes.c_void_p(-1).value
+
+    class StartupInfo(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD),
+            ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD),
+            ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_ubyte)),
+            ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE),
+            ("hStdError", wintypes.HANDLE),
+        ]
+
+    class ProcessInformation(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", wintypes.HANDLE),
+            ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD),
+            ("dwThreadId", wintypes.DWORD),
+        ]
 
     class ProcessEntry32(ctypes.Structure):
         _fields_ = [
@@ -581,6 +617,37 @@ def smoke_gui_executable(executable: Path, version: str) -> dict:
             ("dwFlags", wintypes.DWORD),
             ("szExeFile", wintypes.WCHAR * 260),
         ]
+
+    user32.CreateDesktopW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    user32.CreateDesktopW.restype = wintypes.HANDLE
+    user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+    user32.CloseDesktop.restype = wintypes.BOOL
+    user32.EnumDesktopWindows.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.LPARAM,
+    ]
+    user32.EnumDesktopWindows.restype = wintypes.BOOL
+    kernel32.CreateProcessW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(StartupInfo),
+        ctypes.POINTER(ProcessInformation),
+    ]
+    kernel32.CreateProcessW.restype = wintypes.BOOL
 
     kernel32.OpenProcess.argtypes = [
         wintypes.DWORD,
@@ -686,29 +753,91 @@ def smoke_gui_executable(executable: Path, version: str) -> dict:
                 return
             time.sleep(0.1)
 
-    launch_deadline = time.monotonic() + 45
-    while True:
-        try:
-            process = subprocess.Popen(
-                [str(executable)],
-                cwd=ROOT,
-                env=_release_environment(),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+    class CreatedProcess:
+        def __init__(self, info):
+            self.handle = info.hProcess
+            self.pid = info.dwProcessId
+
+        def poll(self):
+            if kernel32.WaitForSingleObject(self.handle, 0) == wait_timeout:
+                return None
+            exit_code = wintypes.DWORD(still_active)
+            if not kernel32.GetExitCodeProcess(
+                self.handle,
+                ctypes.byref(exit_code),
+            ):
+                raise ReleaseError("cannot read the private GUI launcher exit code")
+            return exit_code.value
+
+        def wait(self, timeout):
+            wait_result = kernel32.WaitForSingleObject(
+                self.handle,
+                max(0, round(timeout * 1000)),
             )
+            if wait_result == wait_timeout:
+                raise subprocess.TimeoutExpired(str(executable), timeout)
+            return self.poll()
+
+    desktop_name = f"SunoJumpSmoke_{uuid.uuid4().hex}"
+    desktop = user32.CreateDesktopW(
+        desktop_name,
+        None,
+        None,
+        0,
+        generic_all,
+        None,
+    )
+    if not desktop:
+        raise ReleaseError("cannot create the private GUI smoke desktop")
+
+    environment = _release_environment()
+    entries = [
+        f"{key}={value}"
+        for key, value in sorted(
+            environment.items(), key=lambda item: item[0].casefold()
+        )
+    ]
+    environment_block = ctypes.create_unicode_buffer("\0".join(entries) + "\0\0")
+    launch_deadline = time.monotonic() + 45
+    process = None
+    while process is None:
+        process_info = ProcessInformation()
+        startup_info = StartupInfo()
+        startup_info.cb = ctypes.sizeof(startup_info)
+        startup_info.lpDesktop = desktop_name
+        startup_info.dwFlags = startf_use_show_window
+        startup_info.wShowWindow = sw_show_normal
+        command = ctypes.create_unicode_buffer(
+            subprocess.list2cmdline([str(executable)])
+        )
+        created = kernel32.CreateProcessW(
+            str(executable),
+            command,
+            None,
+            None,
+            False,
+            create_unicode_environment | create_new_process_group,
+            ctypes.cast(environment_block, ctypes.c_void_p),
+            str(ROOT),
+            ctypes.byref(startup_info),
+            ctypes.byref(process_info),
+        )
+        if created:
+            kernel32.CloseHandle(process_info.hThread)
+            process = CreatedProcess(process_info)
             print(
-                f"  GUI process launched (pid {process.pid}); waiting for window...",
+                f"  Private-desktop GUI launched (pid {process.pid}); "
+                "waiting for window...",
                 flush=True,
             )
             break
-        except OSError as exc:
-            if getattr(exc, "winerror", None) != 5:
-                raise
-            if time.monotonic() >= launch_deadline:
-                raise ReleaseError(
-                    "foreground GUI executable stayed locked for 45 seconds"
-                )
-            time.sleep(0.25)
+        error_code = kernel32.GetLastError()
+        if error_code != 5 or time.monotonic() >= launch_deadline:
+            user32.CloseDesktop(desktop)
+            raise ReleaseError(
+                f"cannot launch the private GUI smoke process: Windows error {error_code}"
+            )
+        time.sleep(0.25)
     expected_title = f"SunoJump v{version}"
     found = {
         "handle": None,
@@ -742,41 +871,46 @@ def smoke_gui_executable(executable: Path, version: str) -> dict:
             found["handle"] = None
             found["title"] = None
             found["process_id"] = None
-            user32.EnumWindows(callback, 0)
+            kernel32.SetLastError(0)
+            enumerated = user32.EnumDesktopWindows(desktop, callback, 0)
+            enumeration_error = kernel32.GetLastError()
+            if not enumerated and enumeration_error:
+                raise ReleaseError(
+                    "cannot enumerate the private GUI smoke desktop: "
+                    f"Windows error {enumeration_error}"
+                )
             if found["handle"]:
                 break
             time.sleep(0.2)
         if not found["handle"]:
             raise ReleaseError(
-                f"foreground GUI did not expose a visible window; "
+                f"private-desktop GUI did not expose a visible window; "
                 f"launcher_exit={process.poll()}"
             )
         if found["title"] != expected_title:
             raise ReleaseError(
-                f"foreground GUI title mismatch: {found['title']!r}"
+                f"private-desktop GUI title mismatch: {found['title']!r}"
             )
-        print(f"  Visible GUI window: {found['title']}", flush=True)
+        print(f"  Private-desktop GUI window: {found['title']}", flush=True)
         child_handle = kernel32.OpenProcess(
             process_query | process_terminate | synchronize,
             False,
             found["process_id"],
         )
         if not child_handle:
-            raise ReleaseError("cannot open the foreground GUI child process")
-        user32.ShowWindow(found["handle"], 9)
-        foreground_requested = bool(user32.SetForegroundWindow(found["handle"]))
+            raise ReleaseError("cannot open the private-desktop GUI child process")
         time.sleep(0.75)
         if not user32.PostMessageW(found["handle"], 0x0010, 0, 0):
-            raise ReleaseError("cannot post WM_CLOSE to the foreground GUI")
+            raise ReleaseError("cannot post WM_CLOSE to the private-desktop GUI")
         wait_result = kernel32.WaitForSingleObject(child_handle, 15000)
         if wait_result != 0:
-            raise ReleaseError("foreground GUI child did not close after WM_CLOSE")
+            raise ReleaseError("private-desktop GUI child did not close after WM_CLOSE")
         exit_code = wintypes.DWORD(still_active)
         if not kernel32.GetExitCodeProcess(child_handle, ctypes.byref(exit_code)):
-            raise ReleaseError("cannot read the foreground GUI child exit code")
+            raise ReleaseError("cannot read the private-desktop GUI child exit code")
         if exit_code.value != 0:
             raise ReleaseError(
-                f"foreground GUI child exited with code {exit_code.value}"
+                f"private-desktop GUI child exited with code {exit_code.value}"
             )
         try:
             launcher_exit = process.wait(timeout=5)
@@ -784,20 +918,24 @@ def smoke_gui_executable(executable: Path, version: str) -> dict:
             launcher_exit = process.poll()
         if launcher_exit not in {None, 0}:
             raise ReleaseError(
-                f"foreground GUI launcher exited with code {launcher_exit}"
+                f"private-desktop GUI launcher exited with code {launcher_exit}"
             )
-        print("  Foreground GUI closed cleanly.", flush=True)
+        print("  Private-desktop GUI closed cleanly.", flush=True)
         return {
             "visible_window": True,
             "window_title": found["title"],
             "window_process_id_is_child": found["process_id"] != process.pid,
-            "foreground_requested": foreground_requested,
+            "private_desktop": True,
+            "foreground_requested": False,
             "exit_code": exit_code.value,
         }
     finally:
         if child_handle:
             kernel32.CloseHandle(child_handle)
         terminate_matching_processes()
+        if process is not None:
+            kernel32.CloseHandle(process.handle)
+        user32.CloseDesktop(desktop)
 
 
 def read_analysis_entries(analysis_file: Path) -> list[dict[str, str]]:
@@ -1325,7 +1463,7 @@ def main(argv: list[str] | None = None) -> int:
                 version,
                 smoke_dir,
             )
-            print("Launching and closing the foreground GUI...", flush=True)
+            print("Launching and closing the GUI on a private desktop...", flush=True)
             gui_smoke = smoke_gui_executable(executable, version)
 
             print(
@@ -1464,7 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
                 "smoke_tests": {
                     "cli": cli_smoke,
                     "fixture_render": render_smoke,
-                    "foreground_gui": gui_smoke,
+                    "private_desktop_gui": gui_smoke,
                 },
             }
             write_json(stage / "build-provenance.json", provenance)

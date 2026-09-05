@@ -335,6 +335,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn('"--require-hashes"', source)
         self.assertIn('"--only-binary=:all:"', source)
         self.assertIn("smoke_gui_executable", source)
+        self.assertIn("CreateDesktopW", source)
+        self.assertIn("EnumDesktopWindows", source)
+        self.assertNotIn("SetForegroundWindow", source)
         self.assertNotIn("signtool", source.lower())
 
 

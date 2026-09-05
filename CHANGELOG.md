@@ -8,7 +8,7 @@
 - **Current product views.** Replaced the empty v1.6.0 image with populated v1.7.1 workspace, pipeline, completed-batch, and real spectrogram examples.
 - **Repeatable marketing capture.** Screenshot scenes now use isolated settings and generated local audio placeholders, so documentation images can be refreshed without exposing user files.
 - **Windows package branding.** The frozen app now carries the product icon and version properties, while the runtime window uses the same mark.
-- **Local release checks.** Removed the hosted compatibility workflow. Tests, dependency audits, artifact builds, and release publication run on the maintainer's Windows machine.
+- **Local release checks.** Removed the hosted compatibility workflow. Tests, dependency audits, artifact builds, and release publication run on the maintainer's Windows machine. Packaged GUI smoke testing now runs on an isolated private desktop.
 - **Documentation overhaul.** Replaced the implementation-heavy project page with a benefit-led guide, shorter setup path, truthful evidence contract, and complete release verification notes.
 
 ## v1.7.0 (2026-08-12)

@@ -192,7 +192,7 @@ python tools/generate_brand_assets.py
 python tools/build_release.py
 ```
 
-`tools/build_release.py` creates a fresh temporary environment, installs only the hashed runtime and build inputs, builds without UPX, and exercises the new executable through its version, help, fixture-render, and GUI paths. The final `dist/` directory contains:
+`tools/build_release.py` creates a fresh temporary environment, installs only the hashed runtime and build inputs, builds without UPX, and exercises the new executable through its version, help, fixture-render, and GUI paths. The GUI smoke check runs on a private Windows desktop and never takes over the active screen. The final `dist/` directory contains:
 
 - `SunoJump.exe`
 - `SHA256SUMS`

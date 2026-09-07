@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SunoJump v1.7.1 - local audio variation and evidence tool."""
+"""SunoJump v1.7.2: local audio variation and evidence tool."""
 
 import multiprocessing
 multiprocessing.freeze_support()
@@ -74,7 +74,7 @@ from render_results import (
 )
 from verifiers import ConstellationVerifier, format_verifier_result
 
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 APP_NAME = "SunoJump"
 RESOURCE_ROOT = Path(
     getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)
@@ -158,7 +158,10 @@ try:
     )
 except ImportError as e:
     missing = getattr(e, 'name', None) or str(e)
-    print(f"ERROR: Missing required GUI dependency: {missing}", file=sys.stderr)
+    print(
+        f"ERROR: Missing required GUI dependency: {missing} ({e})",
+        file=sys.stderr,
+    )
     print("Install dependencies with:  python -m pip install -r requirements.txt", file=sys.stderr)
     sys.exit(1)
 

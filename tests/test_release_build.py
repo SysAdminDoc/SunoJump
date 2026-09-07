@@ -6,6 +6,7 @@ import pathlib
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -46,6 +47,36 @@ class ReleaseBuildTests(unittest.TestCase):
             )
             for entry in entries:
                 self.assertEqual(len(entry.sha256), 64)
+
+    def test_release_environment_drops_ambient_toolchain_paths(self):
+        ambient_path = os.pathsep.join(
+            (
+                r"C:\Users\Builder\.cache\ambient-runtimes\native\libheif\bin",
+                r"C:\Tools\ffmpeg\bin",
+            )
+        )
+        overrides = {
+            "PATH": ambient_path,
+            "SystemRoot": r"C:\Windows",
+            "PYTHONHOME": r"C:\AmbientPython",
+            "PYTHONPATH": r"C:\AmbientPackages",
+            "QT_PLUGIN_PATH": r"C:\AmbientQt\plugins",
+            "QML2_IMPORT_PATH": r"C:\AmbientQt\qml",
+        }
+        with mock.patch.dict(os.environ, overrides, clear=False):
+            environment = self.mod._release_environment()
+
+        release_path = environment["PATH"].casefold()
+        self.assertNotIn("ambient-runtimes", release_path)
+        self.assertNotIn(r"c:\tools\ffmpeg", release_path)
+        self.assertIn(r"c:\windows\system32", release_path)
+        for name in (
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "QT_PLUGIN_PATH",
+            "QML2_IMPORT_PATH",
+        ):
+            self.assertNotIn(name, environment)
 
     def test_release_source_requires_windows_accessibility_smoke(self):
         self.assertIn(

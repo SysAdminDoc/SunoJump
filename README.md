@@ -1,6 +1,6 @@
 ![SunoJump banner](banner.png)
 
-[![Version](https://img.shields.io/badge/version-1.7.1-7c3aed)](https://github.com/SysAdminDoc/SunoJump/releases/latest)
+[![Version](https://img.shields.io/badge/version-1.7.2-7c3aed)](https://github.com/SysAdminDoc/SunoJump/releases/latest)
 [![License](https://img.shields.io/badge/source-MIT-22c55e)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-38bdf8)
 ![Local first](https://img.shields.io/badge/audio-stays%20local-f5ad42)
@@ -42,7 +42,7 @@ Each successful output can include a replay sidecar and selected report files. B
 
 ### Inspect before and after on one scale
 
-This example came from the repository's deterministic CC0 synth fixture, processed by SunoJump v1.7.1 with the Moderate preset and seed `20260905`. Both panels use the same dBFS scale.
+This example came from the repository's deterministic CC0 synth fixture, processed by SunoJump v1.7.2 with the Moderate preset and seed `20260905`. Both panels use the same dBFS scale.
 
 ![Before and after spectrogram produced by SunoJump](docs/screenshots/spectrogram-report.png)
 
@@ -192,7 +192,7 @@ python tools/generate_brand_assets.py
 python tools/build_release.py
 ```
 
-`tools/build_release.py` creates a fresh temporary environment, installs only the hashed runtime and build inputs, builds without UPX, and exercises the new executable through its version, help, fixture-render, and GUI paths. The GUI smoke check runs on a private Windows desktop and never takes over the active screen. The final `dist/` directory contains:
+`tools/build_release.py` creates a fresh temporary environment, installs only the hashed runtime and build inputs, removes ambient tool directories from the build path, and builds without UPX. It exercises the new executable through its version, help, fixture-render, and GUI paths. The GUI smoke check runs on a private Windows desktop and never takes over the active screen. The final `dist/` directory contains:
 
 - `SunoJump.exe`
 - `SHA256SUMS`

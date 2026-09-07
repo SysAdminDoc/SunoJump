@@ -210,6 +210,25 @@ def source_version() -> str:
 
 def _release_environment() -> dict[str, str]:
     environment = os.environ.copy()
+    windows_root = Path(environment.get("SystemRoot", r"C:\Windows"))
+    python_root = Path(sys.executable).resolve().parent
+    release_paths = (
+        python_root,
+        python_root / "Scripts",
+        windows_root / "System32",
+        windows_root,
+    )
+    unique_paths: list[str] = []
+    seen_paths: set[str] = set()
+    for path in release_paths:
+        value = str(path)
+        key = os.path.normcase(os.path.normpath(value))
+        if key not in seen_paths:
+            unique_paths.append(value)
+            seen_paths.add(key)
+    environment["PATH"] = os.pathsep.join(unique_paths)
+    for name in ("PYTHONHOME", "PYTHONPATH", "QT_PLUGIN_PATH", "QML2_IMPORT_PATH"):
+        environment.pop(name, None)
     environment.update({
         "PIP_CONFIG_FILE": os.devnull,
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",

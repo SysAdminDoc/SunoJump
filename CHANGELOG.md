@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.7.2 (2026-09-07)
+- **Approved identity source.** Archived the original selected waveform S direction under `assets/brand/concepts/` with a clear selection record and an untouched master stored apart from the production icon family.
+- **Current release imagery.** Refreshed the deterministic product views so their visible version matches the README, executable metadata, and v1.7.2 package.
+- **Clean release path.** The isolated build now removes ambient toolchain directories before PyInstaller resolves native libraries, preventing unrelated UCRT files from entering the executable.
+- **Useful loader errors.** Missing GUI dependencies now report the underlying Windows loader message instead of hiding it behind a module name.
+
 ## v1.7.1 (2026-09-05)
 - **Clearer product story.** Reframed SunoJump as a private audio variation and evidence workstation, with rights-owned use and local metric limits stated plainly.
 - **New visual identity.** Added a transparent S-wave mark, multi-size Windows icon, executable metadata, refreshed banner, and a 1280 by 640 repository card.
